@@ -1,0 +1,49 @@
+#!/bin/sh
+# Pre-commit PII guard — only scans staged src/ and prompts/ files
+
+STAGED=$(git diff --cached --name-only | grep -E '^(src|prompts)/')
+
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+echo "🔍 Checking staged src/prompts files for PII..."
+
+FAIL=0
+
+for FILE in $STAGED; do
+  [ -f "$FILE" ] || continue
+
+  # Israeli phones
+  if grep -qE '\+?972[0-9]{8,10}' "$FILE"; then
+    echo "  ❌ $FILE: Israeli phone number found"
+    FAIL=1
+  fi
+
+  # Hardcoded emails (not placeholder)
+  if grep -qE '[a-z0-9._%+-]+@(gmail\.com|outlook\.com|yahoo\.com)' "$FILE"; then
+    echo "  ❌ $FILE: Real email address found"
+    FAIL=1
+  fi
+
+  # API keys
+  if grep -qE 'sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{40,}' "$FILE"; then
+    echo "  ❌ $FILE: API key pattern found"
+    FAIL=1
+  fi
+
+  # Family surname (Hebrew)
+  if grep -q 'בסינסקי' "$FILE"; then
+    echo "  ❌ $FILE: Family surname (Hebrew) found"
+    FAIL=1
+  fi
+done
+
+if [ "$FAIL" = "1" ]; then
+  echo ""
+  echo "🛑 Commit blocked: PII detected in staged files."
+  echo "   Run: node scripts/detect-pii.js . to see all findings."
+  exit 1
+fi
+
+echo "  ✅ No PII found in staged files."
