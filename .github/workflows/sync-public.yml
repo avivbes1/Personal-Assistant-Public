@@ -1,0 +1,70 @@
+name: Sync to Public Repo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'prompts/**'
+      - 'scripts/**'
+      - 'config/*.example.*'
+      - '.env.example'
+      - 'README.md'
+      - 'PRINCIPLES.md'
+      - 'package.json'
+      - 'ecosystem.config.js'
+      - '.gitignore'
+
+jobs:
+  sync:
+    name: PII scan + publish to Personal-Assistant-Public
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: PII scan — src/
+        run: node scripts/detect-pii.js src/
+
+      - name: PII scan — prompts/
+        run: node scripts/detect-pii.js prompts/
+
+      - name: Build public snapshot
+        run: |
+          bash scripts/prepare-public-release.sh /tmp/pa-public-snapshot
+
+      - name: Checkout public repo
+        uses: actions/checkout@v4
+        with:
+          repository: avivbes1/Personal-Assistant-Public
+          token: ${{ secrets.PUBLIC_REPO_TOKEN }}
+          path: /tmp/pa-public-repo
+
+      - name: Sync snapshot to public repo
+        run: |
+          # Clear public repo content (keep .git)
+          find /tmp/pa-public-repo -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+
+          # Copy snapshot
+          rsync -a /tmp/pa-public-snapshot/ /tmp/pa-public-repo/
+
+      - name: Commit and push to public repo
+        run: |
+          cd /tmp/pa-public-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+          else
+            COMMIT_SHA="${{ github.sha }}"
+            git commit -m "Sync from private repo (${COMMIT_SHA:0:7})"
+            git push
+            echo "✅ Public repo updated."
+          fi
