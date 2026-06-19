@@ -1,0 +1,12 @@
+{
+  "members": [
+    { "name_he": "הורה 1", "name_en": "Parent1", "nicknames": ["parent1", "dad", "אבא"], "role": "parent", "notes": "Primary parent" },
+    { "name_he": "הורה 2", "name_en": "Parent2", "nicknames": ["parent2", "mom", "אמא"], "role": "parent", "notes": "Secondary parent" },
+    { "name_he": "ילד 1",  "name_en": "Child1",  "nicknames": ["child1"], "role": "kid", "notes": "Oldest child" },
+    { "name_he": "ילד 2",  "name_en": "Child2",  "nicknames": ["child2"], "role": "kid", "notes": "Second child" }
+  ],
+  "childGroups": [
+    { "child_name_en": "Child1", "group_name": "Child1 School Group" },
+    { "child_name_en": "Child2", "group_name": "Child2 Class Group" }
+  ]
+}

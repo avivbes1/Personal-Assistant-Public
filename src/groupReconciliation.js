@@ -16,7 +16,7 @@ const RECONCILIATION_INTERVAL_MS = 6 * 60 * 60 * 1000;      // run every 6h
 
 let _client        = null;
 let _masterGroupId = null;
-let _avivDm        = config.AVIV_PHONE ? `${config.AVIV_PHONE}@c.us` : '972504606660@c.us';
+let _avivDm        = config.AVIV_PHONE ? `${config.AVIV_PHONE}@c.us` : null;
 let _scanFn        = null; // scanGroupHistory(chat, opts) — injected from whatsapp.js
 
 function init(client, masterGroupId, scanGroupHistory) {

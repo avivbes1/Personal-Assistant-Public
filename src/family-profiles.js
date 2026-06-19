@@ -80,4 +80,20 @@ function getMemberByName(name) {
   return getFamilyMemberByNameExact(name);
 }
 
-module.exports = { resolveMember, resolveMembersInText, getAllMembers, getMemberByName };
+/**
+ * Build a human-readable family description from DB for use in LLM prompts.
+ * Returns a string like: "אביב (Aviv) = אבא, ליאת (Liat) = אמא, שגב (Segev) = ילד"
+ */
+function getFamilyContext() {
+  const members = getAllFamilyMembers();
+  const parents  = members.filter(m => m.role === 'parent');
+  const kids     = members.filter(m => m.role !== 'parent');
+  const fmt = m => `${m.name_he} (${m.name_en})`;
+  const parts = [
+    ...parents.map(m => `${fmt(m)} = ${m.role === 'parent' ? (parents.indexOf(m) === 0 ? 'אבא' : 'אמא') : 'ילד'}`),
+    kids.length ? `ילדים: ${kids.map(fmt).join(', ')}` : ''
+  ].filter(Boolean);
+  return parts.join(', ');
+}
+
+module.exports = { resolveMember, resolveMembersInText, getAllMembers, getMemberByName, getFamilyContext };

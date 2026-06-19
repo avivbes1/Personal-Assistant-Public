@@ -1,6 +1,6 @@
 /**
- * index.js — Besinsky Bot entry point.
- * WhatsApp family assistant bot for the Besinsky family.
+ * index.js — Family Bot entry point.
+ * WhatsApp family assistant bot.
  */
 
 const config = require('./config');
@@ -9,7 +9,7 @@ const { initWhatsApp, sendToMasterGroup, sendToMasterGroupWithId, sendToMasterGr
 const { initScheduler } = require('./scheduler');
 const { startHealthMonitor } = require('./health');
 
-console.log('🤖 Besinsky Bot starting up...');
+console.log('🤖 FamilyBot starting up...');
 console.log(`   Timezone: ${config.TIMEZONE}`);
 console.log(`   Master Group: ${config.MASTER_GROUP_NAME}`);
 console.log('');
@@ -33,7 +33,7 @@ setTimeout(() => {
 
 // 5. Graceful shutdown
 function shutdown(signal) {
-  console.log(`\n[Besinsky Bot] Received ${signal}. Shutting down gracefully...`);
+  console.log(`\n[FamilyBot] Received ${signal}. Shutting down gracefully...`);
   process.exit(0);
 }
 
@@ -41,10 +41,10 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 process.on('uncaughtException', (err) => {
-  console.error('[Besinsky Bot] Uncaught exception:', err.message);
+  console.error('[FamilyBot] Uncaught exception:', err.message);
   console.error(err.stack);
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[Besinsky Bot] Unhandled promise rejection:', reason);
+  console.error('[FamilyBot] Unhandled promise rejection:', reason);
 });

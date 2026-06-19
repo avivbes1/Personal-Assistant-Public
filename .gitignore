@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Family-specific config (NEVER commit — contains real group names)
+config/groups.json
+
 # Credentials & tokens (NEVER commit these)
 .env
 credentials.json

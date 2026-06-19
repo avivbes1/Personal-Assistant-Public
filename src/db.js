@@ -210,18 +210,21 @@ function initDB() {
   // Seed family members if table is empty
   const memberCount = db.prepare('SELECT COUNT(*) as c FROM family_members').get();
   if (memberCount.c === 0) {
-    const insert = db.prepare('INSERT INTO family_members (name_he, name_en, nicknames, role, calendar_id, notes) VALUES (?, ?, ?, ?, ?, ?)');
-    const config = require('./config');
-    const members = [
-      ['אביב', 'Aviv',   JSON.stringify(['aviv', 'dad', 'אבא']),                  'parent', config.AVIV_CALENDAR_ID, 'Dad'],
-      ['ליאת', 'Liat',   JSON.stringify(['liat', 'mom', 'אמא', 'אמי']),            'parent', config.LIAT_CALENDAR_ID, 'Mom'],
-      ['שגב',  'Segev',  JSON.stringify(['segev', 'שגב׳ה', 'שגבי']),              'kid',    null, 'Oldest kid'],
-      ['נבו',  'Nevo',   JSON.stringify(['nevo', 'נבו׳ה', 'נבוש']),               'kid',    null, 'Second kid'],
-      ['נטע',  'Neta',   JSON.stringify(['neta', 'נטע׳לה', 'נטע׳ה']),             'kid',    null, 'Third kid'],
-      ['ירדן', 'Yarden', JSON.stringify(['yarden', 'ירדן׳ה', 'ירד']),              'kid',    null, 'Youngest kid'],
-    ];
-    for (const m of members) insert.run(...m);
-    console.log('[DB] Seeded family_members table');
+    const seedPath = require('path').join(__dirname, '../config/family-seed.json');
+    if (require('fs').existsSync(seedPath)) {
+      const seed = JSON.parse(require('fs').readFileSync(seedPath, 'utf8'));
+      const config = require('./config');
+      const insert = db.prepare('INSERT INTO family_members (name_he, name_en, nicknames, role, calendar_id, notes) VALUES (?, ?, ?, ?, ?, ?)');
+      for (const m of seed.members) {
+        const calId = m.role === 'parent' && !m.calendar_id
+          ? (insert.run.length === 0 ? config.AVIV_CALENDAR_ID : config.LIAT_CALENDAR_ID)
+          : (m.calendar_id || null);
+        insert.run(m.name_he, m.name_en, JSON.stringify(m.nicknames || []), m.role, calId, m.notes || '');
+      }
+      console.log('[DB] Seeded family_members from config/family-seed.json');
+    } else {
+      console.warn('[DB] No config/family-seed.json found — family_members table is empty. Copy config/family-seed.example.json to get started.');
+    }
   }
 
   // ── Homework tracking ──────────────────────────────────────────────────────
@@ -252,18 +255,12 @@ function initDB() {
 
   // Populate primary_child from known group names
   try {
-    const childGroups = [
-      ['נבו',  "ג׳3 תשפ״ו"],
-      ['שגב',  'כתה ו׳ רשפים'],
-      ['שגב',  "הורי ו' בני"],
-      ['שגב',  'מתמטיקה-ו-נילי הגאונים'],
-      ['נטע',  'גן כוכב תשפ"ו'],
-      ['נטע',  'הורי גן כוכב 2025/6 🌟'],
-      ['ירדן', 'הורים צבר'],
-      ['ירדן', 'גן צבר'],
-    ];
-    const upd = db.prepare('UPDATE groups SET primary_child=? WHERE name=? AND primary_child IS NULL');
-    for (const [child, name] of childGroups) upd.run(child, name);
+    const seedPath = require('path').join(__dirname, '../config/family-seed.json');
+    if (require('fs').existsSync(seedPath)) {
+      const seed = JSON.parse(require('fs').readFileSync(seedPath, 'utf8'));
+      const upd = db.prepare("UPDATE groups SET primary_child=? WHERE name=? AND primary_child IS NULL");
+      for (const cg of (seed.childGroups || [])) upd.run(cg.child_name_he || cg.child_name_en, cg.group_name);
+    }
   } catch (_) {}
 
   // OAuth tokens table

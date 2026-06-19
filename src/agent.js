@@ -9,6 +9,7 @@
 const https = require('https');
 const config = require('./config');
 const { buildContext, buildQuerySpecificContext } = require('./query');
+const { getFamilyContext } = require('./family-profiles');
 const { searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent, listEventsForDate } = require('./calendar');
 const { processEventAction } = require('./calendarGate');
 const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveHomework, getPendingHomework } = require('./db');
@@ -17,10 +18,10 @@ const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./sched
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 const FAMILY_PHONES = {
-  aviv:  config.AVIV_PHONE || '972504606660',
-  liat:  config.LIAT_PHONE || '972509244401',
-  אביב: config.AVIV_PHONE || '972504606660',
-  ליאת: config.LIAT_PHONE || '972509244401',
+  aviv:  config.AVIV_PHONE,
+  liat:  config.LIAT_PHONE,
+  אביב: config.AVIV_PHONE,
+  ליאת: config.LIAT_PHONE,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -409,13 +410,10 @@ async function executeAction(action, senderName) {
 // ── System prompt ─────────────────────────────────────────────────────────────
 
 function buildSystemPrompt(context) {
-  return `אתה טודט (Tudat), העוזר המשפחתי של משפחת בסינסקי. אתה מגיב בעברית דרך WhatsApp.
+  return `אתה ${config.BOT_NAME} (${config.BOT_NAME_ALT}), העוזר המשפחתי. אתה מגיב בעברית דרך WhatsApp.
 
-משפחת בסינסקי:
-• אביב (Aviv) = אבא - יש לו יומן אישי
-• ליאת (Liat) = אמא - יש לה יומן אישי + יומן עבודה
-• ילדים: שגב (Segev), נבו (Nevo), נטע (Neta), ירדן (Yarden)
-אין יומן משותף - רק יומן אישי לאביב ויומן אישי+עבודה לליאת.
+בני המשפחה: ${getFamilyContext()}
+יומן ראשי לבעלי היומן בלבד - אין יומן משותף.
 
 ## אופי ואיך לתקשר:
 - **קצר וישיר** - 1-3 משפטים. אין מילות מילוי ("בהחלט!", "שאלה מצוינת!", "בשמחה אעזור").
@@ -643,7 +641,7 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
     recentCtx = `\n## הודעות אחרונות בקבוצה (הקשר):\n${lines.join('\n')}\n`;
   }
 
-  const systemPrompt = `אתה טודט, עוזר משפחתי אוטומטי. אתה מנטר קבוצות WhatsApp של משפחת בסינסקי.
+  const systemPrompt = `אתה ${config.BOT_NAME}, עוזר משפחתי אוטומטי. אתה מנטר קבוצות WhatsApp של המשפחה.
 
 קבוצה: "${groupName}"
 שולח: ${sender}
@@ -651,10 +649,10 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
 מחר: ${tomorrowIso}
 ${groupCtx}${childCtx}${recentCtx}
 
-משפחת בסינסקי: אביב (אבא), ליאת (אמא), שגב, נבו, נטע, ירדן (ילדים).
+בני המשפחה: ${getFamilyContext()}
 
 ## החלטה:
-קרא את ההודעה. האם יש כאן משהו שמשפחת בסינסקי צריכה לפעול עליו?
+קרא את ההודעה. האם יש כאן משהו שהמשפחה צריכה לפעול עליו?
 
 **הוסף ליומן אוטומטית** אם:
 - האירוע נוגע ישירות לאחד מבני המשפחה (מבחן, חוג, משחק)

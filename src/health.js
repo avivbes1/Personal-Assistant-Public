@@ -13,7 +13,7 @@ let _client = null;
 let _masterGroupId = null;
 let _lastAlertTime = 0;
 const ALERT_COOLDOWN_MS = 24 * 60 * 60 * 1000; // max 1 alert per day
-const ALERT_TARGET = '972504606660@c.us'; // send health alerts to Aviv's private DM
+const ALERT_TARGET = process.env.AVIV_PHONE ? `${process.env.AVIV_PHONE}@c.us` : null; // send health alerts to primary parent DM
 
 // Calendar re-auth cooldown — persisted to disk so it survives restarts
 const CALENDAR_AUTH_COOLDOWN_MS = 24 * 60 * 60 * 1000;
@@ -106,7 +106,7 @@ async function runChecks() {
     try {
       const avivAuth = await verifyCalendarAuth(config.AVIV_TOKEN_PATH);
       if (!avivAuth.ok) {
-        await sendCalendarAuthRequest('aviv', 'avivbes1@gmail.com', 'אביב', 'לחץ');
+        await sendCalendarAuthRequest('aviv', config.AVIV_CALENDAR_ID, 'אביב', 'לחץ');
       }
     } catch (e) {
       failures.push(`Calendar auth check error: ${e.message}`);
@@ -114,7 +114,7 @@ async function runChecks() {
     try {
       const liatAuth = await verifyCalendarAuth(config.LIAT_TOKEN_PATH);
       if (!liatAuth.ok) {
-        await sendCalendarAuthRequest('liat', 'liat.elm@gmail.com', 'ליאת', 'לחצי');
+        await sendCalendarAuthRequest('liat', config.LIAT_CALENDAR_ID, 'ליאת', 'לחצי');
       }
     } catch (e) {
       failures.push(`Calendar auth check error (Liat): ${e.message}`);

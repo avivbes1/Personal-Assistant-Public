@@ -23,8 +23,8 @@ function _getCredentials() {
 
 function tokenPathToUserId(tokenPath) {
   const resolved = path.resolve(tokenPath);
-  if (resolved === path.resolve(config.AVIV_TOKEN_PATH)) return { userId: 'aviv', email: 'avivbes1@gmail.com' };
-  if (resolved === path.resolve(config.LIAT_TOKEN_PATH)) return { userId: 'liat', email: 'liat.elm@gmail.com' };
+  if (resolved === path.resolve(config.AVIV_TOKEN_PATH)) return { userId: 'aviv', email: config.AVIV_CALENDAR_ID };
+  if (resolved === path.resolve(config.LIAT_TOKEN_PATH)) return { userId: 'liat', email: config.LIAT_CALENDAR_ID };
   throw new Error(`Unknown token path: ${tokenPath}`);
 }
 

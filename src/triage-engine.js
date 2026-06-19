@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const { sendMessage: voiceSend } = require('../lib/voice-client');
 
-const GROUP_JID = '120363426994367917@g.us';
+const GROUP_JID = process.env.MASTER_GROUP_JID; // set MASTER_GROUP_JID in .env
 const BUDGET_MS = 80_000; // 80s wall-clock budget for synthesis phase
 const SHADOW_MODE = process.env.TRIAGE_SHADOW !== 'false'; // default: shadow on
 const SHADOW_LOG = path.join(__dirname, '..', 'data', 'triage-shadow-log.jsonl');
@@ -154,8 +154,8 @@ function groupByMergeGroup(decisions, noticesById) {
 // ── Classification prompt ─────────────────────────────────────────────────────
 
 const CLASSIFICATION_SYSTEM = `אתה מערכת הניהול של עוזר משפחתי חכם (Tudat).
-משפחת בסינסקי: אביב (אבא), ליאת (אמא), שגב (כיתה ו׳), נבו (כיתה ג׳), נטע (גן כוכב), ירדן (גן צבר).
-אתה מחליט אילו הודעות שווה לשלוח לקבוצת "משימות בסינסקי" עכשיו, מה ניתן לדחות לסיכום הבוקר, ומה כדאי לדלג עליו לחלוטין.
+בני המשפחה מוגדרים במערכת.
+אתה מחליט אילו הודעות שווה לשלוח לקבוצת המשימות עכשיו, מה ניתן לדחות לסיכום הבוקר, ומה כדאי לדלג עליו לחלוטין.
 
 החזר JSON בלבד, ללא הסבר, לפי הסכימה הבאה:
 {"decisions":[{"notice_id":NUMBER,"action":"send_now"|"defer"|"skip"|"send_update","merge_group":STRING_OR_NULL,"reason":"SHORT_ENGLISH_REASON"}]}

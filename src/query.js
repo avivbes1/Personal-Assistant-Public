@@ -5,6 +5,7 @@
 
 const https = require('https');
 const config = require('./config');
+const { getFamilyContext } = require('./family-profiles');
 const { getPendingActionItems, getDB, getPendingHomework } = require('./db');
 const { getTodayEvents, getUpcomingEvents } = require('./calendar');
 
@@ -85,7 +86,7 @@ async function buildContext() {
   let ctx = `תאריך ושעה נוכחיים: ${dateStr}, ${timeStr}\n\n`;
 
   // Family profiles
-  ctx += `בני משפחת בסינסקי:\n• אביב (Aviv) = אבא\n• ליאת (Liat) = אמא\n• שגב (Segev), נבו (Nevo), נטע (Neta), ירדן (Yarden) = ילדים\n\n`;
+  ctx += `בני המשפחה: ${getFamilyContext()}\n\n`;
 
   // Today's events
   try {
@@ -256,10 +257,10 @@ async function buildContext() {
 
 // Family member phone numbers for SEND_WHATSAPP actions
 const FAMILY_PHONES = {
-  aviv: process.env.AVIV_PHONE || '972504606660',
-  liat: process.env.LIAT_PHONE || '972509244401',
-  אביב: process.env.AVIV_PHONE || '972504606660',
-  ליאת: process.env.LIAT_PHONE || '972509244401',
+  aviv: config.AVIV_PHONE,
+  liat: config.LIAT_PHONE,
+  אביב: config.AVIV_PHONE,
+  ליאת: config.LIAT_PHONE,
 };
 
 /**
@@ -282,7 +283,7 @@ async function answerQuery(question, history = [], memberContext = null) {
     ? `\nאנשים שמוזכרים בהודעה:\n${memberContext}\n`
     : '';
 
-  const systemPrompt = `אתה טודט (Tudat), העוזר המשפחתי של משפחת בסינסקי. אתה מגיב בעברית דרך WhatsApp, בצורה קצרה וישירה.
+  const systemPrompt = `אתה ${config.BOT_NAME} (${config.BOT_NAME_ALT}), העוזר המשפחתי. אתה מגיב בעברית דרך WhatsApp, בצורה קצרה וישירה.
 
 ## מידע עדכני שיש לך:
 ${context}${memberSection}

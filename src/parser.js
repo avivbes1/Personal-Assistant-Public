@@ -4,16 +4,18 @@
  */
 
 const https = require('https');
+const config = require('./config');
+const { getFamilyContext } = require('./family-profiles');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const TODAY = () => new Date().toLocaleDateString('he-IL', { timeZone: process.env.TIMEZONE || 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-const SYSTEM_PROMPT_BASE = `You are טודט, a smart family assistant for the Besinsky family. You extract structured data from WhatsApp messages — from the family master group and from monitored family group chats.
+const SYSTEM_PROMPT_BASE = `You are ${config.BOT_NAME_ALT}, a smart family assistant. You extract structured data from WhatsApp messages — from the family master group and from monitored family group chats.
 TIMEZONE_PLACEHOLDER IMPORTANT: all times in messages are LOCAL Israel time (UTC+3). Return start_time and end_time as ISO8601 strings with +03:00 offset when a time is given (e.g. "2026-05-11T07:30:00+03:00"), or ONLY the date "YYYY-MM-DD" when no time is mentioned. Be terse. Omit null fields.
 
 GROUP_CONTEXT_PLACEHOLDER
 
-Family members: אביב (Aviv, dad), ליאת (Liat, mom), שגב (Segev, kid), נבו (Nevo, kid), נטע (Neta, kid), ירדן (Yarden, kid).
+FAMILY_MEMBERS_PLACEHOLDER
 
 Extract events and action items from the message. Return ONLY valid JSON, no explanation, no markdown.
 
@@ -103,8 +105,9 @@ async function parseWithClaude(text, history = [], groupContext = null) {
     ? `GROUP CONTEXT: This message comes from the group "${groupContext.name}". Known context: "${groupContext.description}". Use this to infer which family members are involved.`
     : '';
   const systemPrompt = SYSTEM_PROMPT_BASE
-    .replace('TIMEZONE_PLACEHOLDER', `Today's date: ${today} (Asia/Jerusalem timezone, UTC+3).`)
-    .replace('GROUP_CONTEXT_PLACEHOLDER', groupContextStr);
+    .replace('TIMEZONE_PLACEHOLDER', `Today's date: ${today} (${config.TIMEZONE} timezone).`)
+    .replace('GROUP_CONTEXT_PLACEHOLDER', groupContextStr)
+    .replace('FAMILY_MEMBERS_PLACEHOLDER', `Family members: ${getFamilyContext()}.`);
 
   const body = JSON.stringify({
     model: 'claude-haiku-4-5',

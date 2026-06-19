@@ -382,8 +382,8 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
 
 // Authorized identifiers - phone numbers OR WhatsApp LIDs (new privacy format)
 const ALLOWED_NUMBERS = new Set([
-  '972504606660', // Aviv phone
-  '972509244401', // Liat phone
+  config.AVIV_PHONE, // primary parent phone
+  config.LIAT_PHONE, // secondary parent phone
   '245500498423818', // Aviv LID
 ]);
 
@@ -722,7 +722,7 @@ async function applyRepairPipeline(text) {
   }
 
   // Step 4: DM Aviv — never lose information silently
-  const avivJid = '972504606660@c.us';
+  const avivJid = `${config.AVIV_PHONE}@c.us`;
   const dmText = `⚠️ ניסיתי לשלוח לקבוצה אבל ההודעה לא עברה בדיקת איכות.\nסיבה: ${v.reason}\n\nתוכן גולמי:\n${text.substring(0, 300)}`;
   console.warn('[OutgoingGate] All repair attempts failed. DMing Aviv.');
   if (client) {

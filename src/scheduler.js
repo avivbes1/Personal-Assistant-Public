@@ -1,5 +1,5 @@
 /**
- * scheduler.js — Cron-based scheduler for Besinsky Bot.
+ * scheduler.js — Cron-based scheduler for FamilyBot.
  * Timezone: Asia/Jerusalem
  *
  * Reminder architecture (v2):
