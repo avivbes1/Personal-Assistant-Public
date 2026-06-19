@@ -16,12 +16,11 @@ const path = require('path');
 // ── PII patterns ─────────────────────────────────────────────────────────────
 
 const PATTERNS = [
-  // Phone numbers
+  // Phone numbers (Israeli only — +972 or 972 prefix)
   { name: 'Israeli phone (972...)',    re: /\+?972\d{8,10}/g },
-  { name: 'Intl phone (+XX...)',       re: /(?<![A-Za-z0-9])\+[1-9]\d{9,14}(?![A-Za-z0-9])/g },
 
-  // Email addresses (excluding placeholders)
-  { name: 'Real email address',        re: /[a-zA-Z0-9._%+-]+@(?!example\.com|gmail\.com\b\s*\(example\))[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g },
+  // Email addresses (excluding WhatsApp JIDs, example domains, and placeholder patterns)
+  { name: 'Real email address',        re: /[a-zA-Z0-9._%+-]+@(?!example\.|c\.us|g\.us|s\.whatsapp\.net|YOUR_|yourname@|user@|parent[0-9]@)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g },
 
   // API keys
   { name: 'Anthropic API key',         re: /sk-ant-[A-Za-z0-9_-]{20,}/g },

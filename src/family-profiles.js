@@ -1,5 +1,5 @@
 /**
- * family-profiles.js — Family member resolution for Besinsky Bot.
+ * family-profiles.js — Family member resolution for FamilyBot.
  * Maps names/nicknames to family member profiles stored in SQLite.
  */
 
@@ -20,7 +20,7 @@ function resolveMember(text) {
   const exact = getFamilyMemberByNameExact(clean);
   if (exact) return exact;
 
-  // Try case-insensitive partial: useful for "שגב׳ה" vs "שגב", or "Segev's"
+  // Try case-insensitive partial: useful for "CHILD׳ה" vs "CHILD", or "Segev's"
   const lower = clean.toLowerCase().replace(/[׳'`'']/g, '');
   const all = getAllFamilyMembers();
   for (const m of all) {
@@ -82,7 +82,7 @@ function getMemberByName(name) {
 
 /**
  * Build a human-readable family description from DB for use in LLM prompts.
- * Returns a string like: "אביב (Aviv) = אבא, ליאת (Liat) = אמא, שגב (Segev) = ילד"
+ * Returns a string like: "אביב (Aviv) = אבא, ליאת (Liat) = אמא, CHILD (ChildName) = kid"
  */
 function getFamilyContext() {
   const members = getAllFamilyMembers();

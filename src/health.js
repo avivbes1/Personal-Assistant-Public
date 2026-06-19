@@ -1,5 +1,5 @@
 /**
- * health.js — Periodic health checks for Besinsky Bot.
+ * health.js — Periodic health checks for FamilyBot.
  * Runs every 5 minutes. Alerts master group on failures.
  */
 

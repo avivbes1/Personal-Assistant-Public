@@ -1067,7 +1067,7 @@ function initWhatsApp() {
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log('[Besinsky Bot] Received SIGINT. Shutting down gracefully...');
+    console.log('[FamilyBot] Received SIGINT. Shutting down gracefully...');
     try { await client.destroy(); } catch (_) {}
     process.exit(0);
   };

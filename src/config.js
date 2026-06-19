@@ -15,10 +15,10 @@ function required(key, description) {
 const config = {
   BOT_NAME:     process.env.BOT_NAME     || 'FamilyBot',  // set BOT_NAME in .env
   BOT_NAME_ALT: process.env.BOT_NAME_ALT || 'familybot',
-  AVIV_PHONE:   required('AVIV_PHONE',   'Primary parent phone number in E.164 format, e.g. 972501234567'),
-  LIAT_PHONE:   required('LIAT_PHONE',   'Secondary parent phone number in E.164 format, e.g. 972509876543'),
+  AVIV_PHONE:   required('AVIV_PHONE',   'Primary parent phone number in E.164 format, e.g. 15551234567'),
+  LIAT_PHONE:   required('LIAT_PHONE',   'Secondary parent phone number in E.164 format, e.g. 15559876543'),
   MASTER_GROUP_NAME: required('MASTER_GROUP_NAME', 'Exact name of your master WhatsApp group'),
-  AVIV_CALENDAR_ID:  required('AVIV_CALENDAR_ID',  'Google Calendar ID for primary parent (e.g. user@gmail.com or "primary")'),
+  AVIV_CALENDAR_ID:  required('AVIV_CALENDAR_ID',  'Google Calendar ID for primary parent — use "primary" or the full calendar email (see Google Calendar settings)'),
   LIAT_CALENDAR_ID:  required('LIAT_CALENDAR_ID',  'Google Calendar ID for secondary parent'),
   LIAT_WORK_CALENDAR_ID: process.env.LIAT_WORK_CALENDAR_ID || '',
   CHROMIUM_PATH: process.env.CHROMIUM_PATH || '/usr/bin/chromium-browser',

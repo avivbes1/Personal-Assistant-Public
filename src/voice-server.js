@@ -3,7 +3,7 @@
 /**
  * voice-server.js — Local HTTP server for sending WhatsApp voice messages.
  * Listens on localhost:3001
- * POST /voice { "to": "+972504606660", "text": "...", "lang": "en" }
+ * POST /voice { "to": "+15551234567", "text": "...", "lang": "en" }
  */
 
 const http = require('http');

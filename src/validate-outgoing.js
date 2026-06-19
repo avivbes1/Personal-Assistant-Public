@@ -33,7 +33,7 @@ function validateOutgoing(text) {
 const https = require('https');
 
 async function repairMessage(text, reason) {
-  const moonShotKey = process.env.MOONSHOT_API_KEY || 'sk-eYxb7J9bymMezKZQJ1AGH4orq19iPUCOS1InijBDIGbQCS2b';
+  const moonShotKey = process.env.MOONSHOT_API_KEY;
 
   const prompt = `You are a WhatsApp message formatter for a family group chat. A message failed a quality check for this reason: "${reason}".
 

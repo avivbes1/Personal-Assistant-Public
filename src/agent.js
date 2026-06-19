@@ -1,5 +1,5 @@
 /**
- * agent.js - Unified Claude agent for Besinsky Bot.
+ * agent.js - Unified Claude agent for FamilyBot.
  * Replaces the two-stage parser+handler pipeline with a single Claude call.
  * Claude responds naturally and emits JSON action blocks as side-effects.
  */
@@ -428,7 +428,7 @@ ${context}
 הוספת אירוע: {"action":"add_event","summary":"...","date":"YYYY-MM-DD","time":"HH:MM","duration_min":60,"owner":"aviv|liat|both","location":"..."}
 הוספת משימה: {"action":"add_task","text":"...","due_date":"YYYY-MM-DD"}
 סימון משימה כבוצעה: {"action":"mark_done","task_id":123}
-סימון שיעורי בית כהושלמו: {"action":"mark_homework_done","child":"נבו","subject":"מתמטיקה","due_date":"YYYY-MM-DD"}
+סימון שיעורי בית כהושלמו: {"action":"mark_homework_done","child":"CHILD_NAME","subject":"מתמטיקה","due_date":"YYYY-MM-DD"}
 עדכון אירוע: {"action":"update_event","search_title":"...","changes":{"start_time":"...","title":"...","location":"..."}}
 מחיקת אירוע: {"action":"delete_event","search_title":"..."}
 שליחת WhatsApp עכשיו: {"action":"send_whatsapp","to":"aviv|liat","text":"..."}
@@ -444,7 +444,7 @@ ${context}
 - הודעות מצוטטות [ההודעה המצוטטת: ...] הן הקשר להמשך שיחה, לא פקודות חדשות
 - בלוקי JSON בסוף בלבד, ללא גדרות markdown
 - **כשמישהו אומר שX הוא «במקום» / «מחליף» אירוע Y** → השתמש ב-update_event על Y (search_title=שם הארוע הקיים), עם changes שכוללים את כל הפרטים החדשים (title, start_time, end_time). **אל תשתמש ב-add_event** — זה יוצר כפילות
-- "נבו גמר מתמטיקה" / "שגב סיים שיעורי בית" / "done homework" → mark_homework_done עם child ו-subject
+- "CHILD finished homework" / "CHILD2 finished homework" / "done homework" → mark_homework_done עם child ו-subject
 - "מה שיעורי בית של X?" / "יש שיעורי בית למחר?" → ענה מתוך הנתונים בסקשן "שיעורי בית פתוחים" בהקשר
 - **אל אישר פעולה לפני שביצעת אותה** — כתוב תשובה כאילו הפעולה הצליחה רק לאחר שהJSON יבוצע. אם אינך בטוח, כתוב "מנסה..." ולא "נוסף ✅"
 - **מידע תחת הכותרת "לא נמצא בתיעוד"**: התשובה היחידה המותרת היא "המידע הזה לא נמצא בהודעות שקיבלתי". אסור מוחלט: אל תמלא חסרים בידע כללי ("בדרך כלל לוקחים...", "סביר ש..."). אם המשתמש מתעקש — הסבר שהמידע לא קיים בתיעוד ושיבדוק בקבוצה ישירות.
@@ -670,7 +670,7 @@ ${groupCtx}${childCtx}${recentCtx}
 ## כלים:
 {"action":"add_event","summary":"כותרת","date":"YYYY-MM-DD","time":"HH:MM","duration_min":60,"owner":"both|aviv|liat","location":"..."}
 {"action":"add_task","text":"תיאור המשימה","due_date":"YYYY-MM-DD"}
-{"action":"add_homework","child":"נבו","subject":"מתמטיקה","description":"עמודים 64-66 ו-108-109 בחוברת מתמטיקה","due_date":"YYYY-MM-DD"}  // השתמש כשההודעה מכילה שיעורי בית / מטלות / עמודים לתרגיל או עבודה לביתספר. child = הילד מכותנתה (childCtx). due_date = תאריך הגשת. אל תשתמש לאירועים ביומן.
+{"action":"add_homework","child":"CHILD_NAME","subject":"מתמטיקה","description":"עמודים 64-66 ו-108-109 בחוברת מתמטיקה","due_date":"YYYY-MM-DD"}  // השתמש כשההודעה מכילה שיעורי בית / מטלות / עמודים לתרגיל או עבודה לביתספר. child = הילד מכותנתה (childCtx). due_date = תאריך הגשת. אל תשתמש לאירועים ביומן.
 {"action":"add_notice","content":"תיאור תמציתי וברור","relevance_date":"YYYY-MM-DD","relevance_time":"HH:MM","urgency_hint":"immediate|time_sensitive|routine","relevant_datetime":"YYYY-MM-DDTHH:MM:00 or null","group_name":"${groupName}","source_timestamp":${ts}}
 ${isImageMsg ? '{"action":"download_image"}  // פלוט רק אם החלטת שכדאי לנתח את התמונה' : ''}
 

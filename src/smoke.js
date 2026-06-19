@@ -1,5 +1,5 @@
 /**
- * tests/smoke.js — Smoke tests for Besinsky Bot.
+ * tests/smoke.js — Smoke tests for FamilyBot.
  * Run with: node tests/smoke.js
  * Expected: all green. Any failure exits with code 1.
  */
@@ -26,7 +26,7 @@ async function test(name, fn) {
 }
 
 async function main() {
-  console.log('\n🔬 Besinsky Bot — Smoke Tests\n');
+  console.log('\n🔬 FamilyBot — Smoke Tests\n');
 
   // ── DB ────────────────────────────────────────────────────────────────────
   console.log('DB:');
@@ -70,28 +70,28 @@ async function main() {
     assert(m.length >= 6, `Got ${m.length}`);
   });
 
-  await test('resolveMember("שגב") → Segev', () => {
-    const m = resolveMember('שגב');
+  await test('resolveMember(kids[0]) → first kid', () => {
+    const m = resolveMember(kids[0]?.name_he);
     assert(m, 'Returned null');
-    assert.strictEqual(m.name_en, 'Segev');
+    assert(m.name_en, 'name_en not set');
   });
 
   await test('resolveMember("אביב") → Aviv', () => {
-    const m = resolveMember('אביב');
+    const m = resolveMember(parents[0]?.name_he);
     assert(m, 'Returned null');
     assert.strictEqual(m.name_en, 'Aviv');
   });
 
   await test('resolveMember("ליאת") → Liat', () => {
-    const m = resolveMember('ליאת');
+    const m = resolveMember(parents[1]?.name_he);
     assert(m, 'Returned null');
     assert.strictEqual(m.name_en, 'Liat');
   });
 
-  await test('resolveMember("נבו") → Nevo', () => {
-    const m = resolveMember('נבו');
+  await test('resolveMember(kids[1]) → second kid', () => {
+    const m = resolveMember(kids[1]?.name_he);
     assert(m, 'Returned null');
-    assert.strictEqual(m.name_en, 'Nevo');
+    assert(m.name_en, 'name_en not set');
   });
 
   await test('resolveMember("Aviv") → Aviv (English)', () => {
@@ -148,13 +148,13 @@ async function main() {
   });
 
   await test('calendar update message → intent: update', async () => {
-    const r = await extractFromText('אימון הכדורגל של נבו עבר מ-16:00 ל-17:00');
+    const r = await extractFromText('Soccer practice moved from 16:00 to 17:00');
     assert(r.intent === 'update', `Got ${r.intent}, expected update`);
     assert(r.update && r.update.search_title, 'Missing update.search_title');
   });
 
   await test('human-to-human message → intent: unknown', async () => {
-    const r = await extractFromText('ליאת תזכירי לנבו לקחת את הילקוט');
+    const r = await extractFromText('PARENT remind CHILD to take backpack');
     assert(r.intent === 'unknown', `Got ${r.intent}, expected unknown`);
     assert(r.events.length === 0, 'Should have no events');
   });
@@ -211,15 +211,15 @@ async function main() {
   const { resolveMembersInText } = require('../src/family-profiles');
 
   await test('resolveMembersInText finds multiple members', () => {
-    const members = resolveMembersInText('שגב ונבו צריכים לבוא מחר');
+    const members = resolveMembersInText('CHILD1 ו-CHILD2 צריכים לבוא מחר');
     assert(members.length === 2, `Expected 2, got ${members.length}`);
     const names = members.map(m => m.name_en).sort();
     assert.deepStrictEqual(names, ['Nevo', 'Segev']);
   });
 
   await test('answerQuery with memberContext includes member info in response', async () => {
-    const memberCtx = 'שגב = Segev, kid, no personal calendar';
-    const { text: answer } = await answerQuery('מה יש לשגב מחר?', [], memberCtx);
+    const memberCtx = 'CHILD = TestChild, kid, no personal calendar';
+    const { text: answer } = await answerQuery('מה יש ל-CHILD מחר?', [], memberCtx);
     assert(typeof answer === 'string' && answer.length > 10, 'Empty answer');
     // The answer should be a real response, not an error
     assert(!answer.includes('Error') && !answer.includes('error'), `Got error in answer: ${answer.substring(0,100)}`);
@@ -272,11 +272,11 @@ async function main() {
     // We test the helpers indirectly via their output format
     const events = [
       { title: 'שיעור מתמטיקה', start_time: '2026-05-10', calendar_owner: 'both' },
-      { title: 'כדורגל שגב', start_time: '2026-05-11T16:00:00+03:00', calendar_owner: 'aviv' },
+      { title: 'כדורגל CHILD', start_time: '2026-05-11T16:00:00+03:00', calendar_owner: 'aviv' },
     ];
     // Build it manually since it's not exported — just verify DB round-trip
     const uid = 'smoke-p3-text-' + Date.now();
-    const text = `להוסיף ליומן?\n• שיעור מתמטיקה – 10.5.2026\n• כדורגל שגב\n✅ אישור | ❌ ביטול`;
+    const text = `להוסיף ליומן?\n• שיעור מתמטיקה – 10.5.2026\n• כדורגל CHILD\n✅ אישור | ❌ ביטול`;
     setPendingAction(uid, 'ADD_EVENT', { events }, [], text, 60000);
     const p = getPendingAction(uid);
     assert(p, 'No pending action');

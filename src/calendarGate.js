@@ -180,7 +180,7 @@ async function decideAction(candidate, existingEvents) {
 2. "update" רק אם יש פרט חדש (שעה, מיקום, כותרת) שלא קיים בנוכחי
 3. "ask_user" אם הדמיון גבוה אך לא מלא (ייתכן אותו אירוע, ייתכן אחר)
 4. "create" רק אם אין שום אירוע דומה בטווח ±1 יום
-5. השם לא חייב להיות זהה — "טורניר הורה וילד" ו-"⚽ טורניר הורה וילד — נבו" הם אותו אירוע
+5. השם לא חייב להיות זהה — "טורניר הורה וילד" ו-"⚽ טורניר הורה וילד — CHILD" הם אותו אירוע
 
 ענה ב-JSON בלבד ללא markdown:
 {"action":"create|update|skip|ask_user","match_event_id":"gcal_id_or_null","confidence":0.0-1.0,"reason":"קצר"}`;

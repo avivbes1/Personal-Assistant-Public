@@ -1,5 +1,5 @@
 /**
- * query.js — Conversational query handler for Besinsky Bot.
+ * query.js — Conversational query handler for FamilyBot.
  * Answers free-form questions about schedule and tasks using live calendar + DB data.
  */
 

@@ -31,14 +31,14 @@ Format:
       "description": "ALL details relevant to THIS event: topics, agenda, what to bring, notes",
       "is_reminder": true/false,
       "calendar_owner": "both|aviv|liat",
-      "family_members": ["שגב","נבו"] // which family members are involved/affected
+      "family_members": ["CHILD_1","CHILD_2"] // which family members are involved/affected
     }
   ],
   "actionItems": [
     {
       "description": "what needs to be done",
       "due_date": "YYYY-MM-DD or ISO8601+03:00 or null",
-      "family_members": ["שגב"] // who is involved
+      "family_members": ["CHILD_NAME"] // who is involved
     }
   ],
   "intent": "event|reminder|task|query|update|delete|bot_task|unknown",
@@ -78,8 +78,8 @@ Rules:
 - For exam/event announcements with study topics → put ALL topics in that event's description, not as separate action items
 - If unclear → intent: "unknown", return empty arrays
 - CRITICAL: if multiple events listed → separate entry per event, NEVER merge
-- IMPORTANT: If the message is clearly addressed to a specific person (not the bot) — e.g. "ליאת תזכירי לנבו" — return intent:"unknown" and empty arrays
-- If the message says an existing event moved/changed/rescheduled → intent:"update" with "update" object. Do NOT also put it in events[]. Examples: "אימון הכדורגל של נבו עבר מ-16:00 ל-17:00", "Nevo's soccer moved to Tuesday"
+- IMPORTANT: If the message is clearly addressed to a specific person (not the bot) — e.g. "PARENT tell CHILD" — return intent:"unknown" and empty arrays
+- If the message says an existing event moved/changed/rescheduled → intent:"update" with "update" object. Do NOT also put it in events[]. Examples: "CHILD soccer moved from 16:00 to 17:00"
 - If the message asks TUDAT to do something (not the user): check on something, remind, follow up, verify — intent:"bot_task". Examples: "תודא שליאת סגרה X", "תזכיר לי לשאול אם X", "במהלך השבוע תבדוק אם Y", "כל יום בשעה 20:00 בדוק אם X עד שנאשר", "follow up with Liat about Z". Key signal: verb is addressed TO the bot. For recurring requests ("כל יום", "כל שבוע", "עד שנאשר"), set recurring:true, time_of_day if mentioned, stop_on_confirm:true if "until confirmed". This is NOT a user task — it's Tudat's own to-do.
 - If the message says to DELETE/CANCEL/REMOVE an event from the calendar → intent:"delete" with "delete" object containing search_title. Examples: "תמחק את זה מהיומן", "מחק את הטיול", "בטל את הפגישה", "delete this from calendar". Use [ההודעה המצוטטת: ...] if present to identify which event.
 - "ביטול" alone (cancellation notice) → intent:"update" not "delete" (event still exists, mark it cancelled)

@@ -184,8 +184,8 @@ const FEW_SHOT_EXAMPLES = `
 <example id="1" description="Merge: same event, multiple notices">
 <sent_today></sent_today>
 <bucket group="כתה ו׳ רשפים" date="2026-06-17">
-<notice id="504">סרט היום עם ליבי ואורי — שגב מצטרף. מצטרפים גם: אלון, עידן, גולן. עוד 5 מקומות פנויים.</notice>
-<notice id="505">סרט בקופה ראשית בעפולה היום בשעה 17:00. שגב רוצה להצטרף. חובה להזמין כרטיסים מראש: 14.5 ₪. מצטרפים: אלון, שגב, עידן וגולן.</notice>
+<notice id="504">סרט היום עם ליבי ואורי — CHILD מצטרף. מצטרפים גם: אלון, עידן, גולן. עוד 5 מקומות פנויים.</notice>
+<notice id="505">סרט בקופה ראשית בעפולה היום בשעה 17:00. CHILD רוצה להצטרף. חובה להזמין כרטיסים מראש: 14.5 ₪. מצטרפים: אלון, CHILD, עידן וגולן.</notice>
 <notice id="506">סרט קופה ראשית בעפולה היום 17:05. אורי וליבי נוסעים, יש עוד מקום. כרטיס: 14.5 שח. צריך להזמין מראש.</notice>
 </bucket>
 <output>{"decisions":[{"notice_id":504,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"event today 17:05, action required"},{"notice_id":505,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"same movie, adds ticket detail"},{"notice_id":506,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"same movie, confirms spot"}]}</output>
@@ -194,7 +194,7 @@ const FEW_SHOT_EXAMPLES = `
 <example id="2" description="Same group, different topics: no merge between them">
 <sent_today></sent_today>
 <bucket group="הורי ו' בני" date="2026-06-17">
-<notice id="510">דיון: מתנה לסייעת של שגב (בת מצווה) — עציץ או עץ עם הקדשה, כ-55 שח. יש כוונה לשלוח סקר.</notice>
+<notice id="510">דיון: מתנה לסייעת של CHILD (בת מצווה) — עציץ או עץ עם הקדשה, כ-55 שח. יש כוונה לשלוח סקר.</notice>
 <notice id="488">ליאת צריכה להחזיר כסף לכל המשתתפים בנפרד עבור מתנת סוף שנה ו'. לא ניתן לסגור קבוצת PayBox. אספנו 550 שח.</notice>
 </bucket>
 <output>{"decisions":[{"notice_id":510,"action":"send_now","merge_group":"gift-teacher-17jun","reason":"gift decision needed for Segev's aide"},{"notice_id":488,"action":"send_now","merge_group":"paybox-refund-17jun","reason":"Liat needs to manually refund participants"}]}</output>
@@ -220,7 +220,7 @@ const FEW_SHOT_EXAMPLES = `
 
 <example id="5" description="send_update: new meaningful info about event already sent today">
 <sent_today>
-<message topic="movie-kupa-17jun" sent_at="14:02">🎬 סרט קופה ראשית בעפולה 17:05 — שגב, אלון, עידן, גולן מצטרפים. כרטיס 14.5 שח, להזמין מראש.</message>
+<message topic="movie-kupa-17jun" sent_at="14:02">🎬 סרט קופה ראשית בעפולה 17:05 — CHILD, אלון, עידן, גולן מצטרפים. כרטיס 14.5 שח, להזמין מראש.</message>
 </sent_today>
 <bucket group="כתה ו׳ רשפים" date="2026-06-17">
 <notice id="507">בקשה: אריאל רוצה להצטרף לסרט קופה ראשית בעפולה היום ב-17:05. יש מקום אחד פנוי. צריך להזמין כרטיס.</notice>

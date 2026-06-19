@@ -1,7 +1,7 @@
 /**
  * media-parser.js — Extract content from WhatsApp media messages.
  *
- * Images:  Claude Sonnet vision (only for school groups containing שגב/נבו)
+ * Images:  Claude Sonnet vision (only for groups linked to a child via primary_child DB field)
  * PDFs:    pdf-parse text extraction (all groups)
  * Word:    mammoth text extraction (all groups)
  * Excel:   xlsx CSV extraction (all groups)
@@ -18,13 +18,20 @@ const MAX_TEXT_CHARS = 2000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 /**
- * Returns true if this group is a Segev/Nevo school group.
- * Checks description for their Hebrew names.
+ * Returns true if this group is linked to a child member.
+ * Uses the primary_child DB field — set during group reconciliation.
  */
 function isSchoolGroup(groupRecord) {
   if (!groupRecord) return false;
-  const desc = (groupRecord.description || '') + (groupRecord.name || '');
-  return /שגב|נבו|segev|nevo/i.test(desc);
+  // If primary_child is set, this group belongs to a child
+  if (groupRecord.primary_child) return true;
+  // Fallback: check if role='kid' members' names appear in description
+  try {
+    const { getAllFamilyMembers } = require('./db');
+    const kids = getAllFamilyMembers().filter(m => m.role === 'kid');
+    const desc = (groupRecord.description || '') + ' ' + (groupRecord.name || '');
+    return kids.some(k => desc.includes(k.name_he) || desc.toLowerCase().includes((k.name_en || '').toLowerCase()));
+  } catch (_) { return false; }
 }
 
 /**
