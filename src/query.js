@@ -6,6 +6,7 @@
 const https = require('https');
 const config = require('./config');
 const { getFamilyContext } = require('./family-profiles');
+const { render: renderPrompt } = require('./llm/prompts');
 const { getPendingActionItems, getDB, getPendingHomework } = require('./db');
 const { getTodayEvents, getUpcomingEvents } = require('./calendar');
 
@@ -283,10 +284,7 @@ async function answerQuery(question, history = [], memberContext = null) {
     ? `\nאנשים שמוזכרים בהודעה:\n${memberContext}\n`
     : '';
 
-  const systemPrompt = `אתה ${config.BOT_NAME} (${config.BOT_NAME_ALT}), העוזר המשפחתי. אתה מגיב בעברית דרך WhatsApp, בצורה קצרה וישירה.
-
-## מידע עדכני שיש לך:
-${context}${memberSection}
+  const systemPrompt = `${renderPrompt("query-system", { BOT_NAME: config.BOT_NAME, BOT_NAME_ALT: config.BOT_NAME_ALT, CONTEXT: context + memberSection })}
 
 ## כלל 1 — השתמש בהקשר, אל תבקש הבהרה מיותרת
 אם יש לך הקשר מהשיחה או מהודעה מצוטטת, **השתמש בו ישירות**. לעולם אל תשאל "על מה אתה מדבר?" כשהתשובה ברורה מההיסטוריה או מהציטוט.

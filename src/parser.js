@@ -6,6 +6,7 @@
 const https = require('https');
 const config = require('./config');
 const { getFamilyContext } = require('./family-profiles');
+const { render: renderPrompt } = require('./llm/prompts');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const TODAY = () => new Date().toLocaleDateString('he-IL', { timeZone: process.env.TIMEZONE || 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
@@ -104,10 +105,12 @@ async function parseWithClaude(text, history = [], groupContext = null) {
   const groupContextStr = groupContext
     ? `GROUP CONTEXT: This message comes from the group "${groupContext.name}". Known context: "${groupContext.description}". Use this to infer which family members are involved.`
     : '';
-  const systemPrompt = SYSTEM_PROMPT_BASE
-    .replace('TIMEZONE_PLACEHOLDER', `Today's date: ${today} (${config.TIMEZONE} timezone).`)
-    .replace('GROUP_CONTEXT_PLACEHOLDER', groupContextStr)
-    .replace('FAMILY_MEMBERS_PLACEHOLDER', `Family members: ${getFamilyContext()}.`);
+  const systemPrompt = renderPrompt('parser-system', {
+    BOT_NAME_ALT:   config.BOT_NAME_ALT,
+    TIMEZONE_LINE:  `Today's date: ${today} (${config.TIMEZONE} timezone). IMPORTANT: all times in messages are LOCAL timezone. Return start_time and end_time as ISO8601 with timezone offset when time is given, or ONLY the date "YYYY-MM-DD" when no time is mentioned. Be terse. Omit null fields.`,
+    GROUP_CONTEXT:  groupContextStr,
+    FAMILY_CONTEXT: getFamilyContext(),
+  });
 
   const body = JSON.stringify({
     model: 'claude-haiku-4-5',

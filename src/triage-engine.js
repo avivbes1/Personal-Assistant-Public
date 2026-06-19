@@ -10,6 +10,8 @@
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+const { getFamilyContext } = require('./family-profiles');
+const config = require('./config');
 
 const { initDB, getDB } = require('./db');
 const https = require('https');
@@ -153,8 +155,17 @@ function groupByMergeGroup(decisions, noticesById) {
 
 // ── Classification prompt ─────────────────────────────────────────────────────
 
-const CLASSIFICATION_SYSTEM = `אתה מערכת הניהול של עוזר משפחתי חכם (Tudat).
-בני המשפחה מוגדרים במערכת.
+// Lazy — evaluated at first call so DB is guaranteed to be initialized
+let _classificationSystem = null;
+function getClassificationSystem() {
+  if (!_classificationSystem) {
+    _classificationSystem = `אתה מערכת הניהול של עוזר משפחתי חכם (${config.BOT_NAME}).
+בני המשפחה: ${getFamilyContext()}`;
+  }
+  return _classificationSystem;
+}
+const CLASSIFICATION_SYSTEM = `אתה מערכת הניהול של עוזר משפחתי חכם.
+בני המשפחה: טוען בזמן ריצה.
 אתה מחליט אילו הודעות שווה לשלוח לקבוצת המשימות עכשיו, מה ניתן לדחות לסיכום הבוקר, ומה כדאי לדלג עליו לחלוטין.
 
 החזר JSON בלבד, ללא הסבר, לפי הסכימה הבאה:
@@ -246,7 +257,7 @@ async function classifyBucket(bucket, sentToday) {
   const prompt = buildClassificationPrompt(bucket, sentToday);
   let raw;
   try {
-    raw = await callHaiku(CLASSIFICATION_SYSTEM, prompt);
+    raw = await callHaiku(getClassificationSystem(), prompt);
   } finally {
     console.timeEnd(`classify:${bucket.group_name}`);
   }
@@ -516,7 +527,7 @@ async function runTriage() {
 }
 
 // Export for test runner
-module.exports = { callHaiku, buildClassificationPrompt, CLASSIFICATION_SYSTEM, FEW_SHOT_EXAMPLES };
+module.exports = { callHaiku, buildClassificationPrompt, CLASSIFICATION_SYSTEM, getClassificationSystem, FEW_SHOT_EXAMPLES };
 
 // Run if called directly
 if (require.main === module) {

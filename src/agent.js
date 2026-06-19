@@ -10,6 +10,7 @@ const https = require('https');
 const config = require('./config');
 const { buildContext, buildQuerySpecificContext } = require('./query');
 const { getFamilyContext } = require('./family-profiles');
+const { render: renderPrompt } = require('./llm/prompts');
 const { searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent, listEventsForDate } = require('./calendar');
 const { processEventAction } = require('./calendarGate');
 const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveHomework, getPendingHomework } = require('./db');
@@ -410,10 +411,7 @@ async function executeAction(action, senderName) {
 // ── System prompt ─────────────────────────────────────────────────────────────
 
 function buildSystemPrompt(context) {
-  return `אתה ${config.BOT_NAME} (${config.BOT_NAME_ALT}), העוזר המשפחתי. אתה מגיב בעברית דרך WhatsApp.
-
-בני המשפחה: ${getFamilyContext()}
-יומן ראשי לבעלי היומן בלבד - אין יומן משותף.
+  return `${renderPrompt("agent-system", { BOT_NAME: config.BOT_NAME, BOT_NAME_ALT: config.BOT_NAME_ALT, FAMILY_CONTEXT: getFamilyContext() })}
 
 ## אופי ואיך לתקשר:
 - **קצר וישיר** - 1-3 משפטים. אין מילות מילוי ("בהחלט!", "שאלה מצוינת!", "בשמחה אעזור").
