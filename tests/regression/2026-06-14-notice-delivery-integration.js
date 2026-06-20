@@ -15,6 +15,11 @@ const path = require('path');
 
 module.exports = {
   async run() {
+    // Skip in CI if root-level operational scripts don't exist (public repo excludes them)
+    const fs2 = require('fs'), path2 = require('path');
+    if (!fs2.existsSync(path2.join(__dirname, '../../deliver-immediate.js'))) {
+      return { pass: true, message: 'Skipped — operational scripts not present (public repo build)' };
+    }
     const errors = [];
     const pending = [];
 
