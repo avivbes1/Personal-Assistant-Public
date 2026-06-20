@@ -294,6 +294,49 @@ async function executeAction(action, senderName) {
         return { type: 'mark_homework_done', ok: changed > 0, rows_updated: changed };
       }
 
+      case 'book_babysitter': {
+        // Book a babysitter via the microservice
+        const http = require('http');
+        const { date, start, end, day } = action;
+        if (!date || !start || !end) {
+          return { type: 'book_babysitter', ok: false, error: 'Missing date/start/end' };
+        }
+        const dayName = day || new Date(date).toLocaleDateString('he-IL', { weekday: 'long', timeZone: 'Asia/Jerusalem' });
+        const payload = JSON.stringify({
+          requested_by: action._senderPhone || '+972504606660',
+          day: dayName, date, start, end,
+        });
+        try {
+          await new Promise((resolve, reject) => {
+            const req = http.request({
+              hostname: 'localhost', port: 3002, path: '/bookings', method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload),
+                'x-shared-token': process.env.SHARED_SECRET || '',
+              },
+            }, (res) => {
+              let d = ''; res.on('data', c => d += c);
+              res.on('end', () => {
+                try {
+                  const r = JSON.parse(d);
+                  if (r.ok) resolve(r);
+                  else reject(new Error(r.error || 'Booking failed'));
+                } catch (e) { reject(e); }
+              });
+            });
+            req.setTimeout(10000, () => { req.destroy(); reject(new Error('Booking service timeout')); });
+            req.on('error', reject);
+            req.write(payload); req.end();
+          });
+          console.log(`[Agent] Babysitter booking created for ${date} ${start}–${end}`);
+          return { type: 'book_babysitter', ok: true };
+        } catch (err) {
+          console.error('[Agent] book_babysitter error:', err.message);
+          return { type: 'book_babysitter', ok: false, error: err.message };
+        }
+      }
+
       case 'add_task': {
         const text = action.text || action.description || '';
         const masterGroupId = getMasterGroupId();
@@ -464,6 +507,7 @@ ${context}
 שליחת WhatsApp עכשיו: {"action":"send_whatsapp","to":"aviv|liat","text":"..."}
 שליחת WhatsApp בזמן עתידי (תזכורת לבן משפחה): {"action":"schedule_whatsapp","to":"aviv|liat","text":"...","run_at":"YYYY-MM-DDThh:mm:00+03:00"}
 תזכורת אישית לקבוצה (ללא יומן): {"action":"check_in","message":"האם עשית X? ✅","description":"בדיקה על X","run_at":"YYYY-MM-DDThh:mm:00+03:00"}
+הזמנת שמרטפת: {"action":"book_babysitter","date":"YYYY-MM-DD","start":"HH:MM","end":"HH:MM","day":"יום השבוע בעברית"}
 
 ## כללים:
 - השתמש בכלים רק כשמבקשים **במפורש** לבצע פעולה
@@ -569,6 +613,10 @@ async function handleMessage(text, quotedMsg, senderName, conversationHistory = 
 
           const failedActions = [];
           for (const block of blocks) {
+            if (block.json.action === 'book_babysitter') {
+              // Inject sender phone so microservice knows who requested
+              block.json._senderPhone = senderPhone || process.env.AVIV_PHONE || '';
+            }
             const result = await executeAction(block.json, senderName);
             if (result) {
               if (result.isSideEffect) sideEffects.push(result);

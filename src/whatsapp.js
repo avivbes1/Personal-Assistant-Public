@@ -38,7 +38,28 @@ const getHealthState = () => ({
 });
 
 // Rolling conversation history for master group (last 20 messages — in-memory fallback)
+
 const masterGroupHistory = []; // { role: 'user'|'assistant', content: string }
+
+// ── Babysitter Booking microservice integration ──────────────────────────────
+const { getBabysitterPhones, checkOnboarding: checkBabysitterOnboarding, handleOnboardingReply } = require('./babysitter-onboarding');
+const BOOKING_SECRET = process.env.SHARED_SECRET || '';
+
+async function forwardToBabysitterService(from_phone, body, ts) {
+  const http = require('http');
+  const payload = JSON.stringify({ from_phone, body, ts });
+  return new Promise((resolve) => {
+    const req = http.request({ hostname: 'localhost', port: 3002, path: '/inbound',
+      method: 'POST', headers: { 'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload), 'x-shared-token': BOOKING_SECRET } }, (res) => {
+      res.resume(); resolve();
+    });
+    req.on('error', resolve);
+    req.setTimeout(5000, () => { req.destroy(); resolve(); });
+    req.write(payload); req.end();
+  });
+}
+
 const MAX_HISTORY = 20;
 
 function addToHistory(role, content, userId = null) {
@@ -865,6 +886,9 @@ function initWhatsApp() {
     console.log('[WhatsApp] ✅ Client connected and ready!');
     await resolveMasterGroup();
 
+    // Check babysitter booking onboarding state
+    setTimeout(() => checkBabysitterOnboarding(sendToMasterGroup).catch(() => {}), 5000);
+
     // Wire health monitor with client + master group
     try {
       const { initHealth } = require('./health');
@@ -1081,6 +1105,20 @@ function initWhatsApp() {
   client.on('message', async (msg) => {
     try {
       _lastActivityMs = Date.now(); // track last WA activity for health checks
+
+      // Babysitter DM routing — forward to booking microservice
+      if (!msg.from.endsWith('@g.us') && !msg.fromMe) {
+        const babysitterPhones = await getBabysitterPhones();
+        const fromRaw = msg.from.replace('@c.us', '');
+        const fromE164 = fromRaw.startsWith('972') ? '+' + fromRaw : fromRaw;
+        if (babysitterPhones.has(fromE164)) {
+          const ts = new Date(msg.timestamp * 1000).toISOString();
+          await forwardToBabysitterService(fromE164, msg.body || '', ts);
+          console.log('[WhatsApp] Babysitter DM forwarded to booking service:', fromE164);
+        }
+        return;
+      }
+
       // Only handle group messages
       if (!msg.from.endsWith('@g.us')) return;
 
@@ -1197,6 +1235,10 @@ function initWhatsApp() {
       if (masterGroupId && msg.from === masterGroupId && !msg.fromMe) {
         if (isMessageProcessed(msgId)) return;
         markMsgProcessed(msgId);
+
+        // Babysitter onboarding reply detection
+        const handled = await handleOnboardingReply(msg.body || '', sendToMasterGroup).catch(() => false);
+        if (handled) return;
 
         // Free-text yes/no fallback for active follow-up (user replied without quoting)
         const freeText = msg.body.trim();
