@@ -67,6 +67,15 @@ cp "$SRC/scripts/detect-pii.js" "$DEST/scripts/"
 [ -f "$SRC/README.md" ]     && cp "$SRC/README.md"      "$DEST/"
 [ -f "$SRC/PRINCIPLES.md" ] && cp "$SRC/PRINCIPLES.md"  "$DEST/"
 [ -f "$SRC/package-lock.json" ] && cp "$SRC/package-lock.json" "$DEST/"
+[ -f "$SRC/LICENSE" ] && cp "$SRC/LICENSE" "$DEST/"
+
+# Config example files (schema templates, no PII)
+mkdir -p "$DEST/config"
+[ -f "$SRC/config/groups.example.json" ] && cp "$SRC/config/groups.example.json" "$DEST/config/"
+[ -f "$SRC/config/family-seed.example.json" ] && cp "$SRC/config/family-seed.example.json" "$DEST/config/"
+
+# Backup script
+[ -f "$SRC/scripts/backup-sqlite.sh" ] && cp "$SRC/scripts/backup-sqlite.sh" "$DEST/scripts/"
 
 echo "✅ Allowlist copy complete."
 echo ""

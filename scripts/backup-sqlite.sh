@@ -1,36 +1,40 @@
 #!/bin/bash
-# backup-sqlite.sh — Daily SQLite backup for Besinsky Bot
-# Runs via cron at 03:00 AM UTC.
-# Local copies kept 7 days. S3 upload optional (requires S3_BACKUP_BUCKET env var).
+# backup-sqlite.sh — Daily SQLite backup with 7-day local retention.
+# Optional: upload to S3 if S3_BACKUP_BUCKET is set in .env.
+#
+# Usage (add to crontab -e):
+#   0 3 * * * /path/to/familybot/scripts/backup-sqlite.sh >> /path/to/familybot/backups/backup.log 2>&1
 
 set -e
+cd "$(dirname "$0")/.."
 
-DB_PATH="/home/ubuntu/besinsky-bot/data/besinsky.db"
-BACKUP_DIR="/home/ubuntu/besinsky-bot/backups"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_NAME="besinsky_${TIMESTAMP}.db"
+# Load env
+[ -f .env ] && export $(grep -v '^#' .env | xargs) 2>/dev/null || true
 
-# Ensure backup dir exists
+DB_PATH="${DATABASE_PATH:-./data/family.db}"
+BACKUP_DIR="./backups"
+DATE=$(date +%Y-%m-%d)
+BACKUP_FILE="${BACKUP_DIR}/family-${DATE}.db"
+
 mkdir -p "$BACKUP_DIR"
 
-# SQLite hot backup (safe under concurrent writes)
-sqlite3 "$DB_PATH" ".backup '${BACKUP_DIR}/${BACKUP_NAME}'"
-
-# Compress
-gzip -f "${BACKUP_DIR}/${BACKUP_NAME}"
-COMPRESSED="${BACKUP_DIR}/${BACKUP_NAME}.gz"
-
-echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Backup created: ${BACKUP_NAME}.gz ($(du -sh "$COMPRESSED" | cut -f1))"
-
-# S3 upload (optional — requires S3_BACKUP_BUCKET env var and IAM permissions)
-if [ -n "$S3_BACKUP_BUCKET" ]; then
-  aws s3 cp "$COMPRESSED" "s3://${S3_BACKUP_BUCKET}/${BACKUP_NAME}.gz" --quiet
-  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Uploaded to s3://${S3_BACKUP_BUCKET}/${BACKUP_NAME}.gz"
-else
-  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] S3_BACKUP_BUCKET not set — local backup only"
+if [ ! -f "$DB_PATH" ]; then
+  echo "[Backup] DB not found at $DB_PATH — skipping"
+  exit 0
 fi
 
-# Clean local copies older than 7 days
-find "$BACKUP_DIR" -name "besinsky_*.db.gz" -mtime +7 -delete
-REMAINING=$(find "$BACKUP_DIR" -name "besinsky_*.db.gz" | wc -l)
-echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Local backups retained: $REMAINING"
+# SQLite safe backup via .backup command
+sqlite3 "$DB_PATH" ".backup '${BACKUP_FILE}'"
+echo "[Backup] Created: $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
+
+# Prune backups older than 7 days
+find "$BACKUP_DIR" -name "family-*.db" -mtime +7 -delete
+echo "[Backup] Pruned backups older than 7 days"
+
+# Optional: upload to S3
+if [ -n "$S3_BACKUP_BUCKET" ]; then
+  aws s3 cp "$BACKUP_FILE" "s3://${S3_BACKUP_BUCKET}/familybot/$(basename $BACKUP_FILE)" --quiet
+  echo "[Backup] Uploaded to s3://${S3_BACKUP_BUCKET}/familybot/$(basename $BACKUP_FILE)"
+fi
+
+echo "[Backup] Done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -1,12 +1,47 @@
 {
+  "_comment": "Copy this file to config/family-seed.json and fill in your values. family-seed.json is gitignored.",
   "members": [
-    { "name_he": "הורה 1", "name_en": "Parent1", "nicknames": ["parent1", "dad", "אבא"], "role": "parent", "notes": "Primary parent" },
-    { "name_he": "הורה 2", "name_en": "Parent2", "nicknames": ["parent2", "mom", "אמא"], "role": "parent", "notes": "Secondary parent" },
-    { "name_he": "ילד 1",  "name_en": "Child1",  "nicknames": ["child1"], "role": "kid", "notes": "Oldest child" },
-    { "name_he": "ילד 2",  "name_en": "Child2",  "nicknames": ["child2"], "role": "kid", "notes": "Second child" }
+    {
+      "name_he": "אמא",
+      "name_en": "Mom",
+      "nicknames": ["mom", "mother"],
+      "role": "parent",
+      "calendar_id": "parent2@gmail.com",
+      "notes": ""
+    },
+    {
+      "name_he": "אבא",
+      "name_en": "Dad",
+      "nicknames": ["dad", "father"],
+      "role": "parent",
+      "calendar_id": "parent1@gmail.com",
+      "notes": ""
+    },
+    {
+      "name_he": "ילד1",
+      "name_en": "Child1",
+      "nicknames": ["child1"],
+      "role": "child",
+      "calendar_id": null,
+      "notes": "Grade 5"
+    },
+    {
+      "name_he": "ילד2",
+      "name_en": "Child2",
+      "nicknames": ["child2"],
+      "role": "child",
+      "calendar_id": null,
+      "notes": "Grade 2"
+    }
   ],
   "childGroups": [
-    { "child_name_en": "Child1", "group_name": "Child1 School Group" },
-    { "child_name_en": "Child2", "group_name": "Child2 Class Group" }
+    {
+      "child_name_en": "Child1",
+      "group_name": "Class 5A Parents"
+    },
+    {
+      "child_name_en": "Child2",
+      "group_name": "Kindergarten Announcements"
+    }
   ]
 }
