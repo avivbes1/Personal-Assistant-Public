@@ -1,3 +1,4 @@
+const path = require('path');
 /**
  * Regression: 2026-05-26
  * Incident: Near-realtime notices and audit jobs timed out 22+ times because
@@ -45,7 +46,7 @@ module.exports = {
     }
 
     // Check 2: /send-message endpoint exists in voice-server.js
-    const vsPath = '/home/ubuntu/besinsky-bot/src/voice-server.js';
+    const vsPath = path.join(__dirname, '../../src/voice-server.js');
     if (!fs.existsSync(vsPath)) return { pass: false, message: 'voice-server.js not found' };
     const vsContent = fs.readFileSync(vsPath, 'utf8');
     if (!vsContent.includes('/send-message')) {

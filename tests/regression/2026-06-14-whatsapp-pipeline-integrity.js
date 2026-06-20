@@ -1,3 +1,4 @@
+const path = require('path');
 /**
  * Regression: 2026-06-14
  * Incident: `isBacklogMessage` was deleted in a refactor. Every incoming message
@@ -14,7 +15,7 @@
 
 const fs = require('fs');
 
-const WHATSAPP_PATH = '/home/ubuntu/besinsky-bot/src/whatsapp.js';
+const WHATSAPP_PATH = path.join(__dirname, '../../src/whatsapp.js');
 
 module.exports = {
   async run() {

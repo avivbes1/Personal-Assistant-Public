@@ -1,3 +1,4 @@
+const path = require('path');
 /**
  * Regression: 2026-06-09
  * Incident: Three calendar failures:
@@ -70,7 +71,7 @@ module.exports = {
 
     // Test 3: agent.js system prompt has "במקום" → update_event instruction
     try {
-      const agentContent = fs.readFileSync('/home/ubuntu/besinsky-bot/src/agent.js', 'utf8');
+      const agentContent = fs.readFileSync(path.join(__dirname, '../../src/agent.js'), 'utf8');
       if (!agentContent.includes('במקום') || !agentContent.includes('update_event')) {
         errors.push('agent.js buildSystemPrompt missing "במקום" → update_event instruction');
       }
@@ -80,7 +81,7 @@ module.exports = {
 
     // Test 4: agent.js handleMessage overrides confirmation on failure
     try {
-      const agentContent = fs.readFileSync('/home/ubuntu/besinsky-bot/src/agent.js', 'utf8');
+      const agentContent = fs.readFileSync(path.join(__dirname, '../../src/agent.js'), 'utf8');
       if (!agentContent.includes('failedActions')) {
         errors.push('agent.js handleMessage missing failedActions override (Step 5)');
       }
@@ -90,7 +91,7 @@ module.exports = {
 
     // Test 5: handleGroupEvent has guard for "שינוי לאירוע קיים"
     try {
-      const agentContent = fs.readFileSync('/home/ubuntu/besinsky-bot/src/agent.js', 'utf8');
+      const agentContent = fs.readFileSync(path.join(__dirname, '../../src/agent.js'), 'utf8');
       if (!agentContent.includes('שינוי לאירוע קיים')) {
         errors.push('handleGroupEvent missing "שינוי לאירוע קיים" guard (Step 4)');
       }

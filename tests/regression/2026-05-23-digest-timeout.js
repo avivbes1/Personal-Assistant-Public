@@ -9,12 +9,13 @@
  *   3. If last run timed out, flags it clearly.
  */
 
-const { getCronJob, getCronRuns } = require('../lib/gateway');
+const { IS_CI, getCronJob, getCronRuns } = require('../lib/gateway');
 
 const DIGEST_JOB_ID = 'd782f168-d74e-4585-b4f4-609e487afb9e';
 
 module.exports = {
   async run() {
+    if (IS_CI) return { pass: true, message: "Skipped in CI (requires live OpenClaw)" };
     try {
       // Check job config
       const job = getCronJob(DIGEST_JOB_ID);
