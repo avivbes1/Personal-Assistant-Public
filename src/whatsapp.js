@@ -42,7 +42,7 @@ const getHealthState = () => ({
 const masterGroupHistory = []; // { role: 'user'|'assistant', content: string }
 
 // ── Babysitter Booking microservice integration ──────────────────────────────
-const { getBabysitterPhones, resolveJids: resolveJidsForBabysitters, getPhoneByJid, checkOnboarding: checkBabysitterOnboarding, handleOnboardingReply } = require('./babysitter-onboarding');
+const { getBabysitterPhones, checkOnboarding: checkBabysitterOnboarding, handleOnboardingReply } = require('./babysitter-onboarding');
 const BOOKING_SECRET = process.env.SHARED_SECRET || '';
 
 async function forwardToBabysitterService(from_phone, body, ts) {
@@ -886,11 +886,8 @@ function initWhatsApp() {
     console.log('[WhatsApp] ✅ Client connected and ready!');
     await resolveMasterGroup();
 
-    // Check babysitter booking onboarding state + resolve JIDs
-    setTimeout(() => {
-      checkBabysitterOnboarding(sendToMasterGroup).catch(() => {});
-      resolveJidsForBabysitters(client).catch(() => {});
-    }, 8000);
+    // Check babysitter booking onboarding state
+    setTimeout(() => checkBabysitterOnboarding(sendToMasterGroup).catch(() => {}), 5000);
 
     // Wire health monitor with client + master group
     try {
@@ -1111,17 +1108,13 @@ function initWhatsApp() {
 
       // Babysitter DM routing — forward to booking microservice
       if (!msg.from.endsWith('@g.us') && !msg.fromMe) {
-        try {
-          // Resolve JID to phone (handles both @c.us and @lid LID format)
-          const phone = getPhoneByJid(msg.from);
-          console.log('[WhatsApp] DM from JID:', msg.from, '→ phone:', phone || '(unknown)');
-          if (phone) {
-            const ts = new Date(msg.timestamp * 1000).toISOString();
-            await forwardToBabysitterService(phone, msg.body || '', ts);
-            console.log('[WhatsApp] Babysitter DM forwarded:', phone, msg.body?.substring(0, 30));
-          }
-        } catch (e) {
-          console.error('[WhatsApp] DM routing error:', e.message);
+        const babysitterPhones = await getBabysitterPhones();
+        const fromRaw = msg.from.replace('@c.us', '');
+        const fromE164 = fromRaw.startsWith('972') ? '+' + fromRaw : fromRaw;
+        if (babysitterPhones.has(fromE164)) {
+          const ts = new Date(msg.timestamp * 1000).toISOString();
+          await forwardToBabysitterService(fromE164, msg.body || '', ts);
+          console.log('[WhatsApp] Babysitter DM forwarded to booking service:', fromE164);
         }
         return;
       }

@@ -42,10 +42,9 @@ function bookingPost(path, body) {
   });
 }
 
-// ── Phone list cache + JID map ────────────────────────────────────────────────
+// ── Phone list cache ──────────────────────────────────────────────────────────
 
 let _phones = new Set();
-let _jidToPhone = new Map(); // WhatsApp JID (may be LID) → E.164 phone
 let _phonesLastFetch = 0;
 
 async function getBabysitterPhones() {
@@ -56,42 +55,6 @@ async function getBabysitterPhones() {
     _phonesLastFetch = Date.now();
   }
   return _phones;
-}
-
-/**
- * Resolve babysitter phone numbers to their actual WhatsApp JIDs.
- * Call once after client is ready. Handles LID mode.
- */
-async function resolveJids(waClient) {
-  const phones = await getBabysitterPhones();
-  for (const phone of phones) {
-    try {
-      const e164 = phone.startsWith('+') ? phone.slice(1) : phone;
-      const wid = await waClient.getNumberId(e164 + '@c.us');
-      if (wid) {
-        const jid = wid._serialized || (wid.user + '@' + (wid.server || 'c.us'));
-        _jidToPhone.set(jid, phone);
-        console.log('[BabysitterOnboarding] Resolved', phone, '→', jid);
-      }
-    } catch (e) {
-      console.warn('[BabysitterOnboarding] Could not resolve JID for', phone, ':', e.message);
-    }
-  }
-}
-
-/**
- * Look up a phone by WhatsApp JID (handles both @c.us and @lid).
- */
-function getPhoneByJid(jid) {
-  // Direct JID match
-  if (_jidToPhone.has(jid)) return _jidToPhone.get(jid);
-  // Try @c.us format from JID user part
-  const user = jid.replace(/@(c\.us|lid|s\.whatsapp\.net)$/, '');
-  if (user.startsWith('972')) {
-    const phone = '+' + user;
-    if (_phones.has(phone)) return phone;
-  }
-  return null;
 }
 
 // ── Onboarding ────────────────────────────────────────────────────────────────
@@ -171,4 +134,4 @@ async function handleOnboardingReply(text, sendFn) {
   return true;
 }
 
-module.exports = { getBabysitterPhones, resolveJids, getPhoneByJid, checkOnboarding, handleOnboardingReply };
+module.exports = { getBabysitterPhones, checkOnboarding, handleOnboardingReply };
