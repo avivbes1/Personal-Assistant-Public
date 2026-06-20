@@ -371,9 +371,23 @@ async function runTriage() {
   const normal = pending.filter(n => n.urgency_hint !== 'immediate');
 
   for (const n of immediates) {
-    // Check dismissal
-    if (isTopicDismissed(activeDismissals, null, n.group_name)) {
-      console.log(`[Triage] Immediate #${n.id} suppressed by active dismissal`);
+    // Check dismissal — for immediates, topic_key is not stored, so also check
+    // content-based keyword matching against topic_key scope_values.
+    const immediateContentDismissed = activeDismissals.some(d => {
+      if (d.scope_type === 'all') return true;
+      if (d.scope_type === 'source_group' && n.group_name && d.scope_value) {
+        return n.group_name.includes(d.scope_value) || d.scope_value.includes(n.group_name.substring(0, 8));
+      }
+      if (d.scope_type === 'topic_key' && d.scope_value && n.content) {
+        // Check if any word from the topic_key slug appears in the notice content
+        const keywords = d.scope_value.toLowerCase().split('-').filter(w => w.length > 3);
+        const contentLower = n.content.toLowerCase();
+        return keywords.some(kw => contentLower.includes(kw));
+      }
+      return false;
+    });
+    if (immediateContentDismissed) {
+      console.log(`[Triage] Immediate #${n.id} suppressed by active dismissal (content match)`);
       db.prepare('UPDATE notices SET triage_decision=?, triage_reason=?, triaged_at=? WHERE id=?')
         .run('skip', 'dismissed by user', Date.now(), n.id);
       continue;

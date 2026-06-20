@@ -180,6 +180,36 @@ async function executeAction(action, senderName) {
       case 'add_notice': {
         const noticeContent = action.content || action.summary || '';
         if (noticeContent) {
+          // Pre-save dedup: skip if a notice for this group+date+time already
+          // exists and was delivered or is pending (within 24h window).
+          // Prevents conflicting same-event duplicates with wrong dates.
+          const existingForSlot = (() => {
+            try {
+              const since = Date.now() - 24 * 3600000;
+              const rows = getDB().prepare(
+                `SELECT id, relevance_date, relevance_time FROM notices
+                 WHERE group_name = ?
+                   AND delivery_status IN ('pending', 'delivered_immediate', 'delivered_batch')
+                   AND dismissed = 0
+                   AND created_at > ?
+                 ORDER BY created_at DESC LIMIT 10`
+              ).all(action.group_name || 'unknown', since);
+              if (action.relevance_date && action.relevance_time) {
+                const targetMs = new Date(action.relevance_date + 'T00:00:00').getTime();
+                return rows.find(r => {
+                  if (r.relevance_time !== action.relevance_time) return false;
+                  if (!r.relevance_date) return false;
+                  const rMs = new Date(r.relevance_date + 'T00:00:00').getTime();
+                  return Math.abs(rMs - targetMs) <= 86400000;
+                });
+              }
+              return null;
+            } catch (_) { return null; }
+          })();
+          if (existingForSlot) {
+            console.log('[Agent] Dedup: skipping notice for ' + action.group_name + ' ' + action.relevance_date + ' ' + action.relevance_time + ' - existing #' + existingForSlot.id + ' (date=' + existingForSlot.relevance_date + ') already covers this slot');
+            return { type: 'add_notice', ok: true, content: noticeContent, isSideEffect: true, deduped: true };
+          }
           // Rules-based urgency classifier — deterministic, no LLM guessing
           const urgencyHint = computeUrgencyHint(action, Date.now());
           // Parse relevant_datetime to epoch ms
@@ -683,7 +713,7 @@ ${isImageMsg ? `## תמונה — החלטת download
 ` : ''}
 ## חובה: notice
 אם ההודעה מכילה מידע רלוונטי למשפחה (אפילו אם אתה שותק או שואל) — תמיד פלוט JSON של add_notice עם:
-- content: תיאור תמציתי בעברית של מה שרלוונטי. **כלול את כל פרטי הפעולה** (תשלומים, קישורים, מועדים, איש קשר) — אל תוריד דבר שדורש פעולה.
+- content: תיאור תמציתי בעברית של מה שרלוונטי. **כלול את כל פרטי הפעולה** (תשלומים, קישורים, מועדים, איש קשר) — אל תוריד דבר שדורש פעולה. **חשוב: כלול רק עובדות שמצוינות במפורש בהודעה. אל תוסיף דרישות, תנאים, או פעולות שלא נאמרו (למשל: אם ההודעה אומרת שמישהו כנראה לא יגיע — אל תכתוב שדרוש אישור הורים אם זה לא נכתב).** 
 - relevance_date: התאריך שבו המידע רלוונטי (YYYY-MM-DD). פענח מילים יחסיות: "הערב"/"היום" = ${todayIso}, "מחר" = ${tomorrowIso}. אם תאריך ספציפי אחר — חשב לפי היום (${todayIso}). אם אין תאריך מוזכר כלל — השתמש ב-${todayIso} (ברירת מחדל היא תמיד היום).
 - relevance_time: שעה ב-HH:MM **רק אם שעה מפורשת מופיעה בטקסט ההודעה**. אם לא כתוב שעה במפורש — אל תמציא, השמט לחלוטין (null)
 - urgency_hint: "routine" (ברירת מחדל — המערכת מחשבת דחיפות אוטומטית לפי תאריך)

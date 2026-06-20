@@ -98,17 +98,40 @@ Return JSON only:`;
   const parsed = JSON.parse(match[0]);
 
   // Match scope_hint to an actual topic_key from recent sends (fuzzy)
+  // SAFETY: only match if the scope_hint keywords also appear in the raw command
+  // (prevents Haiku from matching an unrelated topic from recent sends)
   if (parsed.is_dismissal && parsed.scope_type === 'topic_key' && parsed.scope_hint && sentRecent.length > 0) {
     const hint = parsed.scope_hint.toLowerCase();
-    const match = sentRecent.slice().reverse().find(s =>
-      s.topic_key.toLowerCase().split('-').some(word => hint.includes(word) || word.includes(hint.split(' ')[0])) ||
-      s.message_text.toLowerCase().includes(hint.split(' ')[0])
+    const hintWords = hint.split(/[s-]+/).filter(w => w.length > 2);
+
+    // Validate: scope_hint keywords must appear in the raw command
+    const hintAppearsInCommand = hintWords.some(w =>
+      messageBody.toLowerCase().includes(w) ||
+      // Allow transliterated keywords: English 'movie' in Hebrew 'סרט' context
+      (w === 'movie' && /סרט|קולנוע|cinema/.test(messageBody)) ||
+      (w === 'soccer' && /כדורגל/.test(messageBody)) ||
+      (w === 'trip' && /טיול|יציאה/.test(messageBody))
     );
-    if (match) {
-      parsed.matched_topic_key = match.topic_key;
+
+    if (!hintAppearsInCommand) {
+      console.warn('[Dismissal] MISMATCH: scope_hint= + parsed.scope_hint +  does not appear in raw command  + messageBody.substring(0, 80) +  — clearing topic_key match');
+      // Fall back to storing as generic group dismissal or skip topic matching
+      parsed.scope_type = 'all'; // safe fallback: suppress everything for 1h
+      parsed.duration_hours = 1;
+      parsed.scope_hint = null;
+      console.warn('[Dismissal] Falling back to all-suppress for 1h due to mismatch');
+    } else {
+      const match = sentRecent.slice().reverse().find(s =>
+        s.topic_key.toLowerCase().split('-').some(word => hint.includes(word) || word.includes(hint.split(' ')[0])) ||
+        s.message_text.toLowerCase().includes(hint.split(' ')[0])
+      );
+      if (match) {
+        parsed.matched_topic_key = match.topic_key;
+      }
     }
   }
 
+  console.log('[Dismissal] Final parse result:', JSON.stringify(parsed));
   return parsed;
 }
 
