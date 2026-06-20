@@ -1,4 +1,4 @@
-# Besinsky Bot — Architecture Principles
+# FamilyBot — Architecture Principles
 
 These are concluded, non-negotiable design principles derived from real production incidents.
 Each principle has a source incident and a rationale.
