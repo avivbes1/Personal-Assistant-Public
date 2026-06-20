@@ -66,6 +66,7 @@ cp "$SRC/scripts/detect-pii.js" "$DEST/scripts/"
 [ -f "$SRC/package.json" ]  && cp "$SRC/package.json"   "$DEST/"
 [ -f "$SRC/README.md" ]     && cp "$SRC/README.md"      "$DEST/"
 [ -f "$SRC/PRINCIPLES.md" ] && cp "$SRC/PRINCIPLES.md"  "$DEST/"
+[ -f "$SRC/package-lock.json" ] && cp "$SRC/package-lock.json" "$DEST/"
 
 echo "✅ Allowlist copy complete."
 echo ""
