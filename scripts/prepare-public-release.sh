@@ -23,7 +23,8 @@ mkdir -p "$DEST"
 
 # ── Copy with exclusions ──────────────────────────────────────────────────────
 rsync -a \
-  --exclude='.git' \\n  --exclude='.github/workflows/' \
+  --exclude='.git' \
+  --exclude='.github/workflows/' \
   --exclude='node_modules' \
   --exclude='.env' \
   --exclude='credentials.json' \
