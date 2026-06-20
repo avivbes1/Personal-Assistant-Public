@@ -34,7 +34,7 @@ jobs:
         env:
           LLM_PROVIDER: mock
           NODE_ENV: test
-          # Required config — use placeholder values for CI
+          CI: true
           AVIV_PHONE: "10000000000"
           LIAT_PHONE: "10000000001"
           MASTER_GROUP_NAME: "Test Family Group"
@@ -43,27 +43,3 @@ jobs:
           LIAT_CALENDAR_ID: "test-parent2@example.com"
           TIMEZONE: "UTC"
           ANTHROPIC_API_KEY: "sk-ant-test-not-real"
-
-  sync-public:
-    name: Sync to Public Repo
-    runs-on: ubuntu-latest
-    needs: [pii-scan, test]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Run prepare-public-release.sh
-        run: bash scripts/prepare-public-release.sh /tmp/public-snapshot
-      - name: Push to Personal-Assistant-Public
-        run: |
-          cd /tmp/public-snapshot
-          git init
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git branch -m main
-          git add .
-          git commit -m "Auto-sync from private repo @ ${{ github.sha }}"
-          git remote add origin https://x-access-token:${{ secrets.PUBLIC_REPO_TOKEN }}@github.com/avivbes1/Personal-Assistant-Public.git
-          git push -f origin main

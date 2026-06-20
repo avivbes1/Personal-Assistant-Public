@@ -1,24 +1,16 @@
 name: Sync to Public Repo
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'prompts/**'
-      - 'scripts/**'
-      - 'config/*.example.*'
-      - '.env.example'
-      - 'README.md'
-      - 'PRINCIPLES.md'
-      - 'package.json'
-      - 'ecosystem.config.js'
-      - '.gitignore'
 
 jobs:
   sync:
     name: PII scan + publish to Personal-Assistant-Public
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - name: Checkout private repo
@@ -48,10 +40,7 @@ jobs:
 
       - name: Sync snapshot to public repo
         run: |
-          # Clear public repo content (keep .git)
           find /tmp/pa-public-repo -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-
-          # Copy snapshot
           rsync -a /tmp/pa-public-snapshot/ /tmp/pa-public-repo/
 
       - name: Commit and push to public repo
@@ -63,7 +52,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to publish."
           else
-            COMMIT_SHA="${{ github.sha }}"
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
             git commit -m "Sync from private repo (${COMMIT_SHA:0:7})"
             git push
             echo "✅ Public repo updated."
