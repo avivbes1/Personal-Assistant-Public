@@ -42,6 +42,9 @@ jobs:
         run: |
           find /tmp/pa-public-repo -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
           rsync -a /tmp/pa-public-snapshot/ /tmp/pa-public-repo/
+          # Inject clean public-only CI workflow (no sync job)
+          mkdir -p /tmp/pa-public-repo/.github/workflows
+          cp scripts/public-workflows/ci.yml /tmp/pa-public-repo/.github/workflows/ci.yml
 
       - name: Commit and push to public repo
         run: |
