@@ -347,6 +347,21 @@ function initDB() {
   try { db.exec("ALTER TABLE notices ADD COLUMN last_attempt_at INTEGER"); } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN extraction_batch_id TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN source_message_ids TEXT"); } catch (_) {}
+  // Full schema migration — adds all columns missing from original CREATE TABLE
+  // (safe on existing DBs — try/catch skips if already present)
+  try { db.exec("ALTER TABLE notices ADD COLUMN urgency_hint TEXT DEFAULT 'routine'"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN relevant_datetime INTEGER"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN delivery_status TEXT DEFAULT 'pending'"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN delivered_at INTEGER"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN batch_id TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN posted_to_master INTEGER DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN sent_to_master INTEGER DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN send_attempted_at TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN is_backlog INTEGER DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN message_timestamp INTEGER"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN triage_decision TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN triage_reason TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN triaged_at INTEGER"); } catch (_) {}
 
   // Backfill tier from urgency_hint for existing rows
   try {
