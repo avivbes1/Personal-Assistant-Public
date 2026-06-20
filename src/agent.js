@@ -303,7 +303,7 @@ async function executeAction(action, senderName) {
         }
         const dayName = day || new Date(date).toLocaleDateString('he-IL', { weekday: 'long', timeZone: 'Asia/Jerusalem' });
         const payload = JSON.stringify({
-          requested_by: action._senderPhone || '+972504606660',
+          requested_by: action._senderPhone || process.env.AVIV_PHONE || '',
           day: dayName, date, start, end,
         });
         try {
