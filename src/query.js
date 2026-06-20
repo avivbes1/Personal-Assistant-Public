@@ -39,10 +39,10 @@ function formatEvent(event) {
  */
 async function fetchAllUpcomingEvents(hoursAhead = 7 * 24) {
   const sources = [
-    { calendarId: config.AVIV_CALENDAR_ID, tokenPath: config.AVIV_TOKEN_PATH, owner: 'אביב' },
-    { calendarId: config.LIAT_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: 'ליאת' },
+    { calendarId: config.AVIV_CALENDAR_ID, tokenPath: config.AVIV_TOKEN_PATH, owner: process.env.PARENT1_NAME || 'Parent 1' },
+    { calendarId: config.LIAT_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: process.env.PARENT2_NAME || 'Parent 2' },
     ...(config.LIAT_WORK_CALENDAR_ID
-      ? [{ calendarId: config.LIAT_WORK_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: 'ליאת (עבודה)' }]
+      ? [{ calendarId: config.LIAT_WORK_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: (process.env.PARENT2_NAME || 'Parent 2') + ' (עבודה)' }]
       : []),
   ];
 
@@ -93,10 +93,10 @@ async function buildContext() {
   try {
     const todayById = new Map();
     for (const { calendarId, tokenPath, owner } of [
-      { calendarId: config.AVIV_CALENDAR_ID, tokenPath: config.AVIV_TOKEN_PATH, owner: 'אביב' },
-      { calendarId: config.LIAT_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: 'ליאת' },
+      { calendarId: config.AVIV_CALENDAR_ID, tokenPath: config.AVIV_TOKEN_PATH, owner: process.env.PARENT1_NAME || 'Parent 1' },
+      { calendarId: config.LIAT_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: process.env.PARENT2_NAME || 'Parent 2' },
       ...(config.LIAT_WORK_CALENDAR_ID
-        ? [{ calendarId: config.LIAT_WORK_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: 'ליאת (עבודה)' }]
+        ? [{ calendarId: config.LIAT_WORK_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: (process.env.PARENT2_NAME || 'Parent 2') + ' (עבודה)' }]
         : []),
     ]) {
       const events = await getTodayEvents(calendarId, tokenPath);
@@ -260,8 +260,8 @@ async function buildContext() {
 const FAMILY_PHONES = {
   aviv: config.AVIV_PHONE,
   liat: config.LIAT_PHONE,
-  אביב: config.AVIV_PHONE,
-  ליאת: config.LIAT_PHONE,
+  [process.env.PARENT1_NAME || 'parent1']: config.AVIV_PHONE,
+  [process.env.PARENT2_NAME || 'parent2']: config.LIAT_PHONE,
 };
 
 /**
@@ -294,14 +294,14 @@ async function answerQuery(question, history = [], memberContext = null) {
 
 ## כלל 3 — אל תמציא מידע על יומן
 אם אין לך נתוני יומן — אמור זאת בבירור. לעולם אל תציג אירועים שלא קיימים במידע שניתן לך.
-**אין "יומן משותף"** — יש יומן אישי לאביב ויומן אישי לליאת (כולל יומן עבודה). כשמציג אירועים, ציין את שם הבעלים בסוגריים (כפי שמופיע בנתונים).
+**אין "יומן משותף"** — יש יומן אישי לכל הורה (כולל יומן עבודה). כשמציג אירועים, ציין את שם הבעלים בסוגריים (כפי שמופיע בנתונים).
 
 ## כלל 4 — קצר ותמציתי
 עד 3-4 שורות בדרך כלל. ישיר לעניין. ללא הקדמות מיותרות. זהו WhatsApp, לא אימייל.
 
 ## היכולות שלך (רשימה מלאה — אל תחרוג ממנה):
 1. **לענות על שאלות** — מה יש מחר? מה הסטטוס של X? מה קראתי בקבוצות?
-2. **לשלוח הודעת WhatsApp חד-פעמית** לבן משפחה — "תודא עם ליאת", "שלח לאביב", "תזכיר לשגב" — פעם אחת, עכשיו
+2. **לשלוח הודעת WhatsApp חד-פעמית** לבן משפחה — "תודא עם ליפא", "שלח לליפא", "תזכיר לליפא" — פעם אחת, עכשיו
 3. **להוסיף אירוע ליומן** — כשיש תאריך/שעה מפורשים
 4. **לרשום משימה** — מעקב, לעשות, לבדוק
 5. **למחוק/לעדכן אירוע** — מחיקה, שינוי שעה/תאריך
@@ -311,7 +311,7 @@ async function answerQuery(question, history = [], memberContext = null) {
 ## מה אינך יכול לעשות (השתמש ב-capability_request):
 - **בדיקות חוזרות / תזכורות מחזוריות** — "כל יום עד שנאשר", "שלח לי כל שבוע"
 - **פעולות מותנות** — "אם לא ענו עד X אז Y"
-- **שליחת הודעה בשעה מסוימת בעתיד** — "שלח לליאת מחר ב-9"
+- **שליחת הודעה בשעה מסוימת בעתיד** — "שלח לליפא מחר ב-9"
 - כל בקשה שדורשת לוח זמנים מדויק עם חזרתיות
 
 ## כלל זהב — אל תאמת שקר:
@@ -329,7 +329,7 @@ async function answerQuery(question, history = [], memberContext = null) {
 {"capability_request":true,"clarification_needed":true,"clarification_question":"[שאלה אחת]"}
 
 ## פורמט JSON — שלח הודעה:
-{"response":"[אישור בעברית]","action":{"type":"SEND_WHATSAPP","to":"[aviv/liat/אביב/ליאת]","text":"[תוכן ההודעה]"}}
+{"response":"[אישור בעברית]","action":{"type":"SEND_WHATSAPP","to":"[parent1/parent2/ליפא]","text":"[תוכן ההודעה]"}}
 
 ## הנחיות פורמט:
 - "זאת משימה בשבילך" = אתה צריך לבצע את הפעולה, לא לרשום אותה למשתמש
