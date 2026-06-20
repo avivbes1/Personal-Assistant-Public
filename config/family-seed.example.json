@@ -1,0 +1,47 @@
+{
+  "_comment": "Copy this file to config/family-seed.json and fill in your values. family-seed.json is gitignored.",
+  "members": [
+    {
+      "name_he": "אמא",
+      "name_en": "Mom",
+      "nicknames": ["mom", "mother"],
+      "role": "parent",
+      "calendar_id": "parent2@gmail.com",
+      "notes": ""
+    },
+    {
+      "name_he": "אבא",
+      "name_en": "Dad",
+      "nicknames": ["dad", "father"],
+      "role": "parent",
+      "calendar_id": "parent1@gmail.com",
+      "notes": ""
+    },
+    {
+      "name_he": "ילד1",
+      "name_en": "Child1",
+      "nicknames": ["child1"],
+      "role": "child",
+      "calendar_id": null,
+      "notes": "Grade 5"
+    },
+    {
+      "name_he": "ילד2",
+      "name_en": "Child2",
+      "nicknames": ["child2"],
+      "role": "child",
+      "calendar_id": null,
+      "notes": "Grade 2"
+    }
+  ],
+  "childGroups": [
+    {
+      "child_name_en": "Child1",
+      "group_name": "Class 5A Parents"
+    },
+    {
+      "child_name_en": "Child2",
+      "group_name": "Kindergarten Announcements"
+    }
+  ]
+}

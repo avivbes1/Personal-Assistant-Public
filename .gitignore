@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Family-specific config (NEVER commit — contains real group names)
+config/groups.json
+
+# Credentials & tokens (NEVER commit these)
+.env
+credentials.json
+token.json
+token-aviv.json
+token-liat.json
+config/google-credentials.json
+
+# WhatsApp session (contains auth state)
+whatsapp-session/
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Database (contains private messages)
+data/
+*.db
+*.sqlite
+
+# Backups
+backups/
+
+# Logs
+logs/
+*.log
+
+# Temp / debug scripts
+query_tmp.js
+*.disabled
+
+# OS
+.DS_Store

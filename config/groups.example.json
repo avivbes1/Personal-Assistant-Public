@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy this file to config/groups.json and fill in your values. groups.json is gitignored.",
+  "master": "Family Tasks",
+  "monitored": [
+    "Class 5A Parents",
+    "School Announcements",
+    "Soccer Club Parents",
+    "Kindergarten Announcements"
+  ]
+}
