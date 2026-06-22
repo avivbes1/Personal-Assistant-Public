@@ -13,10 +13,55 @@ const { getFamilyContext } = require('./family-profiles');
 const { render: renderPrompt } = require('./llm/prompts');
 const { searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent, listEventsForDate } = require('./calendar');
 const { processEventAction } = require('./calendarGate');
-const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveHomework, getPendingHomework } = require('./db');
+const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveHomework, getPendingHomework, saveOrGetThread, dismissThread, linkNoticeToThread, getMostRecentDeliveredThread } = require('./db');
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// ISSUE-013: validate that a stated day name matches the actual date
+const HE_DAY_INDEX = { 'ראשון': 0, 'שני': 1, 'שלישי': 2, 'רביעי': 3, 'חמישי': 4, 'שישי': 5, 'שבת': 6 };
+function validateEventDate(event) {
+  if (!event || !event.date) return event;
+  if (!event.dayName || HE_DAY_INDEX[event.dayName] === undefined) return event;
+  const dateObj = new Date(event.date + 'T12:00:00+03:00');
+  const actualIdx = dateObj.getDay(); // JS: 0=Sun
+  const expectedIdx = HE_DAY_INDEX[event.dayName];
+  if (actualIdx !== expectedIdx) {
+    console.warn(`[Agent] Date mismatch: ${event.dayName} (expected idx ${expectedIdx}) but ${event.date} is idx ${actualIdx}. Auto-correcting.`);
+    let diff = expectedIdx - actualIdx;
+    if (diff > 3) diff -= 7;
+    if (diff < -3) diff += 7;
+    const corrected = new Date(dateObj);
+    corrected.setDate(corrected.getDate() + diff);
+    event.date = corrected.toISOString().substring(0, 10);
+    console.warn(`[Agent] Corrected date: ${event.date}`);
+  }
+  return event;
+}
+
+// ISSUE-014: alert Aviv when Anthropic credits exhausted (max once/hour)
+let _creditAlertSentAt = 0;
+function alertCreditExhausted(errMsg) {
+  const now = Date.now();
+  if (now - _creditAlertSentAt < 3600000) return;
+  _creditAlertSentAt = now;
+  try {
+    const http = require('http');
+    const payload = JSON.stringify({
+      to: config.AVIV_PHONE,
+      text: `⚠️ Anthropic API credit error — bot is in degraded mode.\n${errMsg}`
+    });
+    const req = http.request({ hostname: 'localhost', port: 3001, path: '/send-message', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+    }, () => {});
+    req.on('error', () => {});
+    req.write(payload);
+    req.end();
+    console.error('[Agent] Sent credit exhaustion alert DM to Aviv');
+  } catch (e) {
+    console.error('[Agent] Failed to send credit alert:', e.message);
+  }
+}
 
 const FAMILY_PHONES = {
   aviv:  config.AVIV_PHONE,
@@ -224,7 +269,7 @@ async function executeAction(action, senderName) {
             const parsed = Date.parse(`${action.relevance_date}T00:00:00`);
             if (!isNaN(parsed)) relevantDatetime = parsed;
           }
-          saveNotice({
+          const noticeId = saveNotice({
             group_name:        action.group_name || 'unknown',
             content:           noticeContent,
             relevance_date:    action.relevance_date || null,
@@ -235,7 +280,16 @@ async function executeAction(action, senderName) {
             message_timestamp: action.source_timestamp || Date.now(),
             delivery_status:   'pending',
           });
-          console.log(`[Agent] Saved notice: "${noticeContent.substring(0, 60)}" rel=${action.relevance_date || 'undated'}`);
+          // Link to thread for topic continuity
+          if (action.thread_key && noticeId) {
+            try {
+              const thread = saveOrGetThread(action.thread_key, noticeContent.substring(0, 80), action.group_name || 'unknown');
+              if (thread) linkNoticeToThread(noticeId, action.thread_key, thread.id);
+            } catch (e) {
+              console.warn('[Agent] thread link error:', e.message);
+            }
+          }
+          console.log(`[Agent] Saved notice: "${noticeContent.substring(0, 60)}" thread=${action.thread_key || 'none'} rel=${action.relevance_date || 'undated'}`);
         }
         return { type: 'add_notice', ok: true, content: noticeContent, isSideEffect: true };
       }
@@ -749,7 +803,7 @@ ${groupCtx}${childCtx}${recentCtx}
 {"action":"add_event","summary":"כותרת","date":"YYYY-MM-DD","time":"HH:MM","duration_min":60,"owner":"both|aviv|liat","location":"..."}
 {"action":"add_task","text":"תיאור המשימה","due_date":"YYYY-MM-DD"}
 {"action":"add_homework","child":"CHILD_NAME","subject":"מתמטיקה","description":"עמודים 64-66 ו-108-109 בחוברת מתמטיקה","due_date":"YYYY-MM-DD"}  // השתמש כשההודעה מכילה שיעורי בית / מטלות / עמודים לתרגיל או עבודה לביתספר. child = הילד מכותנתה (childCtx). due_date = תאריך הגשת. אל תשתמש לאירועים ביומן.
-{"action":"add_notice","content":"תיאור תמציתי וברור","relevance_date":"YYYY-MM-DD","relevance_time":"HH:MM","urgency_hint":"immediate|time_sensitive|routine","relevant_datetime":"YYYY-MM-DDTHH:MM:00 or null","group_name":"${groupName}","source_timestamp":${ts}}
+{"action":"add_notice","content":"תיאור תמציתי וברור","thread_key":"kebab-slug-of-topic","relevance_date":"YYYY-MM-DD","relevance_time":"HH:MM","urgency_hint":"immediate|time_sensitive|routine","relevant_datetime":"YYYY-MM-DDTHH:MM:00 or null","group_name":"${groupName}","source_timestamp":${ts}}
 ${isImageMsg ? '{"action":"download_image"}  // פלוט רק אם החלטת שכדאי לנתח את התמונה' : ''}
 
 ${isImageMsg ? `## תמונה — החלטת download
@@ -766,6 +820,7 @@ ${isImageMsg ? `## תמונה — החלטת download
 - relevance_time: שעה ב-HH:MM **רק אם שעה מפורשת מופיעה בטקסט ההודעה**. אם לא כתוב שעה במפורש — אל תמציא, השמט לחלוטין (null)
 - urgency_hint: "routine" (ברירת מחדל — המערכת מחשבת דחיפות אוטומטית לפי תאריך)
 - relevant_datetime: חותמת זמן ISO של **מתי האירוע קורה** (לא מתי ההודעה נשלחה). "הערב 18:00" = "${todayIso}T18:00:00". אם אין שעה — רק תאריך ("${todayIso}T00:00:00"). אם לא ידוע — null.
+- thread_key: slug קצר ויציב לנושא המתמשך, בפורמט kebab-case. **עקבי וציב**: אם מספר הודעות מדברות על אותו עניין באותה קבוצה — תן לכולן את אותו thread_key. דוגמאות: "vo-bni-teacher-gift", "shaked-planners-2026", "gan-kochav-trip-jun". אל תכלול תאריך ב-thread_key אלא אם אודות אירוע ספציפי.
 אם ההודעה לא רלוונטית כלל למשפחה — אל תפלוט notice.
 
 ## פורמט תגובה:
@@ -811,6 +866,9 @@ ${isImageMsg ? `## תמונה — החלטת download
           const parsed = JSON.parse(data);
           if (parsed.error) {
             console.error('[Agent] handleGroupEvent API error:', parsed.error.message);
+            if (parsed.error.message && parsed.error.message.includes('credit balance')) {
+              alertCreditExhausted(parsed.error.message);
+            }
             return resolve({ text: '', sideEffects: [], acted: false });
           }
 

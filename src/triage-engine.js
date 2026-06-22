@@ -86,6 +86,9 @@ function getPendingNotices(db) {
       AND triage_decision IS NULL
       AND (send_attempted_at IS NULL OR send_attempted_at < datetime('now', '-5 minutes'))
       AND (relevance_date IS NULL OR relevance_date >= date('now', '-1 day'))
+      AND (thread_key IS NULL OR thread_key NOT IN (
+        SELECT thread_key FROM notice_threads WHERE dismissed = 1
+      ))
     ORDER BY created_at ASC
     LIMIT 50
   `).all();
@@ -169,7 +172,11 @@ const CLASSIFICATION_SYSTEM = `אתה מערכת הניהול של עוזר מש
 אתה מחליט אילו הודעות שווה לשלוח לקבוצת המשימות עכשיו, מה ניתן לדחות לסיכום הבוקר, ומה כדאי לדלג עליו לחלוטין.
 
 החזר JSON בלבד, ללא הסבר, לפי הסכימה הבאה:
-{"decisions":[{"notice_id":NUMBER,"action":"send_now"|"defer"|"skip"|"send_update","merge_group":STRING_OR_NULL,"reason":"SHORT_ENGLISH_REASON"}]}
+{"decisions":[{"notice_id":NUMBER,"action":"send_now"|"defer"|"skip"|"send_update","merge_group":STRING_OR_NULL,"reason":"SHORT_ENGLISH_REASON","material_change":true|false}]}
+
+material_change:
+- true: new date, price change, registration deadline, decision reached, urgent action added
+- false: follow-up to same ongoing discussion, no new actionable info (more parents joining a discussion, survey still pending, same info repeated)
 
 כללים:
 - send_now: הודעה שמשפחה צריכה לפעול לפיה היום או מחר (תשלום, אישור, הבאת ציוד, הרשמה דחופה)
@@ -191,13 +198,13 @@ const FEW_SHOT_EXAMPLES = `
 <output>{"decisions":[{"notice_id":504,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"event today 17:05, action required"},{"notice_id":505,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"same movie, adds ticket detail"},{"notice_id":506,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"same movie, confirms spot"}]}</output>
 </example>
 
-<example id="2" description="Same group, different topics: no merge between them">
+<example id="2" description="Skip: parent coordination noise — gift collections, planner orders, class funds">
 <sent_today></sent_today>
 <bucket group="הורי ו' בני" date="2026-06-17">
-<notice id="510">דיון: מתנה לסייעת של CHILD (בת מצווה) — עציץ או עץ עם הקדשה, כ-55 שח. יש כוונה לשלוח סקר.</notice>
-<notice id="488">ליאת צריכה להחזיר כסף לכל המשתתפים בנפרד עבור מתנת סוף שנה ו'. לא ניתן לסגור קבוצת PayBox. אספנו 550 שח.</notice>
+<notice id="510">דיון: מתנה לסייעת של CHILD — עציץ או מגנט עם תמונה, כ-400 שח. שרית תערוך סקר.</notice>
+<notice id="488">הזמנת יומנים/מחברות דרך פטיש בית שאן — צריך לאשר עד מחר, מחיר להבהיר. מתעניינים להירשם.</notice>
 </bucket>
-<output>{"decisions":[{"notice_id":510,"action":"send_now","merge_group":"gift-teacher-17jun","reason":"gift decision needed for Segev's aide"},{"notice_id":488,"action":"send_now","merge_group":"paybox-refund-17jun","reason":"Liat needs to manually refund participants"}]}</output>
+<output>{"decisions":[{"notice_id":510,"action":"skip","merge_group":null,"reason":"parent group coordination about teacher gift — not family-actionable, social noise","material_change":false},{"notice_id":488,"action":"skip","merge_group":null,"reason":"parent planner order coordination — school admin noise, not family logistics","material_change":false}]}</output>
 </example>
 
 <example id="3" description="Skip: chit-chat, photos, videos — no action needed">
@@ -445,6 +452,26 @@ async function runTriage() {
     for (const n of buckets[i].notices) noticesById[n.id] = n;
   }
 
+  // ── Thread continuity: downgrade send_now→skip if thread already delivered + no material change ──
+  for (const d of allDecisions) {
+    if (d.action !== 'send_now' && d.action !== 'send_update') continue;
+    const n = noticesById[d.notice_id];
+    if (!n || !n.thread_key) continue;
+    try {
+      const thread = db.prepare('SELECT last_delivered_at FROM notice_threads WHERE thread_key = ?').get(n.thread_key);
+      if (thread && thread.last_delivered_at && d.material_change === false) {
+        const hoursSince = (Date.now() - thread.last_delivered_at) / 3600000;
+        if (hoursSince < 72) {
+          console.log(`[Triage] Thread "${n.thread_key}" already delivered ${hoursSince.toFixed(1)}h ago, no material change — skipping #${d.notice_id}`);
+          d.action = 'skip';
+          d.reason = 'thread already delivered, no material change';
+        }
+      }
+    } catch (e) {
+      console.warn('[Triage] thread continuity check error:', e.message);
+    }
+  }
+
   // ── Commit ALL decisions to DB NOW — before synthesis ─────────────────────
   // This ensures no notice is stuck in limbo if synthesis is interrupted.
   // Unsent send_now decisions will be reset to NULL if budget is exceeded.
@@ -519,6 +546,14 @@ async function runTriage() {
           markNoticesSent(db, noticeIds);
           saveSentMessage(db, topicKey, message, noticeIds);
           console.log(`[Triage] Sent [${topicKey}]: "${message.substring(0, 60)}"`);
+          // Update thread last_delivered_at for topic continuity
+          for (const n of groupNotices) {
+            if (n.thread_key) {
+              try {
+                db.prepare('UPDATE notice_threads SET last_delivered_at=? WHERE thread_key=?').run(Date.now(), n.thread_key);
+              } catch (_) {}
+            }
+          }
           // Add to sentToday for subsequent buckets in same run
           sentToday.push({ topic_key: topicKey, sent_at: Date.now(), message_text: message });
           // Track daily group cap
