@@ -363,6 +363,25 @@ function initDB() {
   try { db.exec("ALTER TABLE notices ADD COLUMN triage_reason TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN triaged_at INTEGER"); } catch (_) {}
 
+  // Notice threads — topic continuity across multiple messages
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS notice_threads (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_key       TEXT    UNIQUE NOT NULL,
+        description      TEXT,
+        source_group     TEXT,
+        first_noticed_at INTEGER NOT NULL,
+        last_delivered_at INTEGER,
+        dismissed        INTEGER DEFAULT 0,
+        dismissed_at     INTEGER,
+        dismissed_reason TEXT
+      )
+    `);
+  } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN thread_id INTEGER"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN thread_key TEXT"); } catch (_) {}
+
   // Backfill tier from urgency_hint for existing rows
   try {
     db.exec(`
@@ -394,6 +413,11 @@ function initDB() {
   // New columns on sent_messages (safe migrations)
   try { db.exec('ALTER TABLE sent_messages ADD COLUMN group_name TEXT'); } catch (_) {}
 
+  // ISSUE-015: unique index to prevent duplicate messages regardless of call path
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(group_id, timestamp, body)`);
+  } catch (_) {}
+
   console.log('[DB] Initialized at', DB_PATH);
   return db;
 }
@@ -404,11 +428,17 @@ function getDB() {
 }
 
 function saveMessage({ group_id, sender, body, timestamp }) {
+  const ts = timestamp || Date.now();
   const stmt = getDB().prepare(
-    'INSERT INTO messages (group_id, sender, body, timestamp, processed) VALUES (?, ?, ?, ?, 0)'
+    'INSERT OR IGNORE INTO messages (group_id, sender, body, timestamp, processed) VALUES (?, ?, ?, ?, 0)'
   );
-  const result = stmt.run(group_id, sender, body, timestamp || Date.now());
-  return result.lastInsertRowid;
+  const result = stmt.run(group_id, sender, body, ts);
+  if (result.changes > 0) return result.lastInsertRowid;
+  // Already existed — return the existing row id
+  const existing = getDB().prepare(
+    'SELECT id FROM messages WHERE group_id=? AND timestamp=? AND body=? LIMIT 1'
+  ).get(group_id, ts, body);
+  return existing?.id ?? null;
 }
 
 function markMessageProcessed(id) {
@@ -1004,6 +1034,74 @@ function recordDeliveryAttempt(noticeId, errorMsg = null) {
   `).run(Date.now(), noticeId);
 }
 
+// ── Notice thread helpers ────────────────────────────────────────────────────
+
+/**
+ * Find or create a notice thread. Returns the thread record.
+ */
+function saveOrGetThread(threadKey, description, sourceGroup) {
+  if (!threadKey) return null;
+  try {
+    const existing = getDB().prepare('SELECT * FROM notice_threads WHERE thread_key = ?').get(threadKey);
+    if (existing) {
+      // Update description if we now have one and didn't before
+      if (description && !existing.description) {
+        getDB().prepare('UPDATE notice_threads SET description = ? WHERE thread_key = ?').run(description, threadKey);
+        existing.description = description;
+      }
+      return existing;
+    }
+    getDB().prepare(
+      'INSERT INTO notice_threads (thread_key, description, source_group, first_noticed_at) VALUES (?, ?, ?, ?)'
+    ).run(threadKey, description || null, sourceGroup || null, Date.now());
+    return getDB().prepare('SELECT * FROM notice_threads WHERE thread_key = ?').get(threadKey);
+  } catch (e) {
+    console.error('[DB] saveOrGetThread error:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Mark a thread as dismissed (user asked to stop receiving updates about it).
+ */
+function dismissThread(threadKey, reason) {
+  if (!threadKey) return false;
+  try {
+    getDB().prepare(
+      'UPDATE notice_threads SET dismissed=1, dismissed_at=?, dismissed_reason=? WHERE thread_key=?'
+    ).run(Date.now(), reason || 'user_request', threadKey);
+    return true;
+  } catch (e) {
+    console.error('[DB] dismissThread error:', e.message);
+    return false;
+  }
+}
+
+/**
+ * Link a notice to a thread by thread_key.
+ */
+function linkNoticeToThread(noticeId, threadKey, threadId) {
+  if (!noticeId || !threadKey) return;
+  try {
+    getDB().prepare('UPDATE notices SET thread_key=?, thread_id=? WHERE id=?').run(threadKey, threadId || null, noticeId);
+  } catch (e) {
+    console.error('[DB] linkNoticeToThread error:', e.message);
+  }
+}
+
+/**
+ * Get the most recently delivered non-dismissed thread.
+ */
+function getMostRecentDeliveredThread() {
+  try {
+    return getDB().prepare(
+      'SELECT * FROM notice_threads WHERE dismissed=0 AND last_delivered_at IS NOT NULL ORDER BY last_delivered_at DESC LIMIT 1'
+    ).get();
+  } catch (e) {
+    return null;
+  }
+}
+
 module.exports = {
   initDB,
   getDB,
@@ -1047,6 +1145,10 @@ module.exports = {
   claimBotTask,
   cancelRecurringGroup,
   isRecurringGroupActive,
+  saveOrGetThread,
+  dismissThread,
+  linkNoticeToThread,
+  getMostRecentDeliveredThread,
   cancelFollowUpsForEvent,
   updateFollowUpStatus,
   isMessageProcessed,

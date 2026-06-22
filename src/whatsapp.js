@@ -18,7 +18,7 @@ const { addEvent, addSharedEvent, searchCalendarEvents, updateCalendarEvent, del
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 const { answerQuery } = require('./query');
 const { handleMessage, handleGroupEvent } = require('./agent');
-const { getFollowUpByBotMsgId, updateFollowUpStatus } = require('./db');
+const { getFollowUpByBotMsgId, updateFollowUpStatus, dismissThread, getMostRecentDeliveredThread } = require('./db');
 const { startVoiceServer } = require('./voice-server');
 
 let client = null;
@@ -42,7 +42,7 @@ const getHealthState = () => ({
 const masterGroupHistory = []; // { role: 'user'|'assistant', content: string }
 
 // ── Babysitter Booking microservice integration ──────────────────────────────
-const { getBabysitterPhones, checkOnboarding: checkBabysitterOnboarding, handleOnboardingReply } = require('./babysitter-onboarding');
+const { getBabysitterPhones, resolveJids: resolveJidsForBabysitters, getPhoneByJid, checkOnboarding: checkBabysitterOnboarding, handleOnboardingReply } = require('./babysitter-onboarding');
 const BOOKING_SECRET = process.env.SHARED_SECRET || '';
 
 async function forwardToBabysitterService(from_phone, body, ts) {
@@ -332,10 +332,17 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
     const isImageMsg = isMedia && (msg.type === 'image' || msg.type === 'sticker');
     if (isMedia) {
       if (isImageMsg) {
-        // For images: don't run vision yet — let the agent decide based on context
-        // Caption (if any) is already in msg.body for captioned images
         const caption = msg.body ? ` (caption: ${msg.body.substring(0, 100)})` : '';
-        body = `[תמונה${caption}]`;
+        if (isSchoolGroup(groupRecord)) {
+          // ISSUE-014: school groups — always OCR; missing an event costs more than a wasted vision call
+          console.log(`[WhatsApp] School group image — forcing vision OCR for "${chat.name}"`);
+          const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true }).catch(() => null);
+          body = described || `[תמונה${caption}]`;
+          if (described) console.log(`[WhatsApp] School image OCR: ${described.substring(0, 80)}`);
+        } else {
+          // Non-school: let agent decide based on context
+          body = `[תמונה${caption}]`;
+        }
       } else {
         const extracted = await processMediaMessage(msg, groupRecord, chat.name).catch(() => null);
         if (extracted) {
@@ -600,6 +607,22 @@ async function handleMasterGroupCommand(_msg) {
     const parseText = quotedFromMe && quotedBody
       ? `${cleanBody} [ההודעה המצוטטת: ${quotedBody}]`
       : cleanBody;
+
+    // ── Dismissal command: "stop sending about X" → dismiss most recent thread ──
+    const DISMISS_REGEX = /\b(תפסיק\s*לשלוח|stop\s*(sending|about|spamming)|אל\s*תשלח\s*(עוד|יותר))\b/i;
+    const isAviv = userId === (config.AVIV_PHONE || '').replace(/^\+/, '');
+    if (isAviv && DISMISS_REGEX.test(cleanBody)) {
+      const recentThread = getMostRecentDeliveredThread();
+      if (recentThread) {
+        dismissThread(recentThread.thread_key, 'user_request');
+        const desc = recentThread.description ? `"${recentThread.description.substring(0, 60)}"` : recentThread.thread_key;
+        const confirmMsg = `✅ הבנתי — עצרתי עדכונים על ${desc}`;
+        await sendToMasterGroup(confirmMsg);
+        addToHistory('assistant', confirmMsg, userId);
+        console.log(`[WhatsApp] Thread dismissed: ${recentThread.thread_key}`);
+        return;
+      }
+    }
 
     // ── Agent call: single Claude invocation handles all intents ────────────────
     const { text: agentResponse, sideEffects } = await handleMessage(parseText, quotedBody, senderName, priorHistory);
@@ -886,8 +909,11 @@ function initWhatsApp() {
     console.log('[WhatsApp] ✅ Client connected and ready!');
     await resolveMasterGroup();
 
-    // Check babysitter booking onboarding state
-    setTimeout(() => checkBabysitterOnboarding(sendToMasterGroup).catch(() => {}), 5000);
+    // Check babysitter booking onboarding state + resolve JIDs
+    setTimeout(() => {
+      checkBabysitterOnboarding(sendToMasterGroup).catch(() => {});
+      resolveJidsForBabysitters(client).catch(() => {});
+    }, 8000);
 
     // Wire health monitor with client + master group
     try {
@@ -1108,13 +1134,17 @@ function initWhatsApp() {
 
       // Babysitter DM routing — forward to booking microservice
       if (!msg.from.endsWith('@g.us') && !msg.fromMe) {
-        const babysitterPhones = await getBabysitterPhones();
-        const fromRaw = msg.from.replace('@c.us', '');
-        const fromE164 = fromRaw.startsWith('972') ? '+' + fromRaw : fromRaw;
-        if (babysitterPhones.has(fromE164)) {
-          const ts = new Date(msg.timestamp * 1000).toISOString();
-          await forwardToBabysitterService(fromE164, msg.body || '', ts);
-          console.log('[WhatsApp] Babysitter DM forwarded to booking service:', fromE164);
+        try {
+          // Resolve JID to phone (handles both @c.us and @lid LID format)
+          const phone = getPhoneByJid(msg.from);
+          console.log('[WhatsApp] DM from JID:', msg.from, '→ phone:', phone || '(unknown)');
+          if (phone) {
+            const ts = new Date(msg.timestamp * 1000).toISOString();
+            await forwardToBabysitterService(phone, msg.body || '', ts);
+            console.log('[WhatsApp] Babysitter DM forwarded:', phone, msg.body?.substring(0, 30));
+          }
+        } catch (e) {
+          console.error('[WhatsApp] DM routing error:', e.message);
         }
         return;
       }
