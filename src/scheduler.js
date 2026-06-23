@@ -50,6 +50,26 @@ function mergeEvents(eventSources) {
 }
 
 /**
+ * Convert minutes-before to a human-readable Hebrew label.
+ */
+function minsToLabel(mins) {
+  if (mins === 0) return 'עכשיו!';
+  if (mins < 60) return `${mins} דקות לפני`;
+  const hours = mins / 60;
+  const days = mins / 1440;
+  if (Number.isInteger(days) && days >= 1) {
+    if (days === 1) return 'מחר (התראה יום מראש)';
+    if (days === 7) return 'בעוד שבוע (התראה 7 ימים מראש)';
+    return `בעוד ${days} ימים (התראה ${days} ימים מראש)`;
+  }
+  if (Number.isInteger(hours)) {
+    if (hours === 1) return 'שעה לפני';
+    return `${hours} שעות לפני`;
+  }
+  return `${mins} דקות לפני`;
+}
+
+/**
  * Determine which reminder times (as Date objects + labels) apply to a GCal event.
  * For timed events: uses the event's reminder overrides if set, otherwise defaults to [30] min before.
  * For all-day events: fires at 07:00 on (event-3 days) and (event-1 day).
@@ -82,7 +102,7 @@ function getEventReminderTimes(event) {
 
     return minutesBefore.map(mins => ({
       remindAt: new Date(eventMs - mins * 60000),
-      label: mins === 0 ? 'עכשיו!' : mins === 60 ? 'שעה לפני' : `${mins} דקות לפני`,
+      label: minsToLabel(mins),
     }));
   }
 
@@ -106,9 +126,10 @@ async function fireReminder(reminder) {
         .toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.TIMEZONE });
       msg = `${prefix}📅 *תזכורת — ${reminder.label}*\n${reminder.event_title}\n🗓 ${dateStr}`;
     } else {
-      const timeStr = new Date(reminder.event_start)
-        .toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', timeZone: config.TIMEZONE });
-      msg = `${prefix}⏰ *תזכורת — ${reminder.label}*\n${reminder.event_title} בשעה ${timeStr}`;
+      const eventDate = new Date(reminder.event_start);
+      const timeStr = eventDate.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', timeZone: config.TIMEZONE });
+      const dateStr = eventDate.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'numeric', timeZone: config.TIMEZONE });
+      msg = `${prefix}⏰ *תזכורת — ${reminder.label}*\n${reminder.event_title}\n🗓 ${dateStr} בשעה ${timeStr}`;
     }
     // Send plain message — no @mentions. Mentions cause WhatsApp to deliver
     // a second copy to the mentioned user's DM via OpenClaw's WhatsApp session.
