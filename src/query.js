@@ -84,7 +84,16 @@ async function buildContext() {
     hour: '2-digit', minute: '2-digit', timeZone: config.TIMEZONE,
   });
 
-  let ctx = `תאריך ושעה נוכחיים: ${dateStr}, ${timeStr}\n\n`;
+  // ISSUE-013: inject week-date map so LLM doesn't compute day→date arithmetic
+  const weekDays = ['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
+  const israelNow = new Date(now.toLocaleString('en-US', { timeZone: config.TIMEZONE }));
+  const israelDayOfWeek = israelNow.getDay(); // 0=Sun
+  const weekMap = weekDays.map((name, i) => {
+    const d = new Date(israelNow);
+    d.setDate(israelNow.getDate() - israelDayOfWeek + i);
+    return `${name}=${d.getDate()}.${d.getMonth() + 1}`;
+  });
+  let ctx = `תאריך ושעה נוכחיים: ${dateStr}, ${timeStr}\nימי השבוע הנוכחי: ${weekMap.join(', ')}\n\n`;
 
   // Family profiles
   ctx += `בני המשפחה: ${getFamilyContext()}\n\n`;
