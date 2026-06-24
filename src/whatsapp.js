@@ -384,6 +384,16 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
 
     // Event/task extraction — save to DB only; Lipa (OpenClaw) handles surfacing to master group
     const msgIsBacklog = isBacklogMessage(msg.timestamp * 1000);
+
+    // ISSUE-018: Skip notice extraction for messages sent by Aviv or Liat themselves.
+    // Their own messages should never be re-broadcast to the master group.
+    const senderNumber = (contact.number || '').replace(/\D/g, '');
+    const ownerPhones = [config.AVIV_PHONE, config.LIAT_PHONE].map(p => String(p).replace(/\D/g, ''));
+    if (ownerPhones.includes(senderNumber)) {
+      console.log(`[WhatsApp] Skipping notice extraction for owner message in "${chat.name}" by ${sender}`);
+      return;
+    }
+
     const agentResult = await handleGroupEvent(body, chat.name, sender, groupDescription, recentMessages, msg.timestamp * 1000, isImageMsg, msgIsBacklog, groupRecord?.primary_child || null);
 
     // If agent decided this image is worth reading, run vision now and update the notice

@@ -25,7 +25,7 @@ Before any architect/expert consultation: include this file as context.
 **Verification (automated):**
 ```bash
 # Check: no other cron script reads posted_to_master=0 and sends
-grep -r "posted_to_master" /home/ubuntu/besinsky-bot --include="*.js" \
+grep -r "posted_to_master" . --include="*.js" \
   | grep -v "triage-engine\|consolidate-notices\|noticeDelivery\|db.js\|tests\|node_modules"
 # Expected: no output (no unauthorized readers)
 ```
@@ -97,6 +97,32 @@ grep -r "posted_to_master" /home/ubuntu/besinsky-bot --include="*.js" \
 - Sent message dedup window must cover at least 72 hours, not just the current calendar day
 - Triage's `sentToday` (renamed `sentRecent`) must look back 72h
 - The `immediate` bypass must also check recent sent context before firing
+
+---
+
+## P-007 — Validate External Output Before State Commit
+
+**Principle:** External system output (LLM responses, API calls) is untrusted input. The system must validate against an explicit schema BEFORE committing any state transition. Never persist a state that makes an artifact unreachable (i.e., no exit path in the state machine).
+
+**Source incident:** 2026-06-24 — ISSUE-017: triage-engine committed `triage_decision='send_now'` before validating that `merge_group` was non-null. Notices with `merge_group: null` were then invisible to the queue (filtered by `triage_decision IS NULL`) and never delivered. Dead letter.
+
+**Rule:**
+- Validate LLM output against an explicit schema before any DB write
+- Normalize invalid-but-recoverable output (e.g., null merge_group → auto-generated key) with a warning
+- Commit state transitions AFTER validation, not before
+- Never use `continue` silently in a loop processing external data — always log why an item was skipped
+- Every non-terminal state in the system must have a defined exit path
+
+**Verification:**
+```bash
+# Check: groupByMergeGroup logs errors for missing merge_group (no silent continue)
+grep -n "BUG: send_now" src/triage-engine.js
+# Expected: one matching line with console.error
+
+# Check: normalizeDecisions is called before markNoticesTriaged in runTriage
+grep -n "normalizeDecisions\|markNoticesTriaged\|groupByMergeGroup" src/triage-engine.js
+# Expected: normalizeDecisions appears before markNoticesTriaged
+```
 
 ---
 
