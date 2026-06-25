@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node tests/run-all.js"
+    "test": "node tests/run-all.js",
+    "update-profile": "node scripts/update-profile.js"
   },
   "keywords": [],
   "author": "",

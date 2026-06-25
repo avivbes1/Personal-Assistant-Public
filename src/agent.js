@@ -15,6 +15,7 @@ const { searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent, listEven
 const { processEventAction } = require('./calendarGate');
 const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveHomework, getPendingHomework, saveOrGetThread, dismissThread, linkNoticeToThread, getMostRecentDeliveredThread, markMessageProcessing, markMessageTerminal, markMessageFailed, getConfigValue } = require('./db');
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
+const { buildProfileSlice, shouldSkipGroup } = require('./family-context');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -813,6 +814,18 @@ const GROUP_TOOLS = [
     name: 'download_image',
     description: 'הורד ונתח את התמונה - רק אם מורה/מנהל שולח תמונה בודדת עם רמז לתוכן רלוונטי.',
     input_schema: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'log_profile_contradiction',
+    description: 'Log when the message contradicts the family context (wrong teacher, child in unexpected group, outdated info). For monitoring only - no action taken.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        observation: { type: 'string', description: 'One sentence describing the contradiction' },
+        source_quote: { type: 'string', description: 'The exact text that triggered this' }
+      },
+      required: ['observation']
+    }
   }
 ];
 
@@ -848,7 +861,21 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
     recentCtx = `\n## הודעות אחרונות בקבוצה (הקשר):\n${lines.join('\n')}\n`;
   }
 
-  // ISSUE-019: System prompt is now tool-oriented — no prose, no JSON blocks in text.
+  // ISSUE-020: Build family context slice for this group
+  let profileSliceCtx = '';
+  try {
+    const slice = buildProfileSlice(groupName);
+    if (slice) {
+      profileSliceCtx = `
+<FAMILY_CONTEXT>
+${JSON.stringify(slice, null, 2)}
+</FAMILY_CONTEXT>`;
+    }
+  } catch (e) {
+    console.warn('[Agent] Family context slice failed:', e.message);
+  }
+
+  // ISSUE-019: System prompt is now tool-oriented - no prose, no JSON blocks in text.
   // The model MUST call add_notice or no_action. Other tools are optional.
   const systemPrompt = `אתה ${config.BOT_NAME}, עוזר משפחתי אוטומטי שמנטר קבוצות WhatsApp.
 
@@ -856,12 +883,12 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
 שולח: ${sender}
 היום: ${today} (${todayIso})
 מחר: ${tomorrowIso}
-${groupCtx}${childCtx}${recentCtx}
+${profileSliceCtx}${groupCtx}${childCtx}${recentCtx}
 בני המשפחה: ${getFamilyContext()}
 
 ## הוראות
 
-עליך לקרוא לאחד מהכלים הבאים — תמיד:
+עליך לקרוא לאחד מהכלים הבאים - תמיד:
 - **add_notice**: אם ההודעה מכילה מידע רלוונטי למשפחה (גם אם אתה גם מוסיף אירוע/משימה)
 - **no_action**: אם ההודעה אינה רלוונטית למשפחה כלל
 
@@ -875,7 +902,7 @@ ${groupCtx}${childCtx}${recentCtx}
 - עדכוני בנייה/תשתית שאינם דחופים
 - ספק? → no_action
 
-**שינוי לאירוע קיים:** אם ההודעה מתארת שינוי לאירוע קיים ("האימון בוטל", "הטורניר במקום האימון", "שיעור מוזז") — קרא ל-add_notice בלבד, לא ל-add_event. **אל תוסיף אירוע חדש אם ההודעה מדברת על שינוי לאירוע קיים** — העדכון ייעשה על ידי המשתמש.
+**שינוי לאירוע קיים:** אם ההודעה מתארת שינוי לאירוע קיים ("האימון בוטל", "הטורניר במקום האימון", "שיעור מוזז") - קרא ל-add_notice בלבד, לא ל-add_event. **אל תוסיף אירוע חדש אם ההודעה מדברת על שינוי לאירוע קיים** - העדכון ייעשה על ידי המשתמש.
 
 **שיקולי add_notice:**
 - content: כל הפרטים הרלוונטיים בעברית. עובדות בלבד, לא מסקנות שלך.
@@ -886,13 +913,22 @@ ${groupCtx}${childCtx}${recentCtx}
 
 ${isImageMsg ? `**תמונה:** קרא ל-download_image רק אם המשלח הוא מורה/מנהל ויש סיכוי שהתמונה מכילה מידע אקדמי/לוגיסטי. אחרת no_action.` : ''}
 
-**אין לכתוב טקסט חופשי** — רק tool calls.`;
+**אין לכתוב טקסט חופשי** - רק tool calls.`;
 
-  // Guard: don't call API with empty body - returns billing error
+  // Guard: don't call API with empty body — returns billing error
   if (!body || !body.trim()) {
     if (messageId) markMessageTerminal(messageId, 'NOT_ACTIONABLE', 'empty body');
     return { text: '', sideEffects: [], acted: false, downloadImage: false };
   }
+
+  // ISSUE-020: skip groups in family context skip list before spending tokens
+  try {
+    if (shouldSkipGroup(groupName)) {
+      console.log(`[Agent] Skipping group per family context policy: "${groupName}"`);
+      if (messageId) markMessageTerminal(messageId, 'NOT_ACTIONABLE', 'group_skip policy');
+      return { text: '', sideEffects: [], acted: false, downloadImage: false };
+    }
+  } catch (_) { /* profile not loaded yet — continue normally */ }
 
   // P-008: Mark PROCESSING before API call so stuck-message scanner can detect hangs
   if (messageId) markMessageProcessing(messageId);
@@ -1020,6 +1056,12 @@ ${isImageMsg ? `**תמונה:** קרא ל-download_image רק אם המשלח ה
                 if (result.isSideEffect) sideEffects.push(result);
                 console.log(`[Agent] Group action (add_homework):`, JSON.stringify(result));
               }
+              continue;
+            }
+
+            if (tool.name === 'log_profile_contradiction') {
+              // ISSUE-020: log-only, no state change
+              console.log(`[FamilyCtx] CONTRADICTION in "${groupName}": ${input.observation || ''} | quote: "${input.source_quote || ''}"`)
               continue;
             }
 

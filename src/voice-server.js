@@ -81,12 +81,15 @@ function startVoiceServer(client, getHealthState) {
         const total = Object.values(byState).reduce((s, v) => s + v, 0);
         const failed = byState['FAILED'] || 0;
         const failRate = total > 0 ? ((failed / total) * 100).toFixed(1) : '0.0';
+        let profileHealth = { status: 'unknown' };
+        try { profileHealth = require('./family-context').getProfileHealth(); } catch (_) {}
         const payload = {
-          status: stuck.length === 0 && parseFloat(failRate) < 20 ? 'healthy' : 'degraded',
+          status: stuck.length === 0 && parseFloat(failRate) < 20 && profileHealth.status !== 'stale' ? 'healthy' : 'degraded',
           stuck_messages: stuck.length,
           hour_stats: byState,
           failure_rate_percent: failRate,
           total_messages_1h: total,
+          family_profile: profileHealth,
         };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(payload));

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-06-25",
+  "family": "Besinsky",
+  "members": {
+    "שגב": {
+      "grade": "6",
+      "school": "רשפים",
+      "teachers": ["דורית (doritdik2)", "בני"],
+      "groups": [
+        "🌼 הורי כיתה ו׳ 2 בני ודורית🌼",
+        "כתה ו׳ רשפים",
+        "הורי ו' בני 🤩",
+        "מתמטיקה- ו-נילי הגאונים"
+      ],
+      "current_notes": [
+        "End-of-year performance at Kimron — June 2026"
+      ]
+    },
+    "נבו": {
+      "grade": "3",
+      "school": "רימון",
+      "teachers": ["שיראל (maternity leave)", "דיקלה (substitute)"],
+      "groups": [
+        "ג׳3 תשפ״ו 🧡🩵💜",
+        "הורי מרכזון ג'-ד' - תשפ''ו",
+        "כדורגל רשפים ד׳-ו׳"
+      ],
+      "current_notes": [
+        "Moved up to ד'-ו' football team (May 2026)"
+      ]
+    },
+    "נטע": {
+      "grade": "gan",
+      "school": "גן כוכב",
+      "teachers": [],
+      "groups": [
+        "הורי גן כוכב 2025/6 🌟",
+        "גן כוכב תשפ\"ו"
+      ],
+      "current_notes": []
+    },
+    "ירדן": {
+      "grade": "gan",
+      "school": "גן צבר",
+      "teachers": [],
+      "groups": [
+        "גיל הרך - הורים",
+        "הורים צבר",
+        "גנון צבר"
+      ],
+      "current_notes": []
+    }
+  },
+  "group_skip": [
+    "בית משפחת בסינסקי-רשפים 🏡"
+  ],
+  "priority_rules": [
+    "pickup time change → immediate",
+    "costume or equipment list before an event → immediate",
+    "substitute teacher notice → time_sensitive",
+    "permission slip with deadline → time_sensitive",
+    "football game time/location change → time_sensitive"
+  ],
+  "current_focus": [
+    { "text": "Segev end-of-year performance at Kimron", "expires": "2026-07-01" },
+    { "text": "Nevo football season final weeks", "expires": "2026-07-01" }
+  ]
+}

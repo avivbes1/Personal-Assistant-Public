@@ -5,6 +5,7 @@
 
 const config = require('./config');
 const { initDB } = require('./db');
+const { loadProfile } = require('./family-context');
 const { initWhatsApp, sendToMasterGroup, sendToMasterGroupWithId, sendToMasterGroupWithMentions } = require('./whatsapp');
 const { initScheduler } = require('./scheduler');
 const { startHealthMonitor } = require('./health');
@@ -17,16 +18,25 @@ console.log('');
 // 1. Initialize database
 initDB();
 
-// 2. Initialize WhatsApp client
+// 2. Load family context profile (fail fast if missing/invalid)
+try {
+  loadProfile();
+} catch (err) {
+  console.error('[FamilyBot] FATAL: Family profile load failed:', err.message);
+  console.error('  Check config/family-context.json');
+  process.exit(1);
+}
+
+// 3. Initialize WhatsApp client
 initWhatsApp();
 
-// 3. Initialize scheduler (needs sendToMasterGroup from whatsapp)
+// 4. Initialize scheduler (needs sendToMasterGroup from whatsapp)
 //    Small delay to allow WhatsApp to connect before jobs fire
 setTimeout(() => {
   initScheduler(sendToMasterGroup, sendToMasterGroupWithId, sendToMasterGroupWithMentions);
 }, 2000);
 
-// 4. Start health monitor (after a delay so WhatsApp can connect first)
+// 5. Start health monitor (after a delay so WhatsApp can connect first)
 setTimeout(() => {
   startHealthMonitor(5 * 60 * 1000); // every 5 minutes
 }, 30 * 1000); // wait 30s after startup
