@@ -445,6 +445,66 @@ function markMessageProcessed(id) {
   getDB().prepare('UPDATE messages SET processed = 1 WHERE id = ?').run(id);
 }
 
+// --- Pipeline state helpers (ISSUE-019 / P-008) ---
+
+function markMessageProcessing(id) {
+  getDB().prepare(
+    'UPDATE messages SET pipeline_state=\'PROCESSING\', processing_started_at=? WHERE id=?'
+  ).run(Date.now(), id);
+}
+
+function markMessageTerminal(id, state, error, noticeId) {
+  getDB().prepare(
+    'UPDATE messages SET pipeline_state=?, pipeline_error=?, notice_id=?, processing_completed_at=? WHERE id=?'
+  ).run(state, error || null, noticeId || null, Date.now(), id);
+}
+
+function markMessageFailed(id, errorJson) {
+  getDB().prepare(
+    'UPDATE messages SET pipeline_state=\'FAILED\', pipeline_error=?, processing_completed_at=?, retry_count=retry_count+1 WHERE id=?'
+  ).run(errorJson || null, Date.now(), id);
+}
+
+function getStuckMessages(thresholdMs) {
+  const cutoff = Date.now() - (thresholdMs || 300000);
+  return getDB().prepare(
+    "SELECT id, group_id, body, processing_started_at FROM messages WHERE pipeline_state='PROCESSING' AND processing_started_at < ? ORDER BY processing_started_at ASC"
+  ).all(cutoff);
+}
+
+function getPipelineStats(windowMs) {
+  const cutoff = Date.now() - (windowMs || 3600000);
+  return getDB().prepare(
+    "SELECT pipeline_state, COUNT(*) as cnt FROM messages WHERE timestamp > ? GROUP BY pipeline_state"
+  ).all(cutoff);
+}
+
+// --- Config helpers ---
+
+function getConfigValue(key) {
+  const row = getDB().prepare('SELECT value, value_type FROM bot_config WHERE key=?').get(key);
+  if (!row) return null;
+  return row.value_type === 'integer' ? parseInt(row.value, 10) : row.value;
+}
+
+function setConfigValue(key, newValue, reason, proposedBy) {
+  const row = getDB().prepare('SELECT * FROM bot_config WHERE key=?').get(key);
+  if (!row) return { ok: false, error: 'unknown key' };
+  const min = row.min_value != null ? Number(row.min_value) : null;
+  const max = row.max_value != null ? Number(row.max_value) : null;
+  const num = Number(newValue);
+  if (min != null && num < min) return { ok: false, error: `below min ${min}` };
+  if (max != null && num > max) return { ok: false, error: `above max ${max}` };
+  const oldValue = row.value;
+  getDB().prepare('UPDATE bot_config SET value=?, modified_at=?, modified_by=? WHERE key=?').run(
+    String(newValue), Date.now(), proposedBy || 'lipa', key
+  );
+  const result = getDB().prepare(
+    'INSERT INTO config_change_log (key, old_value, new_value, reason, proposed_by, applied_at) VALUES (?,?,?,?,?,?)'
+  ).run(key, oldValue, String(newValue), reason || '', proposedBy || 'lipa', Date.now());
+  return { ok: true, oldValue, newValue: String(newValue), changeId: result.lastInsertRowid };
+}
+
 /**
  * Fetch recent messages from a monitored group for context.
  * Returns up to `limit` messages ordered oldest-first.
@@ -1185,4 +1245,13 @@ module.exports = {
   startDeliveryRun,
   finishDeliveryRun,
   recordDeliveryAttempt,
+  // Pipeline state (ISSUE-019 / P-008)
+  markMessageProcessing,
+  markMessageTerminal,
+  markMessageFailed,
+  getStuckMessages,
+  getPipelineStats,
+  // Config management
+  getConfigValue,
+  setConfigValue,
 };

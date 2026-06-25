@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const config = require('./config');
-const { saveMessage, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages } = require('./db');
+const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal } = require('./db');
 const { resolveMembersInText } = require('./family-profiles');
 const { validateOutgoing, repairMessage } = require('./validate-outgoing');
 const { extractFromText, detectMissingParams, buildClarificationQuestion, resolvePartialEvent } = require('./parser');
@@ -384,19 +384,43 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
 
     // Event/task extraction — save to DB only; Lipa (OpenClaw) handles surfacing to master group
     const msgIsBacklog = isBacklogMessage(msg.timestamp * 1000);
-    const agentResult = await handleGroupEvent(body, chat.name, sender, groupDescription, recentMessages, msg.timestamp * 1000, isImageMsg, msgIsBacklog, groupRecord?.primary_child || null);
 
-    // If agent decided this image is worth reading, run vision now and update the notice
+    // ISSUE-018: Skip notice extraction for messages sent by Aviv or Liat themselves.
+    // Their own messages should never be re-broadcast to the master group.
+    const senderNumber = (contact.number || '').replace(/\D/g, '');
+    const ownerPhones = [config.AVIV_PHONE, config.LIAT_PHONE].map(p => String(p).replace(/\D/g, ''));
+    if (ownerPhones.includes(senderNumber)) {
+      console.log(`[WhatsApp] Skipping notice extraction for owner message in "${chat.name}" by ${sender}`);
+      if (messageId) markMessageTerminal(messageId, 'NOT_ACTIONABLE', 'owner message');
+      return;
+    }
+
+    const agentResult = await handleGroupEvent(body, chat.name, sender, groupDescription, recentMessages, msg.timestamp * 1000, isImageMsg, msgIsBacklog, groupRecord?.primary_child || null, messageId);
+
+    // If agent decided this image is worth reading, run vision now and upsert the notice
     if (isImageMsg && agentResult.downloadImage) {
       console.log(`[WhatsApp] Agent requested image download for "${chat.name}" by ${sender}`);
       try {
         const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true });
         if (described) {
           console.log(`[WhatsApp] Image described: ${described.substring(0, 100)}`);
-          // Update the notice created by agent with the real image content
-          getDB().prepare(
+          // Try UPDATE first (old path: agent also saved a notice)
+          const updated = getDB().prepare(
             'UPDATE notices SET content = ? WHERE source_timestamp = ? AND group_name = ? AND dismissed = 0'
           ).run(described, msg.timestamp * 1000, chat.name);
+          // ISSUE-019: With tool calling, agent may only call download_image without add_notice.
+          // If UPDATE found no row, INSERT a new notice with the described content.
+          if (updated.changes === 0) {
+            saveNotice({
+              group_name: chat.name,
+              content: described,
+              relevance_date: new Date(msg.timestamp * 1000).toLocaleDateString('en-CA', { timeZone: config.TIMEZONE || 'Asia/Jerusalem' }),
+              source_timestamp: msg.timestamp * 1000,
+              urgency_hint: 'routine',
+            });
+            console.log(`[WhatsApp] Image notice created (new) for "${chat.name}"`);
+            if (messageId) markMessageTerminal(messageId, 'NOTICE_CREATED', null, null);
+          }
         }
       } catch (e) {
         console.error('[WhatsApp] Vision post-processing error:', e.message);

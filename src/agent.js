@@ -13,7 +13,7 @@ const { getFamilyContext } = require('./family-profiles');
 const { render: renderPrompt } = require('./llm/prompts');
 const { searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent, listEventsForDate } = require('./calendar');
 const { processEventAction } = require('./calendarGate');
-const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveHomework, getPendingHomework, saveOrGetThread, dismissThread, linkNoticeToThread, getMostRecentDeliveredThread } = require('./db');
+const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveHomework, getPendingHomework, saveOrGetThread, dismissThread, linkNoticeToThread, getMostRecentDeliveredThread, markMessageProcessing, markMessageTerminal, markMessageFailed, getConfigValue } = require('./db');
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -49,7 +49,7 @@ function alertCreditExhausted(errMsg) {
     const http = require('http');
     const payload = JSON.stringify({
       to: config.AVIV_PHONE,
-      text: `⚠️ Anthropic API credit error — bot is in degraded mode.\n${errMsg}`
+      text: `⚠️ Anthropic API credit error - bot is in degraded mode.\n${errMsg}`
     });
     const req = http.request({ hostname: 'localhost', port: 3001, path: '/send-message', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
@@ -148,7 +148,7 @@ function stripActionBlocks(text, blocks) {
  * the WhatsApp client (handled by whatsapp.js).
  */
 /**
- * Deterministic urgency classifier — replaces LLM urgency_hint.
+ * Deterministic urgency classifier - replaces LLM urgency_hint.
  * Rules:
  *   immediate    = cancellation/emergency keywords, OR event within 3h
  *   time_sensitive = event today or tomorrow
@@ -158,7 +158,7 @@ function computeUrgencyHint(action, nowMs) {
   const content = action.content || '';
   const ISRAEL_TZ = 'Asia/Jerusalem';
 
-  // 1. Keyword override — always immediate regardless of date
+  // 1. Keyword override - always immediate regardless of date
   const URGENT_KEYWORDS = /סגור|ביטול|נדחה|בוטל|איסוף מוקדם|חירום|דחוף|חד פעמי|בית ספר סגור|פינוי|אזעקה|נעילה|מצב חירום/i;
   if (URGENT_KEYWORDS.test(content)) return 'immediate';
 
@@ -182,7 +182,7 @@ function computeUrgencyHint(action, nowMs) {
     if (action.relevance_date === tomorrowIso) return 'time_sensitive';
   }
 
-  // 4. Backlog messages that didn’t qualify above — force routine (event already passed or too far)
+  // 4. Backlog messages that didn't qualify above - force routine (event already passed or too far)
   if (action._isBacklog) {
     const urgencyHint = 'routine'; // explicit for test visibility
     return urgencyHint;
@@ -196,7 +196,7 @@ async function executeAction(action, senderName) {
     switch (action.action) {
 
       case 'add_event': {
-        // Route through calendarGate — 4-stage flow:
+        // Route through calendarGate - 4-stage flow:
         // extract → fetch calendar state → semantic dedup decision → execute/ask
         try {
           const { sendToMasterGroup } = require('./whatsapp');
@@ -255,7 +255,7 @@ async function executeAction(action, senderName) {
             console.log('[Agent] Dedup: skipping notice for ' + action.group_name + ' ' + action.relevance_date + ' ' + action.relevance_time + ' - existing #' + existingForSlot.id + ' (date=' + existingForSlot.relevance_date + ') already covers this slot');
             return { type: 'add_notice', ok: true, content: noticeContent, isSideEffect: true, deduped: true };
           }
-          // Rules-based urgency classifier — deterministic, no LLM guessing
+          // Rules-based urgency classifier - deterministic, no LLM guessing
           const urgencyHint = computeUrgencyHint(action, Date.now());
           // Parse relevant_datetime to epoch ms
           let relevantDatetime = null;
@@ -329,7 +329,7 @@ async function executeAction(action, senderName) {
         } else if (child && subject) {
           changed = db.prepare('UPDATE homework SET done=1, updated_at=? WHERE id=(SELECT id FROM homework WHERE done=0 AND child_name=? AND subject=? ORDER BY due_date ASC LIMIT 1)').run(Date.now(), child, subject).changes;
         } else {
-          // Not enough context — list open homework and ask
+          // Not enough context - list open homework and ask
           const open = db.prepare("SELECT id, subject, due_date FROM homework WHERE done=0 AND child_name=? AND (due_date IS NULL OR due_date >= date('now','-1 day')) ORDER BY due_date ASC LIMIT 5").all(child || '');
           if (open.length > 0) {
             const list = open.map(h => `• ${h.subject || 'ללא נושא'}${h.due_date ? ' (ל' + h.due_date + ')' : ''} [id:${h.id}]`).join('\n');
@@ -383,7 +383,7 @@ async function executeAction(action, senderName) {
             req.on('error', reject);
             req.write(payload); req.end();
           });
-          console.log(`[Agent] Babysitter booking created for ${date} ${start}–${end}`);
+          console.log(`[Agent] Babysitter booking created for ${date} ${start}-${end}`);
           return { type: 'book_babysitter', ok: true };
         } catch (err) {
           console.error('[Agent] book_babysitter error:', err.message);
@@ -571,11 +571,11 @@ ${context}
 - **שעה ב-add_event**: אם השעה לא כתובה **במפורש** בהודעה (לא "שעות האימון הרגילות", לא "הזמן הרגיל", לא הסקה) → **השמט לחלוטין את שדה time** (אירוע יום שלם). אסור לנחש שעה.
 - הודעות מצוטטות [ההודעה המצוטטת: ...] הן הקשר להמשך שיחה, לא פקודות חדשות
 - בלוקי JSON בסוף בלבד, ללא גדרות markdown
-- **כשמישהו אומר שX הוא «במקום» / «מחליף» אירוע Y** → השתמש ב-update_event על Y (search_title=שם הארוע הקיים), עם changes שכוללים את כל הפרטים החדשים (title, start_time, end_time). **אל תשתמש ב-add_event** — זה יוצר כפילות
+- **כשמישהו אומר שX הוא «במקום» / «מחליף» אירוע Y** → השתמש ב-update_event על Y (search_title=שם הארוע הקיים), עם changes שכוללים את כל הפרטים החדשים (title, start_time, end_time). **אל תשתמש ב-add_event** - זה יוצר כפילות
 - "CHILD finished homework" / "CHILD2 finished homework" / "done homework" → mark_homework_done עם child ו-subject
 - "מה שיעורי בית של X?" / "יש שיעורי בית למחר?" → ענה מתוך הנתונים בסקשן "שיעורי בית פתוחים" בהקשר
-- **אל אישר פעולה לפני שביצעת אותה** — כתוב תשובה כאילו הפעולה הצליחה רק לאחר שהJSON יבוצע. אם אינך בטוח, כתוב "מנסה..." ולא "נוסף ✅"
-- **מידע תחת הכותרת "לא נמצא בתיעוד"**: התשובה היחידה המותרת היא "המידע הזה לא נמצא בהודעות שקיבלתי". אסור מוחלט: אל תמלא חסרים בידע כללי ("בדרך כלל לוקחים...", "סביר ש..."). אם המשתמש מתעקש — הסבר שהמידע לא קיים בתיעוד ושיבדוק בקבוצה ישירות.
+- **אל אישר פעולה לפני שביצעת אותה** - כתוב תשובה כאילו הפעולה הצליחה רק לאחר שהJSON יבוצע. אם אינך בטוח, כתוב "מנסה..." ולא "נוסף ✅"
+- **מידע תחת הכותרת "לא נמצא בתיעוד"**: התשובה היחידה המותרת היא "המידע הזה לא נמצא בהודעות שקיבלתי". אסור מוחלט: אל תמלא חסרים בידע כללי ("בדרך כלל לוקחים...", "סביר ש..."). אם המשתמש מתעקש - הסבר שהמידע לא קיים בתיעוד ושיבדוק בקבוצה ישירות.
 
 ## ברירת מחדל לבעלות ביומן:
 - אם לא צוין במפורש → תמיד owner="both"
@@ -683,7 +683,7 @@ async function handleMessage(text, quotedMsg, senderName, conversationHistory = 
           let cleanText = stripActionBlocks(rawText, blocks) || 'בוצע.';
           // Step 5: If any action failed, override optimistic LLM confirmation
           if (failedActions.length > 0) {
-            console.warn('[Agent] Action(s) failed:', failedActions.join(', '), '— overriding confirmation text');
+            console.warn('[Agent] Action(s) failed:', failedActions.join(', '), '- overriding confirmation text');
             cleanText = 'מצטער, הייתה בעיה בביצוע הפעולה (' + failedActions.join(', ') + '). אנסה שוב.';
           }
           // Fix B: For schedule_whatsapp, override LLM text with factual result (confirm-after-results)
@@ -739,7 +739,84 @@ async function handleMessage(text, quotedMsg, senderName, conversationHistory = 
  * @param {boolean} isImageMsg       - True if this message is an image (body will be '[תמונה]')
  * @returns {Promise<{text: string, sideEffects: Array, acted: boolean, downloadImage: boolean}>}
  */
-async function handleGroupEvent(body, groupName, sender, groupDescription = null, recentMessages = [], msgTimestamp = null, isImageMsg = false, isBacklog = false, primaryChild = null) {
+// Tool definitions for tool-calling extraction (ISSUE-019)
+// Using tools instead of free-form JSON eliminates truncation risk entirely.
+const GROUP_TOOLS = [
+  {
+    name: 'add_notice',
+    description: 'חובה לקרוא כאשר ההודעה מכילה מידע שרלוונטי למשפחה. תמיד העדף זה על שתיקה.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content:           { type: 'string',  description: 'תיאור תמציתי וברור בעברית. כלול את כל פרטי הפעולה (מועדים, מה להביא, איש קשר). עובדות בלבד.' },
+        thread_key:        { type: 'string',  description: 'kebab-case slug ייחודי לנושא, עקבי על פני הודעות דומות. דוגמה: vo-bni-end-year-show' },
+        relevance_date:    { type: 'string',  description: 'YYYY-MM-DD - תאריך שבו המידע רלוונטי. מחר=מחר, היום=היום.' },
+        relevance_time:    { type: ['string', 'null'], description: 'HH:MM רק אם שעה מפורשת בטקסט. אחרת null.' },
+        urgency_hint:      { type: 'string',  enum: ['immediate', 'time_sensitive', 'routine'], description: 'routine לרוב. immediate רק אם דחוף ל-24ש.' },
+        relevant_datetime: { type: ['string', 'null'], description: 'ISO datetime של מתי האירוע קורה, או null.' }
+      },
+      required: ['content', 'thread_key', 'relevance_date', 'urgency_hint']
+    }
+  },
+  {
+    name: 'no_action',
+    description: 'ההודעה לא רלוונטית למשפחה - שיחת חולין, תודות, סירובים של אנשים אחרים, עדכוני בנייה שגרתיים.',
+    input_schema: {
+      type: 'object',
+      properties: { reason: { type: 'string', description: 'סיבה קצרה' } },
+      required: ['reason']
+    }
+  },
+  {
+    name: 'add_event',
+    description: 'הוסף אירוע ליומן. רק כשהמשפחה חייבת להגיע (לא הזמנה אופציונלית).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary:      { type: 'string' },
+        date:         { type: 'string', description: 'YYYY-MM-DD' },
+        time:         { type: 'string', description: 'HH:MM' },
+        duration_min: { type: 'integer' },
+        owner:        { type: 'string', enum: ['both', 'aviv', 'liat'] },
+        location:     { type: 'string' }
+      },
+      required: ['summary', 'date', 'owner']
+    }
+  },
+  {
+    name: 'add_task',
+    description: 'הוסף משימה לביצוע.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text:     { type: 'string' },
+        due_date: { type: 'string', description: 'YYYY-MM-DD' }
+      },
+      required: ['text']
+    }
+  },
+  {
+    name: 'add_homework',
+    description: 'רשום שיעורי בית לאחד הילדים.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        child:       { type: 'string', description: 'שם הילד' },
+        subject:     { type: 'string' },
+        description: { type: 'string' },
+        due_date:    { type: 'string', description: 'YYYY-MM-DD' }
+      },
+      required: ['child', 'subject', 'description']
+    }
+  },
+  {
+    name: 'download_image',
+    description: 'הורד ונתח את התמונה - רק אם מורה/מנהל שולח תמונה בודדת עם רמז לתוכן רלוונטי.',
+    input_schema: { type: 'object', properties: {}, required: [] }
+  }
+];
+
+async function handleGroupEvent(body, groupName, sender, groupDescription = null, recentMessages = [], msgTimestamp = null, isImageMsg = false, isBacklog = false, primaryChild = null, messageId = null) {
   if (!ANTHROPIC_API_KEY) {
     console.error('[Agent] No ANTHROPIC_API_KEY');
     return { text: '', sideEffects: [], acted: false };
@@ -771,81 +848,71 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
     recentCtx = `\n## הודעות אחרונות בקבוצה (הקשר):\n${lines.join('\n')}\n`;
   }
 
-  const systemPrompt = `אתה ${config.BOT_NAME}, עוזר משפחתי אוטומטי. אתה מנטר קבוצות WhatsApp של המשפחה.
+  // ISSUE-019: System prompt is now tool-oriented — no prose, no JSON blocks in text.
+  // The model MUST call add_notice or no_action. Other tools are optional.
+  const systemPrompt = `אתה ${config.BOT_NAME}, עוזר משפחתי אוטומטי שמנטר קבוצות WhatsApp.
 
 קבוצה: "${groupName}"
 שולח: ${sender}
 היום: ${today} (${todayIso})
 מחר: ${tomorrowIso}
 ${groupCtx}${childCtx}${recentCtx}
-
 בני המשפחה: ${getFamilyContext()}
 
-## החלטה:
-קרא את ההודעה. האם יש כאן משהו שהמשפחה צריכה לפעול עליו?
+## הוראות
 
-**הוסף ליומן אוטומטית** אם:
-- האירוע נוגע ישירות לאחד מבני המשפחה (מבחן, חוג, משחק)
-- חובה להגיע / מחייב פעולה ברורה
+עליך לקרוא לאחד מהכלים הבאים — תמיד:
+- **add_notice**: אם ההודעה מכילה מידע רלוונטי למשפחה (גם אם אתה גם מוסיף אירוע/משימה)
+- **no_action**: אם ההודעה אינה רלוונטית למשפחה כלל
 
-**שאל קודם** אם:
-- הזמנה אופציונלית ("מוזמנים", "נשמח לנוכחות", "מי שרוצה", התנדבות)
-- ספק האם הם ירצו להגיע
+**add_notice בנוסף לכלים אחרים:** כשאתה מוסיף אירוע ליומן, תמיד גם קרא ל-add_notice לתיעוד.
 
-**שתוק לחלוטין** (אל תחזיר שום דבר) אם:
-- סירוב/התנצלות של מישהו אחר ("לא אוכל להגיע כי...")
-- אירוע של מישהו אחר שנאמר כהסבר לאי-הגעה
-- שיחת חולין, תודות, "ראיתי", "אוקיי", בנייה, הפרטי משפחתי
-- **ספק? \u2192 שתוק**
-- **אל תוסיף אירוע חדש אם ההודעה מדברת על שינוי לאירוע קיים** ("הטורניר במקום האימון", "האימון בוטל", "שיעור מוזז") - פלוט add_notice בלבד. העדכון ייעשה על ידי המשתמש.
+**מתי add_event:** אירוע שהמשפחה חייבת להגיע אליו (לא הזמנה אופציונלית). קרא גם ל-add_notice.
 
-## כלים:
-{"action":"add_event","summary":"כותרת","date":"YYYY-MM-DD","time":"HH:MM","duration_min":60,"owner":"both|aviv|liat","location":"..."}
-{"action":"add_task","text":"תיאור המשימה","due_date":"YYYY-MM-DD"}
-{"action":"add_homework","child":"CHILD_NAME","subject":"מתמטיקה","description":"עמודים 64-66 ו-108-109 בחוברת מתמטיקה","due_date":"YYYY-MM-DD"}  // השתמש כשההודעה מכילה שיעורי בית / מטלות / עמודים לתרגיל או עבודה לביתספר. child = הילד מכותנתה (childCtx). due_date = תאריך הגשת. אל תשתמש לאירועים ביומן.
-{"action":"add_notice","content":"תיאור תמציתי וברור","thread_key":"kebab-slug-of-topic","relevance_date":"YYYY-MM-DD","relevance_time":"HH:MM","urgency_hint":"immediate|time_sensitive|routine","relevant_datetime":"YYYY-MM-DDTHH:MM:00 or null","group_name":"${groupName}","source_timestamp":${ts}}
-${isImageMsg ? '{"action":"download_image"}  // פלוט רק אם החלטת שכדאי לנתח את התמונה' : ''}
+**מתי no_action (בלבד):**
+- שיחת חולין, תודות, "ראיתי"
+- סירוב/התנצלות של מישהו אחר
+- עדכוני בנייה/תשתית שאינם דחופים
+- ספק? → no_action
 
-${isImageMsg ? `## תמונה — החלטת download
-הודעה זו היא תמונה. אין לך את תוכנה עדיין.
-החלט על בסיס ההקשר (מי שלח, קבוצה, הודעות קודמות) האם כדאי להוריד ולנתח אותה:
-- כן: מורה / מנהל שולח תמונה בודדת בשעת בוקר בקבוצת כיתה; caption שמרמז על תוכן; הקשר של שיעורי בית / הכנה / רשימה → פלוט {"action":"download_image"}
-- לא: burst של תמונות מהורה; תמונות מפעילות; תמונות חברתיות → אל תפלוט download_image
-אם אין מספיק מידע — אל תוריד (עדיף לפספס מאשר לבזבז משאבים).
-` : ''}
-## חובה: notice
-אם ההודעה מכילה מידע רלוונטי למשפחה (אפילו אם אתה שותק או שואל) — תמיד פלוט JSON של add_notice עם:
-- content: תיאור תמציתי בעברית של מה שרלוונטי. **כלול את כל פרטי הפעולה** (תשלומים, קישורים, מועדים, איש קשר) — אל תוריד דבר שדורש פעולה. **חשוב: כלול רק עובדות שמצוינות במפורש בהודעה. אל תוסיף דרישות, תנאים, או פעולות שלא נאמרו (למשל: אם ההודעה אומרת שמישהו כנראה לא יגיע — אל תכתוב שדרוש אישור הורים אם זה לא נכתב).** 
-- relevance_date: התאריך שבו המידע רלוונטי (YYYY-MM-DD). פענח מילים יחסיות: "הערב"/"היום" = ${todayIso}, "מחר" = ${tomorrowIso}. אם תאריך ספציפי אחר — חשב לפי היום (${todayIso}). אם אין תאריך מוזכר כלל — השתמש ב-${todayIso} (ברירת מחדל היא תמיד היום).
-- relevance_time: שעה ב-HH:MM **רק אם שעה מפורשת מופיעה בטקסט ההודעה**. אם לא כתוב שעה במפורש — אל תמציא, השמט לחלוטין (null)
-- urgency_hint: "routine" (ברירת מחדל — המערכת מחשבת דחיפות אוטומטית לפי תאריך)
-- relevant_datetime: חותמת זמן ISO של **מתי האירוע קורה** (לא מתי ההודעה נשלחה). "הערב 18:00" = "${todayIso}T18:00:00". אם אין שעה — רק תאריך ("${todayIso}T00:00:00"). אם לא ידוע — null.
-- thread_key: slug קצר ויציב לנושא המתמשך, בפורמט kebab-case. **עקבי וציב**: אם מספר הודעות מדברות על אותו עניין באותה קבוצה — תן לכולן את אותו thread_key. דוגמאות: "vo-bni-teacher-gift", "shaked-planners-2026", "gan-kochav-trip-jun". אל תכלול תאריך ב-thread_key אלא אם אודות אירוע ספציפי.
-אם ההודעה לא רלוונטית כלל למשפחה — אל תפלוט notice.
+**שינוי לאירוע קיים:** אם ההודעה מתארת שינוי לאירוע קיים ("האימון בוטל", "הטורניר במקום האימון", "שיעור מוזז") — קרא ל-add_notice בלבד, לא ל-add_event. **אל תוסיף אירוע חדש אם ההודעה מדברת על שינוי לאירוע קיים** — העדכון ייעשה על ידי המשתמש.
 
-## פורמט תגובה:
+**שיקולי add_notice:**
+- content: כל הפרטים הרלוונטיים בעברית. עובדות בלבד, לא מסקנות שלך.
+- relevance_date: "מחר" = ${tomorrowIso}, "היום/הערב" = ${todayIso}. ברירת מחדל: ${todayIso}.
+- relevance_time: רק אם שעה מפורשת בטקסט. אחרת null.
+- thread_key: kebab-case, עקבי לנושא. דוגמאות: "vo2-end-year-show", "nevo-football-game-jun".
+- urgency_hint: routine ברירת מחדל. immediate רק אם הדחיפות היא <24ש'.
 
-כשמוסיף אוטומטית:
-"📅 *${groupName}:* [תיאור] ✅"
-+ JSON בסוף (ללא גדרות markdown)
+${isImageMsg ? `**תמונה:** קרא ל-download_image רק אם המשלח הוא מורה/מנהל ויש סיכוי שהתמונה מכילה מידע אקדמי/לוגיסטי. אחרת no_action.` : ''}
 
-כששואל:
-"📨 *${groupName}:* [תיאור — מה, מתי, פרטים]. להוסיף ליומן לשניהם?"
-(ללא JSON — ברירת מחדל היא "שניהם")
+**אין לכתוב טקסט חופשי** — רק tool calls.`;
 
-כשלא רלוונטי — **אל תכתוב כלום.** רק add_notice אם רלוונטי.`;
-
-  // Guard: don't call API with empty body — returns billing error
+  // Guard: don't call API with empty body - returns billing error
   if (!body || !body.trim()) {
+    if (messageId) markMessageTerminal(messageId, 'NOT_ACTIONABLE', 'empty body');
     return { text: '', sideEffects: [], acted: false, downloadImage: false };
   }
 
-  const bodyStr = JSON.stringify({
+  // P-008: Mark PROCESSING before API call so stuck-message scanner can detect hangs
+  if (messageId) markMessageProcessing(messageId);
+
+  // Read max_tokens from config table (allows autonomous tuning)
+  let maxTokens = 2048;
+  try { const cfg = getConfigValue('haiku_max_tokens'); if (cfg) maxTokens = cfg; } catch (_) {}
+
+  // ISSUE-019: Use tool calling instead of free-form JSON.
+  // Tool calls are structured, schema-validated, and cannot be truncated mid-output.
+  // The model MUST call at least one tool (tool_choice: "any").
+  const reqBody = {
     model: 'claude-haiku-4-5',
-    max_tokens: 512,
+    max_tokens: maxTokens,
     system: systemPrompt,
+    tools: GROUP_TOOLS,
+    tool_choice: { type: 'any' }, // force at least one tool call - eliminates empty/prose responses
     messages: [{ role: 'user', content: body.trim() }],
-  });
+  };
+  const bodyStr = JSON.stringify(reqBody);
 
   return new Promise((resolve) => {
     const req = https.request({
@@ -869,47 +936,112 @@ ${isImageMsg ? `## תמונה — החלטת download
             if (parsed.error.message && parsed.error.message.includes('credit balance')) {
               alertCreditExhausted(parsed.error.message);
             }
-            return resolve({ text: '', sideEffects: [], acted: false });
+            if (messageId) markMessageFailed(messageId, JSON.stringify({ code: 'API_ERROR', detail: parsed.error.message }));
+            return resolve({ text: '', sideEffects: [], acted: false, downloadImage: false });
           }
 
-          const rawText = parsed.content?.[0]?.text?.trim() || '';
-          console.log(`[Agent] Group "${groupName}" raw (${rawText.length}c): ${rawText.substring(0, 120)}`);
+          // Extract all tool_use blocks from the response
+          const toolUseBlocks = (parsed.content || []).filter(c => c.type === 'tool_use');
+          console.log(`[Agent] Group "${groupName}" tools called: ${toolUseBlocks.map(t => t.name).join(', ') || '(none)'} stop=${parsed.stop_reason}`);
 
-          const blocks = extractActionBlocks(rawText);
+          if (toolUseBlocks.length === 0) {
+            // Model returned no tools despite tool_choice=any - shouldn't happen but handle gracefully
+            console.warn(`[Agent] Group "${groupName}": no tool calls returned (stop=${parsed.stop_reason}). Marking NOT_ACTIONABLE.`);
+            if (messageId) markMessageTerminal(messageId, 'NOT_ACTIONABLE', 'model returned no tool calls');
+            return resolve({ text: '', sideEffects: [], acted: false, downloadImage: false });
+          }
+
           const sideEffects = [];
+          let downloadImage = false;
+          let pipelineState = 'NOT_ACTIONABLE'; // will be updated if notice/event created
+          let noticeCreatedId = null;
 
-          for (const block of blocks) {
-            // download_image is a signal for whatsapp.js, not an executable action
-            if (block.json.action === 'download_image') continue;
-            // Inject source context for calendarGate and backlog flag
-            block.json._isBacklog = isBacklog;
-            if (block.json.action === 'add_event') {
-              block.json._rawMessage = body;
-              block.json._groupName  = groupName;
+          for (const tool of toolUseBlocks) {
+            const input = tool.input || {};
+
+            if (tool.name === 'no_action') {
+              console.log(`[Agent] Group "${groupName}": no_action - ${input.reason || ''}`);
+              continue; // terminal - pipelineState stays NOT_ACTIONABLE
             }
-            const result = await executeAction(block.json, sender);
-            if (result) {
-              if (result.isSideEffect) sideEffects.push(result);
-              console.log(`[Agent] Group action (${block.json.action}):`, JSON.stringify(result));
+
+            if (tool.name === 'download_image') {
+              downloadImage = true;
+              continue; // signal only, handled by whatsapp.js
             }
+
+            if (tool.name === 'add_notice') {
+              // Build the same action object the old system used
+              const noticeAction = {
+                action: 'add_notice',
+                content:           input.content,
+                thread_key:        input.thread_key,
+                relevance_date:    input.relevance_date,
+                relevance_time:    input.relevance_time || null,
+                urgency_hint:      input.urgency_hint || 'routine',
+                relevant_datetime: input.relevant_datetime || null,
+                group_name:        groupName,
+                source_timestamp:  ts,
+                _isBacklog:        isBacklog,
+              };
+              const result = await executeAction(noticeAction, sender);
+              if (result) {
+                if (result.isSideEffect) sideEffects.push(result);
+                noticeCreatedId = result.noticeId || null;
+                pipelineState = 'NOTICE_CREATED';
+                console.log(`[Agent] Group action (add_notice):`, JSON.stringify(result));
+              }
+              continue;
+            }
+
+            if (tool.name === 'add_event') {
+              const eventAction = { action: 'add_event', ...input, _isBacklog: isBacklog, _rawMessage: body, _groupName: groupName };
+              const result = await executeAction(eventAction, sender);
+              if (result) {
+                if (result.isSideEffect) sideEffects.push(result);
+                console.log(`[Agent] Group action (add_event):`, JSON.stringify(result));
+              }
+              continue;
+            }
+
+            if (tool.name === 'add_task') {
+              const taskAction = { action: 'add_task', ...input, _isBacklog: isBacklog };
+              const result = await executeAction(taskAction, sender);
+              if (result) {
+                if (result.isSideEffect) sideEffects.push(result);
+                console.log(`[Agent] Group action (add_task):`, JSON.stringify(result));
+              }
+              continue;
+            }
+
+            if (tool.name === 'add_homework') {
+              const hwAction = { action: 'add_homework', ...input, _isBacklog: isBacklog };
+              const result = await executeAction(hwAction, sender);
+              if (result) {
+                if (result.isSideEffect) sideEffects.push(result);
+                console.log(`[Agent] Group action (add_homework):`, JSON.stringify(result));
+              }
+              continue;
+            }
+
+            console.warn(`[Agent] Unknown tool: ${tool.name}`);
           }
 
-          const downloadImage = blocks.some(b => b.json.action === 'download_image');
-          let cleanText = stripActionBlocks(rawText, blocks).trim();
-          // Guard: if output is just an instruction phrase that leaked, suppress it
-          if (/^[\(\(]?(כלום|אפס תווים|אין לענות|silent|no.?reply)/.test(cleanText)) cleanText = '';
-          const acted = blocks.length > 0;
-          resolve({ text: cleanText, sideEffects, acted, downloadImage });
+          // P-008: mark terminal state
+          if (messageId) markMessageTerminal(messageId, pipelineState, null, noticeCreatedId);
+
+          resolve({ text: '', sideEffects, acted: sideEffects.length > 0 || downloadImage, downloadImage });
         } catch (e) {
           console.error('[Agent] handleGroupEvent parse error:', e.message);
-          resolve({ text: '', sideEffects: [], acted: false });
+          if (messageId) markMessageFailed(messageId, JSON.stringify({ code: 'PARSE_ERROR', detail: e.message }));
+          resolve({ text: '', sideEffects: [], acted: false, downloadImage: false });
         }
       });
     });
 
     req.on('error', (err) => {
       console.error('[Agent] handleGroupEvent request error:', err.message);
-      resolve({ text: '', sideEffects: [], acted: false });
+      if (messageId) markMessageFailed(messageId, JSON.stringify({ code: 'REQUEST_ERROR', detail: err.message }));
+      resolve({ text: '', sideEffects: [], acted: false, downloadImage: false });
     });
 
     req.write(bodyStr);

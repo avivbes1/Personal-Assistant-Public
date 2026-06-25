@@ -26,6 +26,48 @@ const SHADOW_LOG = path.join(__dirname, '..', 'data', 'triage-shadow-log.jsonl')
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ISRAEL_TZ = 'Asia/Jerusalem';
 
+// ── Schema validation (P-007) ─────────────────────────────────────────────────
+const Ajv = require('ajv');
+const _ajv = new Ajv();
+const _classificationSchema = {
+  type: 'object',
+  required: ['decisions'],
+  properties: {
+    decisions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['notice_id', 'action', 'reason'],
+        properties: {
+          notice_id: { type: 'number' },
+          action: { enum: ['send_now', 'defer', 'skip', 'send_update'] },
+          merge_group: { type: ['string', 'null'] },
+          reason: { type: 'string' },
+          material_change: { type: 'boolean' }
+        }
+      }
+    }
+  }
+};
+const _validateClassification = _ajv.compile(_classificationSchema);
+
+// Normalize LLM decisions: auto-generate merge_group fallback for send_now with null (P-007)
+function normalizeDecisions(decisions, noticesById) {
+  const normalized = [];
+  for (const d of decisions) {
+    if (!Number.isInteger(d.notice_id) || !noticesById[d.notice_id]) {
+      console.error(`[Triage] Rejected decision with invalid notice_id: ${JSON.stringify(d)}`);
+      continue;
+    }
+    if ((d.action === 'send_now' || d.action === 'send_update') && !d.merge_group) {
+      console.warn(`[Triage] Auto-generated merge_group for #${d.notice_id} (LLM returned null merge_group)`);
+      d.merge_group = `auto-${d.notice_id}`;
+    }
+    normalized.push(d);
+  }
+  return normalized;
+}
+
 // ── Anthropic API ────────────────────────────────────────────────────────────
 
 function callHaiku(system, user, jsonMode = false) {
@@ -147,7 +189,11 @@ function bucketByGroupAndDate(notices) {
 function groupByMergeGroup(decisions, noticesById) {
   const groups = {};
   for (const d of decisions) {
-    if (!d.merge_group || (d.action !== 'send_now' && d.action !== 'send_update')) continue;
+    if (d.action !== 'send_now' && d.action !== 'send_update') continue;
+    if (!d.merge_group) {
+      console.error(`[Triage] BUG: send_now/send_update without merge_group after normalization: #${d.notice_id}`);
+      continue;
+    }
     if (!groups[d.merge_group]) groups[d.merge_group] = { notices: [], action: d.action };
     const n = noticesById[d.notice_id];
     if (n) groups[d.merge_group].notices.push(n);
@@ -183,7 +229,8 @@ material_change:
 - send_update: עדכון משמעותי לאירוע שכבר נשלח היום (משתתף חדש, שינוי שעה)
 - defer: הודעה שעשויה להיות שימושית אבל לא דחופה — תיכנס לסיכום הבוקר
 - skip: שיחה, תמונות, הגיות, עדכון סטטוס ללא פעולה, בנייה/חפירות
-- merge_group: מפתח קצר בפורמט kebab-case (לדוגמה: "movie-kupa-17jun"). שתי הודעות יקבלו SAME merge_group אם הן על אותו נושא כללי (למשל: תיאום סרט לכיתה, גם אם השעות/מחירים שונים — הכל חלק מאותו דיון). הפרד רק אם זה בבירור עניין שונה לגמרי.`;
+- merge_group: מפתח קצר בפורמט kebab-case (לדוגמה: "movie-kupa-17jun"). שתי הודעות יקבלו SAME merge_group אם הן על אותו נושא כללי (למשל: תיאום סרט לכיתה, גם אם השעות/מחירים שונים — הכל חלק מאותו דיון). הפרד רק אם זה בבירור עניין שונה לגמרי.
+CRITICAL: כאשר action הוא "send_now" או "send_update", השדה merge_group חייב להיות מחרוזת kebab-case לא ריקה. אסור להחזיר merge_group: null עבור send_now / send_update. אם אין נושא ברור, השתמש ב-"misc-NOTICE_ID" (החלף NOTICE_ID במספר ה-notice).`;
 
 const FEW_SHOT_EXAMPLES = `
 <examples>
@@ -472,15 +519,18 @@ async function runTriage() {
     }
   }
 
-  // ── Commit ALL decisions to DB NOW — before synthesis ─────────────────────
-  // This ensures no notice is stuck in limbo if synthesis is interrupted.
-  // Unsent send_now decisions will be reset to NULL if budget is exceeded.
-  markNoticesTriaged(db, allDecisions);
+  // ── Normalize decisions: auto-generate merge_group fallback for send_now with null (P-007) ──
+  const normalizedDecisions = normalizeDecisions(allDecisions, noticesById);
 
-  // Build all merge groups across all buckets
-  const allMergeGroups = groupByMergeGroup(allDecisions, noticesById);
+  // ── Build merge groups BEFORE committing — validate state before persisting (P-007) ─────────
+  const allMergeGroups = groupByMergeGroup(normalizedDecisions, noticesById);
   const mergeGroupEntries = Object.entries(allMergeGroups);
   console.log(`[Triage] ${mergeGroupEntries.length} merge group(s) to synthesize`);
+
+  // ── Commit ALL decisions to DB NOW — after validation, before synthesis ─────────────
+  // This ensures no notice is stuck in limbo if synthesis is interrupted.
+  // Unsent send_now decisions will be reset to NULL if budget is exceeded.
+  markNoticesTriaged(db, normalizedDecisions);
 
   // ── Synthesize + send (sequential — sentToday context must stay coherent) ──
   for (let mi = 0; mi < mergeGroupEntries.length; mi++) {
