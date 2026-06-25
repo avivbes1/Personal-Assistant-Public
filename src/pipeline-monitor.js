@@ -3,7 +3,7 @@
  * ISSUE-019: Every message must reach a terminal pipeline state within ~10 min.
  *
  * Runs via system cron every 5 minutes.
- * Cron entry: [star]/5 [star] [star] [star] [star] cd /home/ubuntu/besinsky-bot && node src/pipeline-monitor.js >> logs/pipeline-monitor.log 2>&1
+ * Cron entry: [star]/5 [star] [star] [star] [star] cd /home/ubuntu/familybot && node src/pipeline-monitor.js >> logs/pipeline-monitor.log 2>&1
  *
  * When a message is stuck:
  * 1. Warn at 5 min

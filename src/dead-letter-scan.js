@@ -4,7 +4,7 @@
  * without being delivered. Alerts via voice server (localhost:3001).
  *
  * ISSUE-017: P-007 — validate external output before state commit.
- * Run via system cron: 0 * * * * cd /home/ubuntu/besinsky-bot && node src/dead-letter-scan.js >> logs/dead-letter.log 2>&1
+ * Run via system cron: 0 * * * * cd /home/ubuntu/familybot && node src/dead-letter-scan.js >> logs/dead-letter.log 2>&1
  */
 const path = require('path');
 try { require('dotenv').config({ path: path.join(__dirname, '..', '.env') }); } catch (_) {}
