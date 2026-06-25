@@ -126,6 +126,36 @@ grep -n "normalizeDecisions\|markNoticesTriaged\|groupByMergeGroup" src/triage-e
 
 ---
 
+---
+
+## P-008 — Every Message Must Reach a Terminal Pipeline State
+
+**Principle:** Every incoming WhatsApp message that enters the notice extraction pipeline must transition through a defined state machine and reach a terminal state (`NOT_ACTIONABLE`, `NOTICE_CREATED`, or `FAILED`) within 30 minutes. Messages stuck in intermediate states are system failures. Silent success (returning without a state transition) is forbidden.
+
+**Source incident:** 2026-06-24 — ISSUE-019: Token truncation caused `handleGroupEvent` to produce no output and return with no error. The message had no corresponding pipeline state, making it completely invisible to monitoring. Aviv found out only by manually checking his phone the next day.
+
+**Rule:**
+- The `messages.pipeline_state` column is the single source of truth for extraction status
+- `handleGroupEvent` MUST call `markMessageProcessing(messageId)` before any API call
+- Every code path in `handleGroupEvent` MUST end with `markMessageTerminal()` or `markMessageFailed()`
+- A message in `PROCESSING` for >5 minutes triggers a logged warning
+- A message in `PROCESSING` for >30 minutes triggers `markMessageFailed()` + alert
+- "Silent success" (function returns without state transition) is a P-008 violation
+- `pipeline-monitor.js` (system cron `*/5`) enforces these time limits
+
+**Verification:**
+```bash
+# Check: handleGroupEvent marks processing before API call
+grep -n "markMessageProcessing" src/agent.js
+# Expected: at least one line in handleGroupEvent
+
+# Check: pipeline monitor is registered in crontab
+crontab -l | grep pipeline-monitor
+# Expected: */5 * * * * ... pipeline-monitor.js
+```
+
+---
+
 ## Adding New Principles
 
 When a production incident, architect consultation, or expert review concludes with a design rule:

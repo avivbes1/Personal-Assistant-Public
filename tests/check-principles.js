@@ -251,6 +251,47 @@ check(
   }
 );
 
+
+// ── P-008: Pipeline State Machine ─────────────────────────────────────────────
+
+check(
+  'agent.js handleGroupEvent imports and calls markMessageProcessing (P-008)',
+  'P-008',
+  () => {
+    const src = readSrc('src/agent.js');
+    if (!src.includes('markMessageProcessing')) {
+      return 'agent.js must import and call markMessageProcessing (P-008: pipeline state required)';
+    }
+  }
+);
+
+check(
+  'messages table has pipeline_state column (P-008)',
+  'P-008',
+  () => {
+    try {
+      const { initDB, getDB } = require('../src/db');
+      initDB();
+      const cols = getDB().prepare('PRAGMA table_info(messages)').all().map(c => c.name);
+      if (!cols.includes('pipeline_state')) return 'messages table missing pipeline_state column (run migration 004)';
+      if (!cols.includes('processing_started_at')) return 'messages table missing processing_started_at column (run migration 004)';
+    } catch (e) {
+      return `DB check failed: ${e.message}`;
+    }
+  }
+);
+
+check(
+  'pipeline-monitor.js exists (P-008)',
+  'P-008',
+  () => {
+    const fsCheck = require('fs');
+    if (!fsCheck.existsSync(path.join(ROOT, 'src/pipeline-monitor.js'))) {
+      return 'src/pipeline-monitor.js missing — required for stuck-message detection (P-008)';
+    }
+  }
+);
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 
 console.log('');

@@ -65,6 +65,61 @@ function startVoiceServer(client, getHealthState) {
       return res.end(JSON.stringify(state));
     }
 
+    // ISSUE-019: Pipeline health endpoint for Lipa supervision
+    if (req.method === 'GET' && req.url === '/health/pipeline') {
+      try {
+        const { getDB } = require('./db');
+        const db = getDB();
+        const stuck = db.prepare(
+          "SELECT id, group_id, processing_started_at FROM messages WHERE pipeline_state='PROCESSING' AND processing_started_at < ?"
+        ).all(Date.now() - 5 * 60 * 1000);
+        const hourStats = db.prepare(
+          "SELECT pipeline_state, COUNT(*) as cnt FROM messages WHERE timestamp > ? GROUP BY pipeline_state"
+        ).all(Date.now() - 3600000);
+        const byState = {};
+        for (const r of hourStats) byState[r.pipeline_state] = r.cnt;
+        const total = Object.values(byState).reduce((s, v) => s + v, 0);
+        const failed = byState['FAILED'] || 0;
+        const failRate = total > 0 ? ((failed / total) * 100).toFixed(1) : '0.0';
+        const payload = {
+          status: stuck.length === 0 && parseFloat(failRate) < 20 ? 'healthy' : 'degraded',
+          stuck_messages: stuck.length,
+          hour_stats: byState,
+          failure_rate_percent: failRate,
+          total_messages_1h: total,
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(payload));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: e.message }));
+      }
+    }
+
+    // ISSUE-019: Config propose endpoint for Lipa autonomous fixes
+    if (req.method === 'POST' && req.url === '/config/propose') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { key, newValue, reason, proposedBy } = JSON.parse(body);
+          const { setConfigValue } = require('./db');
+          const result = setConfigValue(key, newValue, reason, proposedBy || 'lipa');
+          if (!result.ok) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ ok: false, error: result.error }));
+          }
+          console.log(`[VoiceServer] Config change: ${key} ${result.oldValue} → ${result.newValue} (${reason})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/send-message') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
