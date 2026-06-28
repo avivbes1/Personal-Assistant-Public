@@ -44,6 +44,9 @@ WhatsApp Groups (school, activities, community)
 | `src/db.js` | SQLite schema + helpers |
 | `src/dismissal.js` | "Stop sending about X" handler |
 | `src/voice-server.js` | Internal HTTP server (:3001) for outbound sends |
+| `src/llm/router.js` | Claude Code routing gate — ad-hoc tasks routed to CC first, falls back to direct API |
+| `src/llm/classifier.js` | Tiered task classification (research / code / deep) with per-tier timeouts |
+| `src/llm/circuit-breaker.js` | Failure isolation — opens after 3 consecutive CC failures, auto-resets after 5 min |
 
 ---
 
@@ -52,9 +55,10 @@ WhatsApp Groups (school, activities, community)
 - **Node.js 18+**
 - **A dedicated phone number** linked to WhatsApp — not your personal number. The bot owns this number as a linked device.
 - **Anthropic API key** — [console.anthropic.com](https://console.anthropic.com)
-- **Google Cloud project** with Calendar API enabled and an OAuth 2.0 Desktop credential
+- **Google Cloud project** with Calendar API + Gmail API + Drive API enabled and an OAuth 2.0 Desktop credential
 - **Linux VPS** — 1 vCPU / 1–2 GB RAM is sufficient (tested on AWS t4g.small/medium)
 - **Chromium** — whatsapp-web.js requires a Chromium installation (see below)
+- **gog CLI** (optional) — for Gmail/Drive access: [gogcli.sh](https://gogcli.sh). Linux arm64 binary available at [github.com/openclaw/gogcli/releases](https://github.com/openclaw/gogcli/releases)
 
 ---
 
@@ -198,6 +202,11 @@ Once "Client ready" appears, the session is saved in `whatsapp-session/` (gitign
 | `TOKEN_LIMIT_DAILY` | — | Daily LLM token budget (default: unlimited) |
 | `S3_BACKUP_BUCKET` | — | S3 bucket for DB backups (optional) |
 | `BOT_NAME` | — | Bot display name (default: `FamilyBot`) |
+| `CC_ENABLED` | — | Set `true` to activate Claude Code routing gate (default: `false`) |
+| `CC_LOG_ONLY` | — | Set `true` to classify + log without routing to CC (dark launch mode) |
+| `CLAUDE_BIN` | — | Path to `claude` CLI binary (default: `/usr/bin/claude`) |
+| `CLAUDE_CODE_CWD` | — | Working directory for Claude Code tasks (default: `/home/ubuntu`) |
+| `GOG_KEYRING_PASSWORD` | — | Keyring password for gog CLI (required if using Gmail/Drive) |
 
 ---
 
