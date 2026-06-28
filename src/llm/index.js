@@ -14,6 +14,7 @@
  */
 
 const budget = require('./budget');
+const router   = require('./router');
 
 const PROVIDERS = {
   anthropic: () => require('./anthropic'),
@@ -38,17 +39,27 @@ function getProvider() {
  * @param {boolean} [opts.skipBudget=false] - Bypass budget check (use sparingly)
  * @returns {Promise<{text: string, inputTokens: number, outputTokens: number}>}
  */
-async function complete(opts) {
+/**
+ * Run a completion. When CC_ENABLED=true, eligible calls are routed through
+ * Claude Code headless (covered by Max subscription) with direct API fallback.
+ *
+ * routeCtx (optional):
+ *   source    — 'aviv_dm' | 'heartbeat' | 'triage' | 'calendar' | …
+ *   threadId  — conversation thread id for sticky routing
+ */
+async function complete(opts, routeCtx = {}) {
   const maxTokens = opts.maxTokens ?? 1024;
 
   if (!opts.skipBudget) budget.check(maxTokens);
 
-  const provider = getProvider();
-  const result = await provider.complete({ ...opts, maxTokens });
+  const provider   = getProvider();
+  const directFn   = (o) => provider.complete({ ...o, maxTokens });
+
+  const result = await router.route(opts, routeCtx, directFn);
 
   budget.charge(result.inputTokens + result.outputTokens);
 
   return result;
 }
 
-module.exports = { complete, budget };
+module.exports = { complete, budget, router };
