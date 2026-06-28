@@ -12,7 +12,7 @@ const { spawn }  = require('child_process');
 const crypto     = require('crypto');
 
 const CLAUDE_BIN   = process.env.CLAUDE_BIN  || '/usr/bin/claude';
-const DEFAULT_CWD  = process.env.CLAUDE_CODE_CWD || '/home/ubuntu/besinsky-bot';
+const DEFAULT_CWD  = process.env.CLAUDE_CODE_CWD || '/home/ubuntu';
 
 // ── Semaphore (max 1 concurrent Claude Code process) ─────────────────────────
 
@@ -47,7 +47,7 @@ function releaseSemaphore() {
  * @param {object} opts
  * @param {string}  opts.task        Full task prompt
  * @param {number}  opts.timeoutMs   Tier-specific timeout (required)
- * @param {string}  [opts.cwd]       Working directory (default: besinsky-bot)
+ * @param {string}  [opts.cwd]       Working directory (default: CLAUDE_CODE_CWD env or /home/ubuntu)
  * @returns {Promise<{ text: string, durationMs: number, promptHash: string }>}
  * @throws on timeout, spawn error, or non-zero exit with no output
  */
