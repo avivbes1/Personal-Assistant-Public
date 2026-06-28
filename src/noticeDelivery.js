@@ -97,6 +97,7 @@ ${lines}
       hostname: 'api.anthropic.com',
       path: '/v1/messages',
       method: 'POST',
+      timeout: 12000,
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': ANTHROPIC_API_KEY,
@@ -115,6 +116,7 @@ ${lines}
         }
       });
     });
+    req.on('timeout', () => { req.destroy(); resolve(lines); });
     req.on('error', () => resolve(lines));
     req.write(bodyStr);
     req.end();
