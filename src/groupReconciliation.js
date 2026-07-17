@@ -1,7 +1,8 @@
 /**
  * groupReconciliation.js
- * Detects monitored groups that have gone silent (events stopped firing)
- * and attempts recovery by force-syncing via WhatsApp Web store internals.
+ * Silently force-syncs monitored groups that appear to have gone quiet.
+ * Does NOT alert on group silence — quiet groups are legitimate.
+ * Real connection health is checked by health.js (WhatsApp state + cross-group ingestion gap).
  *
  * Runs on startup (60s after ready) and every 6 hours.
  */
@@ -10,7 +11,6 @@ const { getDB } = require('./db');
 const config = require('./config');
 
 const SILENT_THRESHOLD_MS       = 5  * 24 * 60 * 60 * 1000; // scan if no msgs for 5+ days
-const ALERT_THRESHOLD_MS        = 30 * 24 * 60 * 60 * 1000; // DM alert only if 30+ days silent (avoids end-of-year noise)
 const RECENTLY_ACTIVE_MS        = 30 * 24 * 60 * 60 * 1000; // only scan if was active in last 30d
 const RECONCILIATION_INTERVAL_MS = 6 * 60 * 60 * 1000;      // run every 6h
 
@@ -141,13 +141,17 @@ async function reconcileGroups() {
       const liveChat = chats.find(c => c.id._serialized === group.id);
 
       if (!liveChat) {
+        // Group not found in live session — could have been removed or ID changed.
+        // This is a real structural issue; alert Aviv once.
         console.warn(`[Reconciliation] "${group.name}" not found in live session`);
-        openIncident(group.id);
-        await alertAviv(
-          `⚠️ [Lipa] קבוצה לא נמצאת בסשן:\n` +
-          `*${group.name}*\n` +
-          `ייתכן שהבוט הוצא מהקבוצה, או שמספר הקבוצה השתנה.`
-        );
+        if (!incidentIsOpen(group.id)) {
+          openIncident(group.id);
+          await alertAviv(
+            `⚠️ [Lipa] קבוצה לא נמצאת בסשן:\n` +
+            `*${group.name}*\n` +
+            `ייתכן שהבוט הוצא מהקבוצה, או שמספר הקבוצה השתנה.`
+          );
+        }
         continue;
       }
 
@@ -165,15 +169,10 @@ async function reconcileGroups() {
         console.log(`[Reconciliation] ✅ Recovered messages for "${group.name}" (${recovered.c} in window)`);
         resolveIncident(group.id); // in case there was a prior resolved incident
       } else {
-        console.warn(`[Reconciliation] ⚠️ "${group.name}" still silent after force-sync (${daysSilent}d) — opening incident`);
-        openIncident(group.id);
-        // Alert Aviv once
-        await alertAviv(
-          `⚠️ [Lipa] קבוצה שקטה — לא מקבל הודעות:\n` +
-          `*${group.name}*\n` +
-          `הודעה אחרונה: ${lastDate} (לפני ${daysSilent} ימים)\n` +
-          `ניסיתי לסנכרן מחדש — לא הצלחתי לשחזר הודעות.`
-        );
+        // Still silent after force-sync — group is genuinely quiet.
+        // Do NOT alert; real connection health is handled by health.js.
+        console.log(`[Reconciliation] "${group.name}" still silent after force-sync (${daysSilent}d) — group is genuinely quiet, no alert needed`);
+        openIncident(group.id); // suppress re-scan until group becomes active again
       }
     }
   } catch (err) {

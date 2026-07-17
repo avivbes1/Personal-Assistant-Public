@@ -70,14 +70,16 @@ function normalizeDecisions(decisions, noticesById) {
 
 // ── Anthropic API ────────────────────────────────────────────────────────────
 
-function callHaiku(system, user, jsonMode = false) {
+function callHaiku(system, user, jsonMode = false, temperature = 1) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
+    const bodyObj = {
       model: 'claude-haiku-4-5',
       max_tokens: 1024,
       system,
       messages: [{ role: 'user', content: user }],
-    });
+    };
+    if (temperature !== 1) bodyObj.temperature = temperature;
+    const body = JSON.stringify(bodyObj);
 
     const req = https.request({
       hostname: 'api.anthropic.com',
@@ -282,6 +284,26 @@ const FEW_SHOT_EXAMPLES = `
 <output>{"decisions":[{"notice_id":507,"action":"send_update","merge_group":"movie-kupa-17jun","reason":"new participant, one spot left — meaningful update to already-sent event"}]}</output>
 </example>
 
+<example id="6" description="Skip: newsletter / weekly bulletin — informational, no family action">
+<sent_today></sent_today>
+<bucket group="הורי גן כוכב" date="2026-07-16">
+<notice id="601">ניוזלטר שבועי: השבוע התנסינו בפעילות יצירה — מדבקות, ציור, ציפורניים. הילדים נהנו מאוד. שבוע הבא נמשיך עם אותו פורמט. תודה על השתתפותכם.</notice>
+<notice id="602">תמונות מפעילות מסיבת תחפושות — שיתפנו גם סרטון. ילדים נהדרים!</notice>
+</bucket>
+<output>{"decisions":[{"notice_id":601,"action":"skip","merge_group":null,"reason":"weekly newsletter, no actionable item — event recap only, no payment, deadline, or family action needed","material_change":false},{"notice_id":602,"action":"skip","merge_group":null,"reason":"image/video dump from past event — no action required","material_change":false}]}</output>
+</example>
+
+<example id="7" description="Skip: photo/video dump from completed past event">
+<sent_today></sent_today>
+<bucket group="ג׳3 תשפ״ו" date="2026-07-16">
+<notice id="701">[תמונה: ילדות לבושות בתחפושות נסיכות בגן — קבוצת תמונות מיום הולדת]</notice>
+<notice id="702">[תמונה: שולחן עם חטיפים וממתקים, ילדים סביבו — ללא טקסט]</notice>
+<notice id="703">[תמונה: ציור אצבעות, ילדות יוצרות — ללא מידע על מועד או פעולה]</notice>
+<notice id="704">וידאו מהאירוע שהסתיים. ללא מועדים, תשלומים, אנשי קשר.</notice>
+</bucket>
+<output>{"decisions":[{"notice_id":701,"action":"skip","merge_group":null,"reason":"photo dump from completed event, no action","material_change":false},{"notice_id":702,"action":"skip","merge_group":null,"reason":"photo dump, no action","material_change":false},{"notice_id":703,"action":"skip","merge_group":null,"reason":"photo dump, no action","material_change":false},{"notice_id":704,"action":"skip","merge_group":null,"reason":"event video recap, no action","material_change":false}]}</output>
+</example>
+
 </examples>`;
 
 function buildClassificationPrompt(bucket, sentToday) {
@@ -311,7 +333,7 @@ async function classifyBucket(bucket, sentToday) {
   const prompt = buildClassificationPrompt(bucket, sentToday);
   let raw;
   try {
-    raw = await callHaiku(getClassificationSystem(), prompt);
+    raw = await callHaiku(getClassificationSystem(), prompt, false, 0); // temperature=0: deterministic classification
   } finally {
     console.timeEnd(`classify:${bucket.group_name}`);
   }
@@ -321,7 +343,10 @@ async function classifyBucket(bucket, sentToday) {
   if (!jsonMatch) throw new Error('No JSON in classification response: ' + raw.substring(0, 200));
 
   const parsed = JSON.parse(jsonMatch[0]);
-  if (!Array.isArray(parsed.decisions)) throw new Error('decisions not array');
+  // P-007: Validate against explicit schema before returning (Ajv, defined at top of file)
+  if (!_validateClassification(parsed)) {
+    throw new Error('Classification schema validation failed: ' + JSON.stringify(_validateClassification.errors));
+  }
   return parsed.decisions;
 }
 
@@ -442,8 +467,8 @@ async function runTriage() {
     });
     if (immediateContentDismissed) {
       console.log(`[Triage] Immediate #${n.id} suppressed by active dismissal (content match)`);
-      db.prepare('UPDATE notices SET triage_decision=?, triage_reason=?, triaged_at=? WHERE id=?')
-        .run('skip', 'dismissed by user', Date.now(), n.id);
+      db.prepare(`UPDATE notices SET triage_decision='skip', triage_reason='dismissed by user', triaged_at=?, delivery_status='skipped' WHERE id=?`)
+        .run(Date.now(), n.id);
       continue;
     }
     // Cross-day dedup: if this group was already sent recently, demote to normal triage
@@ -557,7 +582,7 @@ async function runTriage() {
       console.log(`[Triage] Skipping [${topicKey}] — dismissed by user`);
       const ids = groupNotices.map(n => n.id);
       const ph = ids.map(() => '?').join(',');
-      db.prepare(`UPDATE notices SET triage_decision='skip', triage_reason='dismissed by user', triaged_at=?, posted_to_master=1 WHERE id IN (${ph})`).run(Date.now(), ...ids);
+      db.prepare(`UPDATE notices SET triage_decision='skip', triage_reason='dismissed by user', triaged_at=?, posted_to_master=1, delivery_status='skipped' WHERE id IN (${ph})`).run(Date.now(), ...ids);
       continue;
     }
 
@@ -614,10 +639,11 @@ async function runTriage() {
       }
     }
 
-  // Mark skip decisions as posted_to_master=1 (handled — don't resurface)
+  // Mark skip decisions as posted_to_master=1 + delivery_status='skipped' (P-009)
+  // Setting delivery_status='skipped' ensures noticeDelivery batch never re-picks them up.
   for (const d of allDecisions) {
     if (d.action === 'skip') {
-      db.prepare('UPDATE notices SET posted_to_master=1 WHERE id=?').run(d.notice_id);
+      db.prepare(`UPDATE notices SET posted_to_master=1, delivery_status='skipped' WHERE id=?`).run(d.notice_id);
     }
   }
 

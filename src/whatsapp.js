@@ -30,6 +30,15 @@ const isBacklogMessage = (timestampMs) => timestampMs < _backlogCutoffMs;
 let _readyFailureCount = 0;
 let _lastActivityMs = Date.now();
 const MAX_READY_FAILURES = 5;
+
+// ISSUE-021: Disconnect / reconnect tracking (module-level so it survives re-init)
+let _lastDisconnectMs = 0;      // set when disconnected event fires
+let _disconnectedSinceMs = 0;  // non-zero while bot is offline
+let _reconnectAttempts = 0;
+let _reconnectTimer = null;     // active reconnect setTimeout
+let _watchdogStarted = false;   // prevent duplicate watchdog intervals
+const MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_BASE_DELAY_MS = 30_000; // 30s initial delay
 const getHealthState = () => ({
   whatsapp_connected: !!(client && client.info),
   last_activity_ms: _lastActivityMs,
@@ -887,9 +896,60 @@ async function getGroups() {
 }
 
 /**
+ * ISSUE-021: Watchdog — detects prolonged disconnection during daytime and writes
+ * /tmp/bot-stuck-alert.json so Lipa (OpenClaw heartbeat) can DM Aviv.
+ * Started once; survives client reinitializations.
+ */
+function startDisconnectWatchdog() {
+  if (_watchdogStarted) return;
+  _watchdogStarted = true;
+  const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000; // check every 5 min
+  const STUCK_THRESHOLD_MS   = 30 * 60 * 1000; // 30 min disconnect = stuck
+  const ISRAEL_TZ = 'Asia/Jerusalem';
+
+  setInterval(() => {
+    try {
+      // Only alert during Israel daytime (08:00–22:00)
+      const nowIsrael = new Date().toLocaleString('en-US', { timeZone: ISRAEL_TZ, hour: 'numeric', hour12: false });
+      const hourIsrael = parseInt(nowIsrael, 10);
+      if (hourIsrael < 8 || hourIsrael >= 22) return;
+
+      const isConnected = !!(client && client.info);
+      const disconnectedMs = _disconnectedSinceMs;
+
+      if (!isConnected && disconnectedMs > 0) {
+        const gapMs = Date.now() - disconnectedMs;
+        if (gapMs > STUCK_THRESHOLD_MS) {
+          const gapMin = Math.round(gapMs / 60000);
+          console.warn(`[Watchdog] Bot disconnected for ${gapMin}min during daytime — writing stuck alert.`);
+          try {
+            require('fs').writeFileSync('/tmp/bot-stuck-alert.json', JSON.stringify({
+              ts: Date.now(),
+              disconnected_since: disconnectedMs,
+              gap_minutes: gapMin,
+              message: `WhatsApp disconnected for ${gapMin} minutes during daytime. Auto-reconnect may have failed. Check linked devices.`,
+            }));
+          } catch (e) {
+            console.error('[Watchdog] Failed to write alert:', e.message);
+          }
+        }
+      } else if (isConnected) {
+        // Clean up stale alert if we're now connected
+        try { require('fs').unlinkSync('/tmp/bot-stuck-alert.json'); } catch (_) {}
+      }
+    } catch (e) {
+      console.error('[Watchdog] Error in watchdog check:', e.message);
+    }
+  }, WATCHDOG_INTERVAL_MS).unref();
+
+  console.log('[Watchdog] Disconnect watchdog started (5-min interval, 30-min threshold, daytime only).');
+}
+
+/**
  * Initialize the WhatsApp client.
  */
 function initWhatsApp() {
+  startDisconnectWatchdog(); // ISSUE-021: start once, guard against duplicate starts
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: './whatsapp-session' }),
     webVersionCache: {
@@ -917,8 +977,6 @@ function initWhatsApp() {
 
   const { startReconciliation } = require('./groupReconciliation');
 
-  let _lastDisconnectMs = 0;
-
   client.on('disconnected', () => {
     _lastDisconnectMs = Date.now();
   });
@@ -930,6 +988,12 @@ function initWhatsApp() {
       const offlineMs = Date.now() - _lastDisconnectMs;
       console.log(`[WhatsApp] Reconnected after ${Math.round(offlineMs/60000)}min offline. Backlog cutoff: ${new Date(_backlogCutoffMs).toISOString()}`);
     }
+    // ISSUE-021: reset reconnect state on successful ready
+    _disconnectedSinceMs = 0;
+    _reconnectAttempts = 0;
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+    // Remove stale stuck-alert file if we successfully reconnected
+    try { require('fs').unlinkSync('/tmp/bot-stuck-alert.json'); } catch (_) {}
     console.log('[WhatsApp] ✅ Client connected and ready!');
     await resolveMasterGroup();
 
@@ -1131,12 +1195,35 @@ function initWhatsApp() {
 
   client.on('disconnected', (reason) => {
     // ISSUE-009: log with ISO timestamp so the exact drop time is always visible in logs
-    console.warn(`[WhatsApp] Client disconnected at ${new Date().toISOString()}: ${reason}`);
+    const nowIso = new Date().toISOString();
+    console.warn(`[WhatsApp] Client disconnected at ${nowIso}: ${reason}`);
+
+    // ISSUE-021: track disconnect time for watchdog
+    _disconnectedSinceMs = _disconnectedSinceMs || Date.now();
+
     // Trigger health alert immediately (before client fully shuts down)
     const { sendAlertDirect } = require('./health');
     if (sendAlertDirect) {
       sendAlertDirect(`WhatsApp disconnected: ${reason}. Bot will stop receiving messages until re-linked.`).catch(() => {});
     }
+
+    // ISSUE-021: Auto-reconnect with exponential backoff
+    // Don't reconnect if we're in a QR/auth-needed state (LOGOUT or auth_failure)
+    const noReconnectReasons = ['LOGOUT', 'CONFLICT', 'UNLAUNCHED'];
+    if (noReconnectReasons.includes(reason)) {
+      console.warn(`[WhatsApp] Disconnected reason "${reason}" — not attempting auto-reconnect (needs QR).`);
+      return;
+    }
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+    _reconnectAttempts++;
+    const delayMs = Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, _reconnectAttempts - 1), 15 * 60 * 1000); // cap at 15min
+    console.log(`[WhatsApp] Scheduling reconnect attempt ${_reconnectAttempts} in ${Math.round(delayMs/1000)}s...`);
+    _reconnectTimer = setTimeout(async () => {
+      _reconnectTimer = null;
+      console.log(`[WhatsApp] Attempting reconnect (attempt ${_reconnectAttempts})...`);
+      try { await client.destroy(); } catch (_) {}
+      initWhatsApp();
+    }, delayMs);
   });
 
   // Graceful shutdown
@@ -1149,7 +1236,8 @@ function initWhatsApp() {
   process.on('SIGTERM', shutdown);
 
   // Pre-filter: skip non-text and trivially short/emoji-only messages
-  const SKIP_MSG_TYPES = new Set(['sticker', 'image', 'audio', 'video', 'location', 'vcard']); // 'document' removed — PDFs/Word/Excel are parsed by media-parser
+  // ISSUE-021: 'image' removed from skip set — images from monitored groups must reach handleGroupMessage
+  const SKIP_MSG_TYPES = new Set(['sticker', 'audio', 'video', 'location', 'vcard']); // 'document' removed — PDFs/Word/Excel parsed by media-parser; 'image' removed — ISSUE-021
   const SKIP_REGEX = /^[\p{Emoji_Presentation}\s]{1,10}$|^(אוקיי|תודה|👍|ok|כן|לא|yes|no|ממ|יופי|ברור|בסדר|wow|nice)$/iu;
 
   client.on('message', async (msg) => {
@@ -1179,8 +1267,10 @@ function initWhatsApp() {
       // Skip non-actionable messages before any DB or API calls
       if (SKIP_MSG_TYPES.has(msg.type)) return;
       const msgText = msg.body?.trim() || '';
-      if (msgText.length < 6 && msg.from !== masterGroupId) return;
-      if (SKIP_REGEX.test(msgText) && msg.from !== masterGroupId) return;
+      const isImageType = msg.type === 'image';
+      // ISSUE-021: don't drop image messages on the short-text check — they have no body
+      if (!isImageType && msgText.length < 6 && msg.from !== masterGroupId) return;
+      if (!isImageType && SKIP_REGEX.test(msgText) && msg.from !== masterGroupId) return;
 
       const msgId = msg.id._serialized;
 
@@ -1266,7 +1356,7 @@ function initWhatsApp() {
               addToHistory('user', msg.body);
               const { extractFromText } = require('./parser');
               const { addSharedEvent: addEvtFu } = require('./calendar');
-              const { events: fuEvents } = await extractFromText(msg.body, masterGroupHistory.slice(-5));
+              const { events: fuEvents } = await extractFromText(msg.body, masterGroupHistory.slice(-5), null, msg.timestamp ? msg.timestamp * 1000 : null);
               if (fuEvents.length > 0) {
                 for (const e of fuEvents) {
                   const gcalEv = await addEvtFu(e, followUp.owner || 'both');
@@ -1383,8 +1473,9 @@ function initWhatsApp() {
           const ctxBody = msg.body && msg.body.trim() ? msg.body : (mediaLabel[msg.type] || '[\u05de\u05d3\u05d9\u05d4]');
           saveMessage({ group_id: (ctxChat && ctxChat.id && ctxChat.id._serialized) || msg.from, sender: ctxSender, body: ctxBody, timestamp: msg.timestamp * 1000 });
         } catch (_) {}
-        // Full parse+act only for substantial text messages
-        if (msgText.length >= 6 && !SKIP_REGEX.test(msgText)) {
+        // Full parse+act only for substantial text messages or images (ISSUE-021: images from
+        // any sender in monitored groups must reach handleGroupMessage for vision OCR)
+        if ((msgText.length >= 6 && !SKIP_REGEX.test(msgText)) || isImageType) {
           await handleGroupMessage(msg, { alreadySaved: true });
         }
       } else if (msg.from !== masterGroupId) {

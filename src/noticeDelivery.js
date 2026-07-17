@@ -18,6 +18,23 @@
 
 const https = require('https');
 const { getDB } = require('./db');
+const { normalizeNoticeContent } = require('./normalizer');
+
+function getDeliveryContent(notice) {
+  // Belt-and-suspenders: normalize relative date words at delivery time
+  // using source_timestamp as anchor. Catches notices saved before the
+  // ingestion-time normalizer was deployed.
+  if (!notice.content) return '';
+  const anchorDate = notice.source_timestamp
+    ? new Date(notice.source_timestamp).toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' })
+    : null;
+  const { normalized } = normalizeNoticeContent(notice.content, anchorDate);
+  // Day/date mismatch: prepend a warning, never mutate the source content.
+  if (notice.weekday_mismatch === 1 && notice.validation_notes) {
+    return `⚠️ ${notice.validation_notes}\n\n${normalized}`;
+  }
+  return normalized;
+}
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ISRAEL_TZ = 'Asia/Jerusalem';
@@ -27,7 +44,11 @@ const ISRAEL_TZ = 'Asia/Jerusalem';
 const MAX_DELIVERY_ATTEMPTS = 5;
 
 function getPendingNotices(urgencyFilter = null) {
-  let q = `SELECT * FROM notices WHERE delivery_status = 'pending' AND dismissed = 0 AND (delivery_attempts IS NULL OR delivery_attempts < ${MAX_DELIVERY_ATTEMPTS})`;
+  // P-009: Exclude notices that triage already decided to skip or defer.
+  // triage_decision IS NULL means not yet triaged — still eligible for batch delivery.
+  let q = `SELECT * FROM notices WHERE delivery_status = 'pending' AND dismissed = 0
+    AND (delivery_attempts IS NULL OR delivery_attempts < ${MAX_DELIVERY_ATTEMPTS})
+    AND (triage_decision IS NULL OR triage_decision NOT IN ('skip', 'defer'))`;
   if (urgencyFilter) q += ` AND urgency_hint = ?`;
   q += ` ORDER BY created_at ASC`;
   return urgencyFilter
@@ -77,7 +98,7 @@ function isQuietHours() {
 
 async function summarizeCluster(notices) {
   const lines = notices.map((n, i) =>
-    `${i + 1}. [${n.group_name}] ${n.content}${n.relevance_time ? ' בשעה ' + n.relevance_time : ''}`
+    `${i + 1}. [${n.group_name}] ${getDeliveryContent(n)}${n.relevance_time ? ' בשעה ' + n.relevance_time : ''}`
   ).join('\n');
 
   const prompt = `אתה מסכם הודעות לאסיסטנט משפחתי. הנה ${notices.length} הודעות קשורות מקבוצת "${notices[0].group_name}":
@@ -97,6 +118,7 @@ ${lines}
       hostname: 'api.anthropic.com',
       path: '/v1/messages',
       method: 'POST',
+      timeout: 12000,
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': ANTHROPIC_API_KEY,
@@ -115,6 +137,7 @@ ${lines}
         }
       });
     });
+    req.on('timeout', () => { req.destroy(); resolve(lines); });
     req.on('error', () => resolve(lines));
     req.write(bodyStr);
     req.end();
@@ -148,11 +171,12 @@ async function deliverImmediate(sendFn) {
 
   for (const notice of urgent) {
     const timeStr = notice.relevance_time ? ` (${notice.relevance_time})` : '';
-    const text = `\u200f⚡ *${notice.group_name}:*\n${notice.content}${timeStr}`;
+    const text = `\u200f⚡ *${notice.group_name}:*\n${getDeliveryContent(notice)}${timeStr}`;
     try {
       await sendFn(text);
       markDelivered([notice.id], 'delivered_immediate');
       console.log(`[NoticeDelivery] Immediate: "${notice.content.substring(0, 50)}"`);
+      afterDeliveryHook([notice.id]).catch(() => {});
     } catch (err) {
       console.error(`[NoticeDelivery] Failed to send immediate notice ${notice.id}:`, err.message);
       incrementAttempts(notice.id);
@@ -191,6 +215,19 @@ async function deliverBatch(sendFn) {
     return;
   }
 
+  // P-009 Cluster gate: require at least one actionable notice before sending.
+  // A notice is actionable if it has a known urgency or a relevance date attached.
+  // Pure FYI chatter (no dates, no urgency) is not worth a batch send.
+  const hasActionable = batchable.some(n =>
+    n.urgency_hint === 'immediate' ||
+    n.urgency_hint === 'time_sensitive' ||
+    n.relevance_date != null
+  );
+  if (!hasActionable) {
+    console.log('[NoticeDelivery] Cluster gate: 0 actionable notices \u2014 skipping batch (all FYI/undated)');
+    return;
+  }
+
   console.log(`[NoticeDelivery] Batch: ${batchable.length} notices to process`);
 
   // Cluster by group_name + notices within 2h of each other
@@ -201,7 +238,7 @@ async function deliverBatch(sendFn) {
     if (cluster.length === 1) {
       const n = cluster[0];
       const timeStr = n.relevance_time ? ` (${n.relevance_time})` : '';
-      lines.push(`• *${n.group_name}:* ${n.content}${timeStr}`);
+      lines.push(`• *${n.group_name}:* ${getDeliveryContent(n)}${timeStr}`);
     } else {
       // LLM summarize
       const summary = await summarizeCluster(cluster);
@@ -220,6 +257,7 @@ async function deliverBatch(sendFn) {
     const batchId = saveBatch(now, batchable.length, body);
     markDelivered(batchable.map(n => n.id), 'delivered_batch', batchId);
     console.log(`[NoticeDelivery] Batch delivered: ${batchable.length} notices, ${clusters.length} clusters`);
+    afterDeliveryHook(batchable.map(n => n.id)).catch(() => {});
   } catch (err) {
     console.error('[NoticeDelivery] Batch send failed:', err.message);
     for (const n of batchable) incrementAttempts(n.id);
@@ -270,4 +308,32 @@ function getStuckNotices(maxAgeMs = 8 * 3600000) {
   ).all(cutoff);
 }
 
-module.exports = { deliverImmediate, deliverBatch, getStuckNotices };
+// ── After-delivery calendar hook ─────────────────────────────────────────────
+// Runs asynchronously after each delivery pass to create calendar entries
+// for any dated event notices. Fire-and-forget: failures are logged and
+// will be retried by the heartbeat sweeper.
+async function afterDeliveryHook(noticeIds) {
+  if (!noticeIds || noticeIds.length === 0) return;
+  try {
+    const { createCalendarForNotice } = require('./calendar-bridge');
+    const db = getDB();
+    const placeholders = noticeIds.map(() => '?').join(',');
+    const notices = db.prepare(
+      `SELECT * FROM notices WHERE id IN (${placeholders})`
+    ).all(...noticeIds);
+    for (const notice of notices) {
+      try {
+        const r = await createCalendarForNotice(notice);
+        if (r.status !== 'skipped') {
+          console.log(`[NoticeDelivery] Calendar hook: notice #${notice.id} → ${r.status}`);
+        }
+      } catch (err) {
+        console.error(`[NoticeDelivery] Calendar hook error for notice #${notice.id}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('[NoticeDelivery] afterDeliveryHook load error:', err.message);
+  }
+}
+
+module.exports = { deliverImmediate, deliverBatch, getStuckNotices, afterDeliveryHook };

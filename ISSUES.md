@@ -264,3 +264,55 @@ Lipa answered a factual question about a scheduled reminder WITHOUT querying the
 3. **Delete only after confirmed delivery:** Removed `deleteAfterRun: true` from all active reminder jobs. Job deleted manually only after `lastDeliveryStatus=delivered` confirmed.
 4. **Applied to existing jobs:** `5318620e` (קובי), `ae8d1e09` (טופס 3010) — both updated: deleteAfterRun=false, timeoutSeconds=90
 5. **Standard going forward:** All new one-shot reminder jobs: no deleteAfterRun, timeoutSeconds=90 minimum
+
+---
+
+## ISSUE-021 — Morning Digest Surfaces Past-Dated Notice Content
+
+**Date:** 2026-07-09
+**Symptom:** Morning digest for July 9 included content about events from July 7 (mud workshop "סדנת בוץ עם ויטל", week 1 camp schedule July 7–11) — dates that had already passed. Aviv reported it as a validation failure.
+**Component:** Morning Digest cron job (`d782f168`) → prompt → LLM (kimi-k2.6) → output
+**Status:** OPEN
+
+### Root Cause (confirmed)
+
+Notice 996 (`גן כוכב תשפ"ו`) is a multi-day notice covering a two-week camp schedule (July 7–17). It has:
+- `relevance_date: 2026-07-06` (when the original message was sent)
+- `valid_until: 2026-07-17` (end of camp)
+- `notice_event` rows for each day July 7–17 (Haiku correctly extracted individual daily events)
+- Raw `content` blob contains the FULL original text, including July 7 mud workshop details
+
+**Why it appears in digest on July 9:**
+`getActiveNotices()` correctly returns notice 996 because there IS a `notice_event` row with `event_date = '2026-07-09'` (שי מובילה קייטנה). The re-show condition fires: `EXISTS (notice_event WHERE notice_id = 996 AND event_date = '2026-07-09')` → TRUE.
+
+**Why it showed stale content:**
+The digest prompt gives the LLM the full `content` blob from the notice, which includes the July 7 events verbatim. The prompt has NO instruction to:
+1. Filter out content referencing specific past dates (< today)
+2. Use the `notice_event` per-day rows instead of the raw content blob
+
+The LLM (kimi-k2.6) faithfully reproduced the full content, including the already-passed July 7 bullet points.
+
+### Two-Layer Failure
+
+**Layer 1 — query-notices.js output:** Returns the full notice content blob. The per-day `notice_event` rows ARE in the DB but are NOT exposed in the output to the LLM.
+
+**Layer 2 — digest prompt:** Says "notices sorted by relevance_date asc" but never says "skip notice content that references past dates." The LLM has no instruction to filter within-notice past-dated bullets.
+
+### Fix Required
+
+**Option A (quick):** Add to digest prompt: "When a notice contains references to specific past dates (before today), do NOT include those bullet points. Only include today's and future dated content."
+
+**Option B (proper):** Modify `query-notices.js` to output `today_events` per notice — the specific `notice_event` rows for today and future only. The digest LLM then sees the already-filtered structured events, not the full content blob.
+
+**Recommendation:** Option B is cleaner and more reliable. Option A works as a stopgap.
+
+### Immediate Mitigation
+Notice 996 content blob still contains July 7 references. Until fixed, tomorrow's digest (July 10) will also show "שי מובילה קייטנה" (the July 10 event from notice_event), but the prompt will still include the full content blob with July 7 bullet points.
+
+Dismiss the July 7 and July 8 notice_event rows manually to prevent them from ever contributing to re-show logic again:
+```sql
+-- These have already expired (expires_at in past), but the full content blob is the issue
+-- Real fix is in prompt/query layer
+```
+
+The past notice_event rows (July 7, 8) already have `expires_at` in the past so they won't trigger the EXISTS check — but the content blob problem remains.

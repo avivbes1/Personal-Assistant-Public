@@ -13,7 +13,7 @@ const { getFamilyContext } = require('./family-profiles');
 const { render: renderPrompt } = require('./llm/prompts');
 const { searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent, listEventsForDate } = require('./calendar');
 const { processEventAction } = require('./calendarGate');
-const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveHomework, getPendingHomework, saveOrGetThread, dismissThread, linkNoticeToThread, getMostRecentDeliveredThread, markMessageProcessing, markMessageTerminal, markMessageFailed, getConfigValue } = require('./db');
+const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveNoticeEvents, saveHomework, getPendingHomework, saveOrGetThread, dismissThread, linkNoticeToThread, getMostRecentDeliveredThread, markMessageProcessing, markMessageTerminal, markMessageFailed, getConfigValue } = require('./db');
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 const { buildProfileSlice, shouldSkipGroup } = require('./family-context');
 
@@ -224,8 +224,31 @@ async function executeAction(action, senderName) {
       }
 
       case 'add_notice': {
+        const { normalizeNoticeContent } = require('./normalizer');
         const noticeContent = action.content || action.summary || '';
-        if (noticeContent) {
+        // Apply deterministic date normalization using anchor date
+        const anchorDate = action.source_timestamp
+          ? new Date(action.source_timestamp).toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' })
+          : new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' });
+        const { normalized: normalizedContent, changed: contentChanged } = normalizeNoticeContent(noticeContent, anchorDate);
+        const finalContent = normalizedContent;
+        if (contentChanged) {
+          console.log('[Agent] Normalized relative dates in notice content');
+        }
+        if (finalContent) {
+          // Validate: warn if relative date words slipped through
+          const RELATIVE_WORDS = /\b(\u05de\u05d7\u05e8|\u05d4\u05d9\u05d5\u05dd|\u05e9\u05d1\u05d5\u05e2\s?\u05d4\u05d1\u05d0|\u05d4\u05e9\u05d1\u05d5\u05e2\s?\u05d4\u05d1\u05d0|\u05e1\u05d5\u05e3\s?\u05e9\u05d1\u05d5\u05e2|\u05d4\u05e1\u05d5\u05e3\s?\u05e9\u05d1\u05d5\u05e2|\u05d4\u05e9\u05d1\u05d5\u05e2|tomorrow|today|next\s+week)\b/gi;
+          if (RELATIVE_WORDS.test(finalContent)) {
+            console.warn('[Agent] add_notice: relative date words detected in content — logging. Content:', finalContent.substring(0, 100));
+            try {
+              getDB().prepare("INSERT OR IGNORE INTO parse_errors (raw_input, validation_errors, created_at) VALUES (?, ?, ?)").run(
+                finalContent.substring(0, 500),
+                JSON.stringify([{ issue: 'relative_words_in_notice_content' }]),
+                Date.now()
+              );
+            } catch (_) {}
+            // Continue — don't drop the notice, just warn
+          }
           // Pre-save dedup: skip if a notice for this group+date+time already
           // exists and was delivered or is pending (within 24h window).
           // Prevents conflicting same-event duplicates with wrong dates.
@@ -270,9 +293,15 @@ async function executeAction(action, senderName) {
             const parsed = Date.parse(`${action.relevance_date}T00:00:00`);
             if (!isNaN(parsed)) relevantDatetime = parsed;
           }
+          // Day/date mismatch detection (warn-only — never mutates content)
+          const { validateNoticeDate } = require('./dateValidator');
+          const dvResult = validateNoticeDate(finalContent);
+          if (dvResult.mismatch) {
+            console.warn('[Agent] Day/date mismatch detected:', dvResult.notes);
+          }
           const noticeId = saveNotice({
             group_name:        action.group_name || 'unknown',
-            content:           noticeContent,
+            content:           finalContent,
             relevance_date:    action.relevance_date || null,
             relevance_time:    action.relevance_time || null,
             source_timestamp:  action.source_timestamp || Date.now(),
@@ -280,19 +309,40 @@ async function executeAction(action, senderName) {
             relevant_datetime: relevantDatetime,
             message_timestamp: action.source_timestamp || Date.now(),
             delivery_status:   'pending',
+            message_sent_at:   action.source_timestamp || null,
+            weekday_mismatch:  dvResult.mismatch ? 1 : 0,
+            validation_notes:  dvResult.notes,
           });
+          // Save per-event rows if provided
+          if (noticeId && action.events && Array.isArray(action.events) && action.events.length > 0) {
+            try {
+              saveNoticeEvents(noticeId, action.events);
+              // Update valid_until to the latest event date
+              const maxDate = action.events
+                .map(e => e.date)
+                .filter(Boolean)
+                .sort()
+                .pop();
+              if (maxDate) {
+                getDB().prepare('UPDATE notices SET valid_until = ? WHERE id = ?').run(maxDate, noticeId);
+              }
+              console.log(`[Agent] Saved ${action.events.length} notice_event rows for notice ${noticeId}`);
+            } catch (e) {
+              console.warn('[Agent] saveNoticeEvents failed:', e.message);
+            }
+          }
           // Link to thread for topic continuity
           if (action.thread_key && noticeId) {
             try {
-              const thread = saveOrGetThread(action.thread_key, noticeContent.substring(0, 80), action.group_name || 'unknown');
+              const thread = saveOrGetThread(action.thread_key, finalContent.substring(0, 80), action.group_name || 'unknown');
               if (thread) linkNoticeToThread(noticeId, action.thread_key, thread.id);
             } catch (e) {
               console.warn('[Agent] thread link error:', e.message);
             }
           }
-          console.log(`[Agent] Saved notice: "${noticeContent.substring(0, 60)}" thread=${action.thread_key || 'none'} rel=${action.relevance_date || 'undated'}`);
+          console.log(`[Agent] Saved notice: "${finalContent.substring(0, 60)}" thread=${action.thread_key || 'none'} rel=${action.relevance_date || 'undated'}`);
         }
-        return { type: 'add_notice', ok: true, content: noticeContent, isSideEffect: true };
+        return { type: 'add_notice', ok: true, content: finalContent, isSideEffect: true };
       }
 
       case 'add_homework': {
@@ -749,12 +799,25 @@ const GROUP_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        content:           { type: 'string',  description: 'תיאור תמציתי וברור בעברית. כלול את כל פרטי הפעולה (מועדים, מה להביא, איש קשר). עובדות בלבד.' },
+        content:           { type: 'string',  description: 'תיאור תמציתי וברור בעברית. כלול את כל פרטי הפעולה (מועדים, מה להביא, איש קשר). עובדות בלבד. CRITICAL: אסור להשתמש במילים יחסיות לזמן ("מחר", "היום", "שבוע הבא", "השבוע", "הסוף שבוע"). המר לתאריכים מוחלטים DD/MM. הנוטיס ייקרא ימים מאוחר יותר.' },
         thread_key:        { type: 'string',  description: 'kebab-case slug ייחודי לנושא, עקבי על פני הודעות דומות. דוגמה: vo-bni-end-year-show' },
-        relevance_date:    { type: 'string',  description: 'YYYY-MM-DD - תאריך שבו המידע רלוונטי. מחר=מחר, היום=היום.' },
+        relevance_date:    { type: 'string',  description: 'YYYY-MM-DD בלבד. חישוב מהתאריכים שבsystem prompt. חובה.' },
         relevance_time:    { type: ['string', 'null'], description: 'HH:MM רק אם שעה מפורשת בטקסט. אחרת null.' },
         urgency_hint:      { type: 'string',  enum: ['immediate', 'time_sensitive', 'routine'], description: 'routine לרוב. immediate רק אם דחוף ל-24ש.' },
-        relevant_datetime: { type: ['string', 'null'], description: 'ISO datetime של מתי האירוע קורה, או null.' }
+        relevant_datetime: { type: ['string', 'null'], description: 'ISO datetime של מתי האירוע קורה, או null.' },
+        events: {
+          type: 'array',
+          description: 'כשההודעה מכסה מספר ימים/אירועים שונים — רשום כל אחד בנפרד עם תאריך ספציפי. לדוגמה: [{date:"2026-06-29",time:null,title:"אימון"},{date:"2026-06-30",time:"17:00",title:"הפנינג סיום"}]. אם האירוע הוא ביום בודד, השאר ריק.',
+          items: {
+            type: 'object',
+            properties: {
+              date:  { type: 'string', description: 'YYYY-MM-DD' },
+              time:  { type: ['string', 'null'], description: 'HH:MM או null' },
+              title: { type: 'string', description: 'שם האירוע' }
+            },
+            required: ['date', 'title']
+          }
+        }
       },
       required: ['content', 'thread_key', 'relevance_date', 'urgency_hint']
     }
@@ -770,7 +833,7 @@ const GROUP_TOOLS = [
   },
   {
     name: 'add_event',
-    description: 'הוסף אירוע ליומן. רק כשהמשפחה חייבת להגיע (לא הזמנה אופציונלית).',
+    description: 'הוסף אירוע ליומן. השתמש כשהמשפחה מוזמנת לאירוע (ימי הולדת, טקסים, טיולים, מסיבות סיום, ארועי גן/בית-ספר) — גם אם ההשתתפות אופציונלית. קרא גם ל-add_notice לתיעוד.',
     input_schema: {
       type: 'object',
       properties: {
@@ -894,7 +957,7 @@ ${profileSliceCtx}${groupCtx}${childCtx}${recentCtx}
 
 **add_notice בנוסף לכלים אחרים:** כשאתה מוסיף אירוע ליומן, תמיד גם קרא ל-add_notice לתיעוד.
 
-**מתי add_event:** אירוע שהמשפחה חייבת להגיע אליו (לא הזמנה אופציונלית). קרא גם ל-add_notice.
+**מתי add_event:** כאשר יש אירוע עם תאריך שהמשפחה מוזמנת אליו — ימי הולדת, טקסים, מסיבות סיום, טיולים, ארועי גן/בית-ספר — גם אם ההשתתפות אופציונלית. קרא תמיד גם ל-add_notice. אם ילד מוזמן ליום הולדת → זה add_event.
 
 **מתי no_action (בלבד):**
 - שיחת חולין, תודות, "ראיתי"
@@ -911,7 +974,21 @@ ${profileSliceCtx}${groupCtx}${childCtx}${recentCtx}
 - thread_key: kebab-case, עקבי לנושא. דוגמאות: "vo2-end-year-show", "nevo-football-game-jun".
 - urgency_hint: routine ברירת מחדל. immediate רק אם הדחיפות היא <24ש'.
 
-${isImageMsg ? `**תמונה:** קרא ל-download_image רק אם המשלח הוא מורה/מנהל ויש סיכוי שהתמונה מכילה מידע אקדמי/לוגיסטי. אחרת no_action.` : ''}
+**הפרדת אירועים מרובים ב-events:**
+כשהודעה מכסה מספר ימי אירועים נפרדים:
+- מלא גם את שדה \`events\` עם אירוע נפרד לכל יום
+- כל אירוע = {date: "YYYY-MM-DD", time: "HH:MM"|null, title: "שם קצר"}
+- לא למזג אירועים שונים לשדה content אחד
+
+דוגמה נכונה:
+הודעה: "שבוע הבא: שני אימון, שלישי הפנינג סיום"
+add_notice: content="שני 29.6 אימון, שלישי 30.6 הפנינג סיום", events=[{date:"2026-06-29",title:"אימון"},{date:"2026-06-30",time:null,title:"הפנינג סיום"}]
+
+דוגמה נכונה:
+הודעה: "תוכנית השבוע: ראשון ניקיון, שני יום רטוב, שלישי טקס"
+add_notice: content="ראשון 30.6 ניקיון, שני 1.7 יום רטוב, שלישי 2.7 טקס", events=[{date:"2026-06-30",title:"ניקיון"},{date:"2026-07-01",title:"יום רטוב"},{date:"2026-07-02",title:"טקס בית ספרי"}]
+
+${isImageMsg ? `**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, קרא ל-download_image מכל שולח (הורה, מורה, מנהל) אם יש סיכוי שהתמונה מכילה הזמנה לאירוע, לוח זמנים, אישור נוכחות, או מידע לוגיסטי. אחרת no_action.` : ''}
 
 **אין לכתוב טקסט חופשי** - רק tool calls.`;
 
@@ -1015,6 +1092,7 @@ ${isImageMsg ? `**תמונה:** קרא ל-download_image רק אם המשלח ה
                 relevance_time:    input.relevance_time || null,
                 urgency_hint:      input.urgency_hint || 'routine',
                 relevant_datetime: input.relevant_datetime || null,
+                events:            input.events || null,
                 group_name:        groupName,
                 source_timestamp:  ts,
                 _isBacklog:        isBacklog,
