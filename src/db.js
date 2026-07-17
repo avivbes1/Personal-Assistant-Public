@@ -413,6 +413,40 @@ function initDB() {
   // New columns on sent_messages (safe migrations)
   try { db.exec('ALTER TABLE sent_messages ADD COLUMN group_name TEXT'); } catch (_) {}
 
+  // Notice pipeline fix — Phase 0+1
+  try { db.exec("ALTER TABLE notices ADD COLUMN message_sent_at INTEGER"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN normalized_content TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN valid_until TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN digest_shown_at INTEGER"); } catch (_) {}
+  // Day/date mismatch detection (Phase 1) — warn-only, never mutates source
+  try { db.exec("ALTER TABLE notices ADD COLUMN weekday_mismatch INTEGER DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN validation_notes TEXT"); } catch (_) {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS parse_errors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      raw_input TEXT NOT NULL,
+      parsed_output TEXT,
+      validation_errors TEXT,
+      created_at INTEGER NOT NULL
+    )`);
+  } catch (_) {}
+  // Backfill valid_until from relevance_date for existing notices
+  try { db.exec("UPDATE notices SET valid_until = relevance_date WHERE valid_until IS NULL AND relevance_date IS NOT NULL"); } catch (_) {}
+
+  // Phase 1: notice_event child table for multi-event notices
+  try { db.exec(`CREATE TABLE IF NOT EXISTS notice_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    notice_id INTEGER NOT NULL,
+    event_date TEXT NOT NULL,
+    event_time TEXT,
+    event_title TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (notice_id) REFERENCES notices(id) ON DELETE CASCADE
+  )`); } catch (_) {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_notice_event_date ON notice_event(event_date)"); } catch (_) {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_notice_event_expires ON notice_event(expires_at)"); } catch (_) {}
+
   // ISSUE-015: unique index to prevent duplicate messages regardless of call path
   try {
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(group_id, timestamp, body)`);
@@ -526,38 +560,104 @@ function _extractNoticeTimes(text) {
   return (text || '').match(/\b\d{1,2}:\d{2}\b/g) || [];
 }
 
-function saveNotice({ group_name, content, relevance_date, relevance_time, source_timestamp, urgency_hint, relevant_datetime, message_timestamp, delivery_status }) {
+function saveNotice({ group_name, content, relevance_date, relevance_time, source_timestamp, urgency_hint, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until, weekday_mismatch, validation_notes }) {
   // Deduplicate: same group + same content snippet + same relevance_date
   const snippet = (content || '').substring(0, 80);
   const existing = getDB().prepare(
     'SELECT id FROM notices WHERE group_name=? AND substr(content,1,80)=? AND relevance_date IS ? AND dismissed=0 LIMIT 1'
   ).get(group_name, snippet, relevance_date || null);
   if (existing) return existing.id;
+  // valid_until defaults to relevance_date if not provided
+  const validUntil = valid_until || relevance_date || null;
   const result = getDB().prepare(
     `INSERT INTO notices
       (group_name, content, relevance_date, relevance_time, source_timestamp, dismissed, created_at, row_type, sources,
-       urgency_hint, relevant_datetime, message_timestamp, delivery_status)
-     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?)`
+       urgency_hint, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until,
+       weekday_mismatch, validation_notes)
+     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     group_name, content, relevance_date || null, relevance_time || null,
     source_timestamp || Date.now(), Date.now(), JSON.stringify([group_name]),
     urgency_hint || 'routine', relevant_datetime || null,
     message_timestamp || source_timestamp || Date.now(),
-    delivery_status || 'pending'
+    delivery_status || 'pending',
+    message_sent_at || null,
+    validUntil,
+    weekday_mismatch ? 1 : 0,
+    validation_notes || null
   );
   return result.lastInsertRowid;
 }
 
+function saveNoticeEvents(noticeId, events) {
+  // events = [{date: 'YYYY-MM-DD', time: 'HH:MM'|null, title: 'string'}]
+  if (!events || events.length === 0) return;
+  const stmt = getDB().prepare(
+    'INSERT OR IGNORE INTO notice_event (notice_id, event_date, event_time, event_title, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  const now = Date.now();
+  for (const ev of events) {
+    if (!ev.date || !ev.title) continue;
+    // expires_at = end of that day (23:59 Israel time) in ms
+    // If time given, expires 2h after that time
+    let expiresAt;
+    if (ev.time) {
+      const [h, m] = ev.time.split(':').map(Number);
+      const d = new Date(`${ev.date}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00+03:00`);
+      expiresAt = d.getTime() + 2 * 3600000;
+    } else {
+      // End of day in Israel time
+      expiresAt = new Date(`${ev.date}T23:59:59+03:00`).getTime();
+    }
+    stmt.run(noticeId, ev.date, ev.time || null, ev.title, expiresAt, now);
+  }
+}
+
 function getActiveNotices(todayStr) {
-  // Returns notices whose relevance_date is today or future, or undated ones
+  // Returns notices that are still relevant and haven't been shown yet (or are due today for re-show)
+  const nowMs = Date.now();
+  // For notices with notice_event rows: show if any event hasn't expired yet
+  // For notices without notice_event rows: fall back to valid_until/relevance_date
   return getDB().prepare(
-    `SELECT id, group_name, content, relevance_date, relevance_time, source_timestamp
-     FROM notices
-     WHERE dismissed = 0
-       AND (relevance_date IS NULL OR relevance_date >= ?)
-     ORDER BY relevance_date ASC NULLS LAST, source_timestamp DESC
+    `SELECT n.id, n.group_name, n.content, n.relevance_date, n.relevance_time,
+            n.source_timestamp, n.valid_until, n.digest_shown_at
+     FROM notices n
+     WHERE n.dismissed = 0
+       AND (
+         -- Has notice_event rows with unexpired events
+         EXISTS (
+           SELECT 1 FROM notice_event ne
+           WHERE ne.notice_id = n.id AND ne.expires_at > ?
+         )
+         OR
+         -- No notice_event rows: fall back to valid_until/relevance_date
+         (
+           NOT EXISTS (SELECT 1 FROM notice_event ne WHERE ne.notice_id = n.id)
+           AND (
+             COALESCE(n.valid_until, n.relevance_date) IS NULL
+             OR COALESCE(n.valid_until, n.relevance_date) >= ?
+           )
+         )
+       )
+       AND (
+         n.digest_shown_at IS NULL
+         OR COALESCE(n.valid_until, n.relevance_date) = ?
+         OR EXISTS (
+           SELECT 1 FROM notice_event ne
+           WHERE ne.notice_id = n.id AND ne.event_date = ?
+         )
+       )
+     ORDER BY COALESCE(n.valid_until, n.relevance_date) ASC NULLS LAST, n.source_timestamp DESC
      LIMIT 20`
-  ).all(todayStr);
+  ).all(nowMs, todayStr, todayStr, todayStr);
+}
+
+function markNoticesShownInDigest(ids, shownAtMs) {
+  if (!ids || ids.length === 0) return;
+  const placeholders = ids.map(() => '?').join(',');
+  getDB().prepare(
+    `UPDATE notices SET digest_shown_at = ? WHERE id IN (${placeholders}) AND digest_shown_at IS NULL`
+  ).run(shownAtMs, ...ids);
 }
 
 function saveEvent({ message_id, title, start_time, end_time, location, calendar_owner }) {
@@ -1169,7 +1269,9 @@ module.exports = {
   getRecentGroupMessages,
   markMessageProcessed,
   saveNotice,
+  saveNoticeEvents,
   getActiveNotices,
+  markNoticesShownInDigest,
   saveEvent,
   markEventAdded,
   saveActionItem,

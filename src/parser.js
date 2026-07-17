@@ -72,6 +72,7 @@ Format:
 Rules:
 - "מחר" = tomorrow, "היום" = today, "בשעה X" = at time X
 - CRITICAL: NEVER use relative time words (מחר, היום, tomorrow, today, next week, השבוע הבא, etc.) in titles, descriptions, or action item text. Always convert to the actual date (e.g. "יום שישי 8.5" or "9.5"). The message may be read days later — relative words become wrong.
+- אל תוסיף ואל תנחש שם יום — העתק בדיוק את שם היום כפי שמופיע במקור. אם אין שם יום במקור — אל תכתוב אחד.
 - If message is asking a question or requesting info → intent: "query", empty arrays
 - If the message says "remind me" / "תזכיר לי" → events with is_reminder:true
 - If it's a task (buy, bring, check, etc.) → actionItems
@@ -90,7 +91,7 @@ Rules:
 /**
  * Call Claude API to parse message.
  */
-async function parseWithClaude(text, history = [], groupContext = null) {
+async function parseWithClaude(text, history = [], groupContext = null, messageSentAt = null) {
   if (!ANTHROPIC_API_KEY) throw new Error('No ANTHROPIC_API_KEY');
 
   // Build messages array with recent history context
@@ -101,13 +102,14 @@ async function parseWithClaude(text, history = [], groupContext = null) {
   }
   messages.push({ role: 'user', content: text });
 
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' });
+  const anchorMs = messageSentAt ? new Date(messageSentAt).getTime() : Date.now();
+  const today = new Date(anchorMs).toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' });
   const groupContextStr = groupContext
     ? `GROUP CONTEXT: This message comes from the group "${groupContext.name}". Known context: "${groupContext.description}". Use this to infer which family members are involved.`
     : '';
   const systemPrompt = renderPrompt('parser-system', {
     BOT_NAME_ALT:   config.BOT_NAME_ALT,
-    TIMEZONE_LINE:  `Today's date: ${today} (${config.TIMEZONE} timezone). IMPORTANT: all times in messages are LOCAL timezone. Return start_time and end_time as ISO8601 with timezone offset when time is given, or ONLY the date "YYYY-MM-DD" when no time is mentioned. Be terse. Omit null fields.`,
+    TIMEZONE_LINE:  `The message was sent on: ${today} (${config.TIMEZONE} timezone). Resolve all relative date words ('\u05de\u05d7\u05e8', '\u05e9\u05d1\u05d5\u05e2 \u05d4\u05d1\u05d0', etc.) relative to this date, not today's date. IMPORTANT: all times in messages are LOCAL timezone. Return start_time and end_time as ISO8601 with timezone offset when time is given, or ONLY the date "YYYY-MM-DD" when no time is mentioned. Be terse. Omit null fields.`,
     GROUP_CONTEXT:  groupContextStr,
     FAMILY_CONTEXT: getFamilyContext(),
   });
@@ -163,7 +165,7 @@ async function parseWithClaude(text, history = [], groupContext = null) {
 /**
  * Regex fallback — basic Hebrew/English patterns.
  */
-function parseWithRegex(text) {
+function parseWithRegex(text, anchorDate = null) {
   // Questions should never be treated as events
   const trimmed = text.trim();
   const isQuestion = /^(מה|מתי|האם|כמה|איפה|מי|למה|איך)\s/.test(trimmed) || trimmed.endsWith('?');
@@ -179,7 +181,7 @@ function parseWithRegex(text) {
   const hasTime = /\d{1,2}:\d{2}|מחר|היום|tomorrow|today/.test(text);
 
   if (hasReminder || (hasTime && !hasAction)) {
-    const now = new Date();
+    const now = anchorDate ? new Date(anchorDate) : new Date();
     if (/מחר|tomorrow/.test(text)) now.setDate(now.getDate() + 1);
     const timeMatch = text.match(/(\d{1,2}):(\d{2})/);
     if (timeMatch) now.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]), 0, 0);
@@ -196,13 +198,13 @@ function parseWithRegex(text) {
 /**
  * Main export: parse text and return { events, actionItems, intent }
  */
-async function extractFromText(text, history = [], groupContext = null) {
+async function extractFromText(text, history = [], groupContext = null, messageSentAt = null) {
   if (!text || typeof text !== 'string' || !text.trim()) {
     return { events: [], actionItems: [], intent: 'unknown' };
   }
 
   try {
-    const result = await parseWithClaude(text, history, groupContext);
+    const result = await parseWithClaude(text, history, groupContext, messageSentAt);
     console.log(`[Parser] Claude parsed: intent=${result.intent}, events=${result.events?.length || 0}, tasks=${result.actionItems?.length || 0}`);
     return {
       events: result.events || [],
@@ -214,7 +216,7 @@ async function extractFromText(text, history = [], groupContext = null) {
     };
   } catch (err) {
     console.warn('[Parser] Claude failed, using regex fallback:', err.message);
-    return parseWithRegex(text);
+    return parseWithRegex(text, messageSentAt ? new Date(messageSentAt) : null);
   }
 }
 

@@ -38,6 +38,12 @@ const config = {
   FEATURE_CLARIFICATION_LOOP:   process.env.FEAT_CLARIFY === '1',
   // Phase 5 (capability self-awareness)
   FEATURE_CAPABILITY_AWARE:     process.env.FEAT_CAPABILITY === '1',
+
+  // ── Hallucination Guard ──────────────────────────────────────────────────────
+  // Grounds proactive outbound reminders in verifiable DB records. When enabled
+  // (default), guardedSend validates every send against the DB before it goes
+  // out. Set HALLUCINATION_GUARD=0 to disable (validation is skipped, warns).
+  HALLUCINATION_GUARD_ENABLED: process.env.HALLUCINATION_GUARD !== '0',
 };
 
 module.exports = config;

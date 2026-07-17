@@ -156,6 +156,41 @@ crontab -l | grep pipeline-monitor
 
 ---
 
+## P-009 — Notice State Coherence
+
+**Principle:** A notice must have a coherent, consistent state at all times. A notice marked `triage_decision='skip'` must simultaneously have `delivery_status='skipped'`. The batch delivery system (`noticeDelivery.js`) must never re-process or re-send a notice that the triage engine has already decided to skip or defer.
+
+**Source incident:** 2026-07-16 — AgentCouncil FYI-Noise incident. Triage engine correctly classified costume-party photo dumps as `skip`, but `noticeDelivery.js` batch ignored `triage_decision` entirely and re-summarized and sent them anyway. The LLM itself noted "no payment details, no deadlines" in its own output — then sent it regardless.
+
+**Root causes (three independent):**
+1. `noticeDelivery.js:getPendingNotices` queried only `delivery_status='pending'`, ignoring `triage_decision`
+2. `triage-engine.js` set `triage_decision='skip'` but did NOT update `delivery_status` — states were incoherent
+3. No cluster gate existed: batch delivery would send any non-empty pending list regardless of actionability
+
+**Rule:**
+- When triage sets `triage_decision='skip'`, it MUST also set `delivery_status='skipped'` in the same statement
+- `noticeDelivery.js:getPendingNotices` MUST filter `triage_decision NOT IN ('skip', 'defer')` in addition to `delivery_status='pending'`
+- Batch delivery MUST have a cluster gate: if no notice in the batch has `urgency_hint IN ('immediate','time_sensitive')` or a `relevance_date`, skip the batch entirely
+- `delivery_status` values: `pending`, `skipped`, `delivered_immediate`, `delivered_batch`, `dead_letter`
+- Any code path that skips/dismisses a notice must update BOTH `triage_decision` AND `delivery_status` atomically
+
+**Verification:**
+```bash
+# Check: getPendingNotices filters triage_decision
+grep -A5 "getPendingNotices" src/noticeDelivery.js | grep "triage_decision"
+# Expected: triage_decision NOT IN
+
+# Check: skip decisions set delivery_status='skipped'
+grep -n "delivery_status.*skipped" src/triage-engine.js
+# Expected: at least 3 lines (end loop, dismissal path, immediate dismissal path)
+
+# Check: cluster gate exists in deliverBatch
+grep -n "Cluster gate" src/noticeDelivery.js
+# Expected: one matching line
+```
+
+---
+
 ## Adding New Principles
 
 When a production incident, architect consultation, or expert review concludes with a design rule:
