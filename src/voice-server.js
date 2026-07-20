@@ -57,12 +57,60 @@ function generateTTS(text, lang) {
   });
 }
 
-function startVoiceServer(client, getHealthState) {
+// ── Module-level state ──────────────────────────────────────────────────────
+// The HTTP server binds to the port immediately on module load (see bottom of
+// file) — BEFORE WhatsApp connects. whatsapp.js later calls setClient() from
+// its ready handler to wire in the real client. Until then the health endpoint
+// reports an "initializing" state, and any endpoint needing the client returns
+// 503. This guarantees the health endpoint is reachable during startup, so a
+// crash before WhatsApp connects is still observable.
+let _client = null;
+let _getHealthState = null;
+const _initErrors = [];
+
+/**
+ * Wire in the real WhatsApp client + health state accessor.
+ * Called by whatsapp.js from the 'ready' handler.
+ */
+function setClient(client, getHealthState) {
+  _client = client || null;
+  if (typeof getHealthState === 'function') _getHealthState = getHealthState;
+  console.log('[VoiceServer] Client wired in — reporting live health state.');
+}
+
+/**
+ * Record an initialization error so it surfaces in the /health response.
+ * whatsapp.js pushes errors here (client.initialize failure, resolveMasterGroup
+ * failure, etc.) so Lipa can see them even when WhatsApp never connects.
+ */
+function addInitError(err) {
+  const message = err && err.message ? err.message : String(err);
+  _initErrors.push({ ts: Date.now(), message });
+  // Keep the array bounded — only the most recent 20 errors matter.
+  if (_initErrors.length > 20) _initErrors.shift();
+}
+
+function buildHealthPayload() {
+  let payload;
+  if (typeof _getHealthState === 'function') {
+    const state = _getHealthState();
+    payload = { status: state.whatsapp_connected ? 'ready' : 'initializing', ...state };
+  } else {
+    payload = {
+      status: 'initializing',
+      whatsapp_connected: false,
+      uptime_s: Math.round(process.uptime()),
+    };
+  }
+  payload.init_errors = _initErrors;
+  return payload;
+}
+
+function createServer() {
   const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
-      const state = typeof getHealthState === 'function' ? getHealthState() : { whatsapp_connected: !!(client && client.info) };
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify(state));
+      return res.end(JSON.stringify(buildHealthPayload()));
     }
 
     // ISSUE-019: Pipeline health endpoint for Lipa supervision
@@ -138,8 +186,12 @@ function startVoiceServer(client, getHealthState) {
               required: ['to', 'text']
             }));
           }
+          if (!_client) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'WhatsApp client not ready' }));
+          }
           const chatId = to.includes('@') ? to : `${to.replace('+', '')}@c.us`;
-          await client.sendMessage(chatId, text);
+          await _client.sendMessage(chatId, text);
           console.log(`[VoiceServer] Text message sent to ${chatId}`);
           res.writeHead(200);
           res.end(JSON.stringify({ ok: true }));
@@ -166,6 +218,10 @@ function startVoiceServer(client, getHealthState) {
           res.writeHead(400);
           return res.end(JSON.stringify({ error: 'Missing to or text' }));
         }
+        if (!_client) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'WhatsApp client not ready' }));
+        }
 
         const chatId = to.includes('@') ? to : `${to.replace('+', '')}@c.us`;
         const language = lang || 'en';
@@ -177,7 +233,7 @@ function startVoiceServer(client, getHealthState) {
         fs.unlink(oggPath, () => {});
 
         const media = new MessageMedia('audio/ogg; codecs=opus', data, 'voice.ogg');
-        await client.sendMessage(chatId, media, { sendMediaAsVoice: true });
+        await _client.sendMessage(chatId, media, { sendMediaAsVoice: true });
 
         console.log(`[VoiceServer] Voice sent to ${chatId}`);
         res.writeHead(200);
@@ -190,11 +246,36 @@ function startVoiceServer(client, getHealthState) {
     });
   });
 
-  server.listen(PORT, '127.0.0.1', () => {
-    console.log(`[VoiceServer] Listening on localhost:${PORT}`);
-  });
-
   return server;
 }
 
-module.exports = { startVoiceServer };
+// ── Start the server immediately on module load ─────────────────────────────
+// Binds to port 3001 before WhatsApp connects, so /health is reachable during
+// startup and reports { status: 'initializing', whatsapp_connected: false }.
+let _server = null;
+
+function startServer() {
+  if (_server) return _server;
+  _server = createServer();
+  _server.on('error', (err) => {
+    console.error(`[VoiceServer] Server error on port ${PORT}:`, err.message);
+  });
+  _server.listen(PORT, '127.0.0.1', () => {
+    console.log(`[VoiceServer] Listening on localhost:${PORT} (initializing — client not yet wired)`);
+  });
+  return _server;
+}
+
+startServer();
+
+/**
+ * Backward-compatible entry point. Older code called startVoiceServer(client,
+ * getHealthState) from the ready handler; that now just wires the client into
+ * the already-running server.
+ */
+function startVoiceServer(client, getHealthState) {
+  setClient(client, getHealthState);
+  return _server;
+}
+
+module.exports = { startVoiceServer, setClient, addInitError };

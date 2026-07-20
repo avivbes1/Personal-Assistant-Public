@@ -99,6 +99,16 @@ rm -f /tmp/bot-stuck-alert.json
 ```
 This is how the bot alerts when WhatsApp itself is broken (can't use WhatsApp to say WhatsApp is down).
 
+**Check B1c — Anthropic credit exhaustion flag (out-of-band alert):**
+```bash
+cat /tmp/anthropic-credit-alert.json 2>/dev/null
+```
+If file exists and `ts` is within last 6h → **DM Aviv immediately** with the message ("Anthropic credits exhausted — the bot has fallen back to Gemini for summaries; top up Anthropic credits"), then delete the file:
+```bash
+rm -f /tmp/anthropic-credit-alert.json
+```
+The bot writes this when an Anthropic API call fails with a credit error (402/529 or "credit balance"/"insufficient_funds"). LLM summaries auto-fall-back to Gemini, so the bot keeps working — but Anthropic credits need topping up.
+
 **Check B2 — Health endpoint (primary connectivity check):**
 ```bash
 curl -s --max-time 5 http://localhost:3001/health 2>/dev/null || echo '{"whatsapp_connected":false,"error":"server_down"}'

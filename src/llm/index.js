@@ -15,6 +15,7 @@
 
 const budget = require('./budget');
 const router   = require('./router');
+const { callLLM } = require('./fallback');
 
 const PROVIDERS = {
   anthropic: () => require('./anthropic'),
@@ -62,4 +63,4 @@ async function complete(opts, routeCtx = {}) {
   return result;
 }
 
-module.exports = { complete, budget, router };
+module.exports = { complete, budget, router, callLLM };

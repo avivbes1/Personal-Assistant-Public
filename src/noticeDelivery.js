@@ -16,9 +16,9 @@
  *     is within 3h → treat as immediate
  */
 
-const https = require('https');
 const { getDB } = require('./db');
 const { normalizeNoticeContent } = require('./normalizer');
+const { callLLM } = require('./llm');
 
 function getDeliveryContent(notice) {
   // Belt-and-suspenders: normalize relative date words at delivery time
@@ -36,7 +36,6 @@ function getDeliveryContent(notice) {
   return normalized;
 }
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ISRAEL_TZ = 'Asia/Jerusalem';
 
 // ── DB helpers ─────────────────────────────────────────────────────────────
@@ -107,41 +106,16 @@ ${lines}
 
 כתוב סיכום תמציתי בעברית, משפט אחד עד שלושה. חובה: כלול את כל פרטי הפעולה — תשלומים, קישורים, אנשי קשר, מועדים, שעות. אסור להשמיט פרט שדורש פעולה. פלוט רק את הסיכום, ללא כותרות.`;
 
-  return new Promise((resolve) => {
-    const bodyStr = JSON.stringify({
-      model: 'claude-haiku-4-5',
-      max_tokens: 200,
-      messages: [{ role: 'user', content: prompt }],
-    });
-
-    const req = https.request({
-      hostname: 'api.anthropic.com',
-      path: '/v1/messages',
-      method: 'POST',
-      timeout: 12000,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Length': Buffer.byteLength(bodyStr),
-      },
-    }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        try {
-          const r = JSON.parse(data);
-          resolve(r.content?.[0]?.text?.trim() || lines);
-        } catch {
-          resolve(lines); // fallback: raw lines
-        }
-      });
-    });
-    req.on('timeout', () => { req.destroy(); resolve(lines); });
-    req.on('error', () => resolve(lines));
-    req.write(bodyStr);
-    req.end();
-  });
+  // TASK 1.1: route through the provider-abstracted LLM (Anthropic → Gemini
+  // fallback). Preserve the original resilience: on any failure, fall back to
+  // the raw lines. Same 12s timeout / 200-token budget as before.
+  try {
+    const summary = await callLLM(prompt, { maxTokens: 200, timeout: 12000 });
+    return summary && summary.trim() ? summary.trim() : lines;
+  } catch (err) {
+    console.warn('[NoticeDelivery] summarizeCluster LLM failed, using raw lines:', err.message);
+    return lines;
+  }
 }
 
 // ── Immediate delivery ─────────────────────────────────────────────────────

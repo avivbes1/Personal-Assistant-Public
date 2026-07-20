@@ -11,7 +11,7 @@
 
 const cron = require('node-cron');
 const config = require('./config');
-const { getPendingActionItems, saveReminder, claimReminder, claimDigestToday, saveFollowUp, getPendingFollowUps, claimFollowUp, setFollowUpBotMsgId, getDB, getPendingBotTasks, claimBotTask, saveBotTask } = require('./db');
+const { getPendingActionItems, saveReminder, reserveReminder, releaseReminder, confirmReminderSent, claimDigestToday, saveFollowUp, getPendingFollowUps, claimFollowUp, setFollowUpBotMsgId, getDB, getPendingBotTasks, claimBotTask, saveBotTask } = require('./db');
 const { getTodayEvents, getUpcomingEvents } = require('./calendar');
 
 let sendToMasterGroup = null;
@@ -113,30 +113,38 @@ function getEventReminderTimes(event) {
 
 async function fireReminder(reminder) {
   if (!sendToMasterGroup) return;
+
+  // TASK 0.3: reserve BEFORE sending. If the send fails, release so the next
+  // poll retries — the reminder is no longer lost when WhatsApp send throws.
+  if (!reserveReminder(reminder.id)) {
+    console.log(`[Scheduler] Reminder already sent, skipping: "${reminder.event_title}" (${reminder.label})`);
+    return;
+  }
+
+  const isAllDay = !reminder.event_start.includes('T');
+  const { prefix, mentionIds } = buildMentions(reminder.owner || 'both');
+  let msg;
+  if (isAllDay) {
+    const dateStr = new Date(reminder.event_start + 'T00:00:00+03:00')
+      .toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.TIMEZONE });
+    msg = `${prefix}📅 *תזכורת — ${reminder.label}*\n${reminder.event_title}\n🗓 ${dateStr}`;
+  } else {
+    const eventDate = new Date(reminder.event_start);
+    const timeStr = eventDate.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', timeZone: config.TIMEZONE });
+    const dateStr = eventDate.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'numeric', timeZone: config.TIMEZONE });
+    msg = `${prefix}⏰ *תזכורת — ${reminder.label}*\n${reminder.event_title}\n🗓 ${dateStr} בשעה ${timeStr}`;
+  }
+
   try {
-    if (!claimReminder(reminder.id)) {
-      console.log(`[Scheduler] Reminder already sent, skipping: "${reminder.event_title}" (${reminder.label})`);
-      return;
-    }
-    const isAllDay = !reminder.event_start.includes('T');
-    const { prefix, mentionIds } = buildMentions(reminder.owner || 'both');
-    let msg;
-    if (isAllDay) {
-      const dateStr = new Date(reminder.event_start + 'T00:00:00+03:00')
-        .toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.TIMEZONE });
-      msg = `${prefix}📅 *תזכורת — ${reminder.label}*\n${reminder.event_title}\n🗓 ${dateStr}`;
-    } else {
-      const eventDate = new Date(reminder.event_start);
-      const timeStr = eventDate.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', timeZone: config.TIMEZONE });
-      const dateStr = eventDate.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'numeric', timeZone: config.TIMEZONE });
-      msg = `${prefix}⏰ *תזכורת — ${reminder.label}*\n${reminder.event_title}\n🗓 ${dateStr} בשעה ${timeStr}`;
-    }
     // Send plain message — no @mentions. Mentions cause WhatsApp to deliver
     // a second copy to the mentioned user's DM via OpenClaw's WhatsApp session.
     await sendToMasterGroup(msg);
+    confirmReminderSent(reminder.id);
     console.log(`[Scheduler] Reminder fired: "${reminder.event_title}" (${reminder.label})`);
   } catch (err) {
-    console.error('[Scheduler] fireReminder error:', err.message);
+    releaseReminder(reminder.id); // allow retry on next poll
+    console.error('[Scheduler] fireReminder send failed, released for retry:', err.message);
+    throw err;
   }
 }
 
@@ -190,8 +198,14 @@ async function pollAndFireReminders() {
               label,
               owner,
             });
-            // claimReminder atomically sets sent=1 only if sent=0 — prevents double-fire
-            await fireReminder({ id: dbId, event_id: event.id, event_title: title, event_start: startStr, remind_at: remindAt.toISOString(), label, owner });
+            // reserveReminder atomically sets sent=1 only if sent=0 — prevents double-fire.
+            // fireReminder rethrows on send failure (after releasing); catch here so a
+            // single failed reminder doesn't abort the rest of this poll cycle.
+            try {
+              await fireReminder({ id: dbId, event_id: event.id, event_title: title, event_start: startStr, remind_at: remindAt.toISOString(), label, owner });
+            } catch (fireErr) {
+              console.error(`[Scheduler] Reminder "${title}" (${label}) failed, will retry next poll:`, fireErr.message);
+            }
           }
         }
       }

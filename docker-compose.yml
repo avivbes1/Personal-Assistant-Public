@@ -1,0 +1,56 @@
+# ============================================================================
+# ## HOW TO MIGRATE (pm2 → docker)
+# ============================================================================
+# These files are provided but NOT yet in use. The bot currently runs under pm2.
+# Do NOT switch over without Aviv/Lipa reviewing. When ready, migrate like this:
+#
+#   1. Ensure secrets exist in the repo dir (already gitignored):
+#        .env, credentials.json, token-aviv.json, token-liat.json
+#   2. Stop and disable the pm2 process so both don't fight over the WhatsApp
+#      session dir and port 3001:
+#        pm2 stop besinsky-bot && pm2 delete besinsky-bot && pm2 save
+#   3. Build the image (first build is slow — compiles better-sqlite3):
+#        docker compose build
+#   4. Start it:
+#        docker compose up -d
+#   5. Watch it link / come up healthy:
+#        docker compose logs -f besinsky-bot
+#        curl -s http://localhost:3001/health | jq
+#   6. If a QR re-scan is needed, it prints in the logs (and /tmp/whatsapp-qr.png
+#      inside the container — docker compose cp it out if needed).
+#
+# Rollback to pm2:
+#   docker compose down
+#   pm2 start src/index.js --name besinsky-bot && pm2 save
+#
+# NOTE: The host watchdog (scripts/watchdog.sh) and OpenClaw/Lipa heartbeat run
+# OUTSIDE the container and talk to http://localhost:3001 — the port mapping
+# below preserves that. They are not containerized here.
+# ============================================================================
+
+services:
+  besinsky-bot:
+    container_name: besinsky-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3001:3001"
+    volumes:
+      # Persistent data (SQLite DB) and the WhatsApp auth session — MUST persist
+      # across container restarts or the bot loses its DB and needs a QR re-scan.
+      - ./data:/app/data
+      - ./whatsapp-session:/app/whatsapp-session
+      # Secrets / credentials (gitignored on host). Read-only mounts.
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token-aviv.json:/app/token-aviv.json:ro
+      - ./token-liat.json:/app/token-liat.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
