@@ -19,7 +19,10 @@ const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./sched
 const { answerQuery } = require('./query');
 const { handleMessage, handleGroupEvent } = require('./agent');
 const { getFollowUpByBotMsgId, updateFollowUpStatus, dismissThread, getMostRecentDeliveredThread } = require('./db');
-const { startVoiceServer } = require('./voice-server');
+// Requiring voice-server starts the HTTP health/voice server immediately (on
+// module load), before WhatsApp connects — so /health is reachable during
+// startup. setClient() wires in the real client once ready.
+const { setClient: setVoiceServerClient, addInitError } = require('./voice-server');
 
 let client = null;
 let masterGroupId = null;
@@ -289,6 +292,13 @@ function loadGroupsConfig() {
  * Resolve the chat ID for the master group by name.
  */
 async function resolveMasterGroup() {
+  // Fast path: JID already known from env — skip getChats() entirely
+  if (config.MASTER_GROUP_JID) {
+    masterGroupId = config.MASTER_GROUP_JID;
+    console.log(`[WhatsApp] Master group resolved from config JID: ${masterGroupId}`);
+    return;
+  }
+
   const groupsConfig = loadGroupsConfig();
   const masterName = groupsConfig.master || config.MASTER_GROUP_NAME;
 
@@ -995,7 +1005,12 @@ function initWhatsApp() {
     // Remove stale stuck-alert file if we successfully reconnected
     try { require('fs').unlinkSync('/tmp/bot-stuck-alert.json'); } catch (_) {}
     console.log('[WhatsApp] ✅ Client connected and ready!');
-    await resolveMasterGroup();
+    try {
+      await resolveMasterGroup();
+    } catch (resolveErr) {
+      addInitError(resolveErr);
+      console.error('[WhatsApp] resolveMasterGroup failed in ready handler:', resolveErr.message, '— continuing init');
+    }
 
     // Check babysitter booking onboarding state + resolve JIDs
     setTimeout(() => {
@@ -1009,10 +1024,10 @@ function initWhatsApp() {
       initHealth(client, masterGroupId);
     } catch (_) {}
 
-    // Start voice message HTTP server
+    // Wire the (already-running) voice/health HTTP server to the live client
     try {
-      startVoiceServer(client, getHealthState);
-    } catch (_) { console.error('[WhatsApp] Voice server failed to start:', _.message); }
+      setVoiceServerClient(client, getHealthState);
+    } catch (_) { console.error('[WhatsApp] Failed to wire client into voice server:', _.message); }
 
     loadPendingGroupQuestionsFromDB();
 
@@ -1503,7 +1518,10 @@ function initWhatsApp() {
   });
 
   console.log('[WhatsApp] Initializing client...');
-  client.initialize();
+  client.initialize().catch(err => {
+    addInitError(err);
+    console.error('[WhatsApp] initialize failed:', err.message);
+  });
 
   return client;
 }

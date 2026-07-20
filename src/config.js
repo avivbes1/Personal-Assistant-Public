@@ -18,6 +18,7 @@ const config = {
   AVIV_PHONE:   required('AVIV_PHONE',   'Primary parent phone number in E.164 format, e.g. 15551234567'),
   LIAT_PHONE:   required('LIAT_PHONE',   'Secondary parent phone number in E.164 format, e.g. 15559876543'),
   MASTER_GROUP_NAME: required('MASTER_GROUP_NAME', 'Exact name of your master WhatsApp group'),
+  MASTER_GROUP_JID:  process.env.MASTER_GROUP_JID  || '',
   AVIV_CALENDAR_ID:  required('AVIV_CALENDAR_ID',  'Google Calendar ID for primary parent — use "primary" or the full calendar email (see Google Calendar settings)'),
   LIAT_CALENDAR_ID:  required('LIAT_CALENDAR_ID',  'Google Calendar ID for secondary parent'),
   LIAT_WORK_CALENDAR_ID: process.env.LIAT_WORK_CALENDAR_ID || '',

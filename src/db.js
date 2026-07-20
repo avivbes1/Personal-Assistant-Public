@@ -299,6 +299,8 @@ function initDB() {
 
   // Migrations — add columns that may not exist in older DBs
   try { db.exec("ALTER TABLE reminders ADD COLUMN owner TEXT DEFAULT 'both'"); } catch (_) {}
+  // TASK 0.3: audit column recording when a reserved reminder was confirmed sent.
+  try { db.exec("ALTER TABLE reminders ADD COLUMN confirmed_at INTEGER"); } catch (_) {}
   try { db.exec("ALTER TABLE groups ADD COLUMN description TEXT"); } catch (_) {}
 
   // ── Phase 1: Notice Pipeline Migration ──────────────────────────────────────
@@ -902,13 +904,40 @@ function hasReminder(eventId) {
 }
 
 /**
- * Atomically claim a reminder for sending.
- * Returns true if this caller "won" the claim (sent was 0 and is now 1).
- * Returns false if already sent — used to prevent double-fire across instances/timeouts.
+ * Atomically reserve a reminder for sending (TASK 0.3).
+ * Sets sent=1 only if it was 0, returning true if this caller "won" the reservation.
+ * This is a reservation, NOT a confirmation: if the actual WhatsApp send fails,
+ * the caller MUST call releaseReminder(id) to allow a retry on the next poll.
+ * On successful send, call confirmReminderSent(id) for the audit trail.
+ * Returns false if already reserved — prevents double-fire across instances/timeouts.
  */
-function claimReminder(id) {
+function reserveReminder(id) {
   const result = getDB().prepare('UPDATE reminders SET sent = 1 WHERE id = ? AND sent = 0').run(id);
   return result.changes > 0;
+}
+
+/**
+ * Release a previously reserved reminder (sent=1 → sent=0) so it can be retried.
+ * Called when the WhatsApp send fails after reserveReminder() succeeded.
+ */
+function releaseReminder(id) {
+  const result = getDB().prepare('UPDATE reminders SET sent = 0 WHERE id = ?').run(id);
+  return result.changes > 0;
+}
+
+/**
+ * Record that a reserved reminder was confirmed delivered (audit trail).
+ */
+function confirmReminderSent(id) {
+  getDB().prepare('UPDATE reminders SET confirmed_at = ? WHERE id = ?').run(Date.now(), id);
+}
+
+/**
+ * @deprecated Use reserveReminder() + confirmReminderSent()/releaseReminder().
+ * Kept as an alias for backward compatibility with any external callers.
+ */
+function claimReminder(id) {
+  return reserveReminder(id);
 }
 
 /**
@@ -1292,6 +1321,9 @@ module.exports = {
   cancelRemindersForEvent,
   getPendingReminders,
   markReminderSent,
+  reserveReminder,
+  releaseReminder,
+  confirmReminderSent,
   claimReminder,
   claimDigestToday,
   hasReminder,
