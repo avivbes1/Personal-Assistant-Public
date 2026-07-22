@@ -24,6 +24,34 @@ const { getFollowUpByBotMsgId, updateFollowUpStatus, dismissThread, getMostRecen
 // startup. setClient() wires in the real client once ready.
 const { setClient: setVoiceServerClient, addInitError } = require('./voice-server');
 
+// ── DM History Logger —————————————————————————————————————————————
+// Logs all DMs (inbound + outbound) to a rolling JSONL file.
+// Used by /chat-history when fetchMessages() fails due to Puppeteer issues.
+const _fs = require('fs');
+const DM_HISTORY_PATH = require('path').join(__dirname, '../data/dm-history.jsonl');
+const DM_HISTORY_MAX_LINES = 500;
+
+function appendDMHistory(entry) {
+  try {
+    const line = JSON.stringify({ ...entry, logged: Date.now() }) + '\n';
+    _fs.appendFileSync(DM_HISTORY_PATH, line, 'utf8');
+    // Trim to last MAX_LINES entries
+    try {
+      const content = _fs.readFileSync(DM_HISTORY_PATH, 'utf8');
+      const lines = content.split('\n').filter(Boolean);
+      if (lines.length > DM_HISTORY_MAX_LINES) {
+        _fs.writeFileSync(DM_HISTORY_PATH, lines.slice(-DM_HISTORY_MAX_LINES).join('\n') + '\n', 'utf8');
+      }
+    } catch (_) {}
+  } catch (e) {
+    console.error('[DMHistory] append failed:', e.message);
+  }
+}
+
+module.exports._appendDMHistory = appendDMHistory; // exposed for voice-server
+// Immediately export so voice-server can call it before module.exports is set
+if (!global._appendDMHistory) global._appendDMHistory = appendDMHistory;
+
 let client = null;
 let masterGroupId = null;
 let _backlogCutoffMs = 0; // messages older than this timestamp are considered backlog (set on reconnect)
@@ -319,17 +347,23 @@ async function resolveMasterGroup() {
  * Determine if a message is from a monitored group.
  */
 async function isMonitoredGroup(msg) {
-  const chat = await msg.getChat();
-  if (!chat.isGroup) return false;
+  // Use msg.from directly — avoids msg.getChat() Puppeteer call that throws 'r' error
+  const groupId = msg.from;
+  if (!groupId || !groupId.endsWith('@g.us')) return false;
 
   // Check DB: any group with related_to='monitored' is monitored
-  const groupRecord = getGroup(chat.id._serialized);
+  const groupRecord = getGroup(groupId);
   if (groupRecord && groupRecord.related_to === 'monitored') return true;
 
-  // Fallback: check static groups.json for legacy config
-  const groupsConfig = loadGroupsConfig();
-  const monitored = groupsConfig.monitored || [];
-  return monitored.includes(chat.name);
+  // Fallback: check static groups.json by name (requires getChat, wrap safely)
+  try {
+    const chat = await msg.getChat();
+    const groupsConfig = loadGroupsConfig();
+    const monitored = groupsConfig.monitored || [];
+    return monitored.includes(chat.name);
+  } catch (_) {
+    return false;
+  }
 }
 
 /**
@@ -821,6 +855,16 @@ async function applyRepairPipeline(text) {
 /**
  * Send a message to the master group.
  */
+function logOutgoingDM(jid, text) {
+  try {
+    // Log messages sent to Aviv's DM (not master group)
+    const avivJid = `${config.AVIV_PHONE}@c.us`;
+    if (jid === avivJid || jid === config.AVIV_PHONE) {
+      appendDMHistory({ jid: avivJid, fromMe: true, body: text, ts: Date.now(), type: 'chat' });
+    }
+  } catch (_) {}
+}
+
 async function sendToMasterGroup(text) {
   if (!client) {
     console.warn('[WhatsApp] Client not initialized, cannot send message.');
@@ -1265,6 +1309,8 @@ function initWhatsApp() {
           // Resolve JID to phone (handles both @c.us and @lid LID format)
           const phone = getPhoneByJid(msg.from);
           console.log('[WhatsApp] DM from JID:', msg.from, '→ phone:', phone || '(unknown)');
+          // Log DM to rolling history file (used by /chat-history endpoint)
+          appendDMHistory({ jid: msg.from, phone, fromMe: false, body: msg.body || '', ts: msg.timestamp * 1000, type: msg.type });
           if (phone) {
             const ts = new Date(msg.timestamp * 1000).toISOString();
             await forwardToBabysitterService(phone, msg.body || '', ts);
