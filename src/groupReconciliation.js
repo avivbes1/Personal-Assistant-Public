@@ -141,17 +141,10 @@ async function reconcileGroups() {
       const liveChat = chats.find(c => c.id._serialized === group.id);
 
       if (!liveChat) {
-        // Group not found in live session — could have been removed or ID changed.
-        // This is a real structural issue; alert Aviv once.
-        console.warn(`[Reconciliation] "${group.name}" not found in live session`);
-        if (!incidentIsOpen(group.id)) {
-          openIncident(group.id);
-          await alertAviv(
-            `⚠️ [Lipa] קבוצה לא נמצאת בסשן:\n` +
-            `*${group.name}*\n` +
-            `ייתכן שהבוט הוצא מהקבוצה, או שמספר הקבוצה השתנה.`
-          );
-        }
+        // Group not found in live session — log only, no per-group DM.
+        // Global silence detection in health.js handles the real outage alert.
+        console.warn(`[Reconciliation] "${group.name}" not found in live session (no per-group alert — handled by health monitor)`);
+        openIncident(group.id);
         continue;
       }
 
@@ -169,9 +162,9 @@ async function reconcileGroups() {
         console.log(`[Reconciliation] ✅ Recovered messages for "${group.name}" (${recovered.c} in window)`);
         resolveIncident(group.id); // in case there was a prior resolved incident
       } else {
-        // Still silent after force-sync — group is genuinely quiet.
-        // Do NOT alert; real connection health is handled by health.js.
-        console.log(`[Reconciliation] "${group.name}" still silent after force-sync (${daysSilent}d) — group is genuinely quiet, no alert needed`);
+        // Still silent after force-sync — genuinely quiet or global outage.
+        // No per-group alert. health.js detects global outages.
+        console.log(`[Reconciliation] "${group.name}" still silent after force-sync (${daysSilent}d) — no per-group alert`);
         openIncident(group.id); // suppress re-scan until group becomes active again
       }
     }

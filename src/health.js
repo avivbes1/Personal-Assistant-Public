@@ -130,7 +130,9 @@ async function runChecks() {
       failures.push(`WhatsApp state check error: ${e.message}`);
     }
 
-    // ISSUE-009: Check message ingestion — alert if no messages received for 6h during working hours
+    // OUTAGE DETECTION: if ALL groups are silent during working hours, check connection and alert.
+    // Per-group silence is NOT alerted (groups can be legitimately quiet).
+    // Only a global silence across all groups signals a real outage.
     try {
       const nowMs = Date.now();
       const israelOffset = 3 * 60 * 60 * 1000; // UTC+3
@@ -147,24 +149,47 @@ async function runChecks() {
         const GAP_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
 
         if (gapMs > GAP_THRESHOLD_MS) {
-          // Don't alert if the gap is explained by Shabbat:
-          // last message was on Friday or Saturday (Israel time), and today is Sat or Sun.
-          const lastMsgIsraelDay = new Date(lastMsgTs + israelOffset).getUTCDay(); // 0=Sun,5=Fri,6=Sat
+          // Don't alert if gap is explained by Shabbat
+          const lastMsgIsraelDay = new Date(lastMsgTs + israelOffset).getUTCDay();
           const nowIsraelDay = new Date(nowMs + israelOffset).getUTCDay();
           const lastMsgWasWeekend = lastMsgIsraelDay === 5 || lastMsgIsraelDay === 6;
           const nowIsWeekendOrSundayMorning = nowIsraelDay === 6 ||
-            (nowIsraelDay === 0 && israelHour < 14); // give until 14:00 Sunday
+            (nowIsraelDay === 0 && israelHour < 14);
+
           if (lastMsgWasWeekend && nowIsWeekendOrSundayMorning) {
-            console.log('[Health] Skipping ingestion alert — gap explained by Shabbat/weekend');
+            console.log('[Health] Skipping outage alert — gap explained by Shabbat/weekend');
           } else {
-            const hours = (gapMs / 3600000).toFixed(1);
-            const lastStr = lastMsgTs ? new Date(lastMsgTs).toISOString() : 'never';
-            failures.push(`⚠️ No messages from any group in ${hours}h (last: ${lastStr}) — WhatsApp connection may be broken`);
+            // Check outage alert cooldown separately (4h, not 24h)
+            const OUTAGE_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+            const healthState = loadHealthState();
+            const lastOutageAlert = healthState.lastOutageAlert || 0;
+
+            if (nowMs - lastOutageAlert > OUTAGE_COOLDOWN_MS) {
+              // Auto-check WhatsApp connection state
+              let connState = 'UNKNOWN';
+              try { connState = await _client.getState(); } catch (_) {}
+
+              const hours = (gapMs / 3600000).toFixed(1);
+              let outageMsg;
+              if (connState !== 'CONNECTED') {
+                outageMsg = `🔴 Global outage: all groups silent for ${hours}h\nWhatsApp disconnected (state: ${connState}).\nNeed QR scan → open WhatsApp on bot's phone → Linked Devices → scan new code.`;
+              } else {
+                outageMsg = `🔴 Global outage: all groups silent for ${hours}h\nWhatsApp shows connected but no group messages received.\nLikely needs session reset (QR scan).`;
+              }
+
+              healthState.lastOutageAlert = nowMs;
+              saveHealthState(healthState);
+              await sendAlertDirect(outageMsg);
+              console.error('[Health] Global outage alert sent. Gap:', hours + 'h, WA state:', connState);
+            } else {
+              const minLeft = Math.round((OUTAGE_COOLDOWN_MS - (nowMs - lastOutageAlert)) / 60000);
+              console.warn(`[Health] Outage detected but alert on cooldown (${minLeft}min left). Gap: ${(gapMs/3600000).toFixed(1)}h`);
+            }
           }
         }
       }
     } catch (e) {
-      console.warn('[Health] Ingestion check error:', e.message);
+      console.warn('[Health] Outage check error:', e.message);
     }
   }
 
