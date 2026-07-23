@@ -133,6 +133,7 @@ async function runChecks() {
     // OUTAGE DETECTION: if ALL groups are silent during working hours, check connection and alert.
     // Per-group silence is NOT alerted (groups can be legitimately quiet).
     // Only a global silence across all groups signals a real outage.
+    // Gap is measured in ACTIVE hours only (08:00–23:00 Israel) — nighttime is excluded.
     try {
       const nowMs = Date.now();
       const israelOffset = 3 * 60 * 60 * 1000; // UTC+3
@@ -145,10 +146,35 @@ async function runChecks() {
           "SELECT MAX(timestamp) as ts FROM messages WHERE group_id != '120363426994367917@g.us'"
         ).get();
         const lastMsgTs = lastMsg && lastMsg.ts ? lastMsg.ts : 0;
-        const gapMs = nowMs - lastMsgTs;
-        const GAP_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
 
-        if (gapMs > GAP_THRESHOLD_MS) {
+        // Compute active (daytime) hours elapsed since last message — ignore 23:00–08:00
+        const activeHours = (() => {
+          const DAY_START = 8, DAY_END = 23;
+          let activeMs = 0;
+          let t = lastMsgTs;
+          while (t < nowMs) {
+            const h = new Date(t + israelOffset).getUTCHours();
+            if (h >= DAY_START && h < DAY_END) {
+              // Advance to end of this working segment or nowMs
+              const dayEnd = new Date(t + israelOffset);
+              dayEnd.setUTCHours(DAY_END, 0, 0, 0);
+              const dayEndMs = dayEnd.getTime() - israelOffset;
+              const step = Math.min(dayEndMs, nowMs) - t;
+              activeMs += step;
+              t = dayEndMs;
+            } else {
+              // Skip to next 08:00
+              const nextStart = new Date(t + israelOffset);
+              nextStart.setUTCHours(h < DAY_START ? DAY_START : DAY_START + 24, 0, 0, 0);
+              t = nextStart.getTime() - israelOffset;
+            }
+          }
+          return activeMs / 3600000;
+        })();
+
+        const ACTIVE_GAP_THRESHOLD_H = 6; // 6 active daytime hours
+
+        if (activeHours > ACTIVE_GAP_THRESHOLD_H) {
           // Don't alert if gap is explained by Shabbat
           const lastMsgIsraelDay = new Date(lastMsgTs + israelOffset).getUTCDay();
           const nowIsraelDay = new Date(nowMs + israelOffset).getUTCDay();
@@ -169,21 +195,21 @@ async function runChecks() {
               let connState = 'UNKNOWN';
               try { connState = await _client.getState(); } catch (_) {}
 
-              const hours = (gapMs / 3600000).toFixed(1);
+              const hours = activeHours.toFixed(1);
               let outageMsg;
               if (connState !== 'CONNECTED') {
-                outageMsg = `🔴 Global outage: all groups silent for ${hours}h\nWhatsApp disconnected (state: ${connState}).\nNeed QR scan → open WhatsApp on bot's phone → Linked Devices → scan new code.`;
+                outageMsg = `🔴 Global outage: all groups silent for ${hours} active hours\nWhatsApp disconnected (state: ${connState}).\nNeed QR scan → open WhatsApp on bot's phone → Linked Devices → scan new code.`;
               } else {
-                outageMsg = `🔴 Global outage: all groups silent for ${hours}h\nWhatsApp shows connected but no group messages received.\nLikely needs session reset (QR scan).`;
+                outageMsg = `🔴 Global outage: all groups silent for ${hours} active hours\nWhatsApp shows connected but no group messages received.\nLikely needs session reset (QR scan).`;
               }
 
               healthState.lastOutageAlert = nowMs;
               saveHealthState(healthState);
               await sendAlertDirect(outageMsg);
-              console.error('[Health] Global outage alert sent. Gap:', hours + 'h, WA state:', connState);
+              console.error('[Health] Global outage alert sent. Active gap:', hours + 'h, WA state:', connState);
             } else {
               const minLeft = Math.round((OUTAGE_COOLDOWN_MS - (nowMs - lastOutageAlert)) / 60000);
-              console.warn(`[Health] Outage detected but alert on cooldown (${minLeft}min left). Gap: ${(gapMs/3600000).toFixed(1)}h`);
+              console.warn(`[Health] Outage detected but alert on cooldown (${minLeft}min left). Active gap: ${activeHours.toFixed(1)}h`);
             }
           }
         }
