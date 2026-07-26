@@ -171,13 +171,14 @@ function createServer() {
       return;
     }
 
-    // GET /chat-history?jid=972504606660@c.us&limit=30
+    // GET /chat-history?jid=<phone>@c.us&limit=30
     // Returns last N messages. Tries fetchMessages() first; falls back to
     // the local dm-history.jsonl log when Puppeteer page eval is broken.
     if (req.method === 'GET' && req.url.startsWith('/chat-history')) {
       try {
         const urlObj = new URL(req.url, 'http://localhost');
-        const jid = urlObj.searchParams.get('jid') || '972504606660@c.us';
+        const defaultJid = process.env.AVIV_PHONE ? `${process.env.AVIV_PHONE}@c.us` : null;
+        const jid = urlObj.searchParams.get('jid') || defaultJid;
         const limit = Math.min(parseInt(urlObj.searchParams.get('limit') || '30', 10), 100);
 
         // Try live fetchMessages first
@@ -213,7 +214,9 @@ function createServer() {
         } catch (_) {}
         // Filter by jid — match on normalized jid OR stored phone field (covers LID→phone mapping)
         // Also support known LID aliases (e.g. Aviv's WhatsApp LID differs from his phone number)
-        const LID_TO_PHONE = { '245500498423818': '972504606660' }; // known LID→phone mappings
+        // Known LID→phone mappings (loaded from env to avoid hardcoded PII)
+        const LID_TO_PHONE = {};
+        if (process.env.AVIV_PHONE && process.env.AVIV_LID) LID_TO_PHONE[process.env.AVIV_LID] = process.env.AVIV_PHONE;
         const jidUser = jid.replace('@c.us','').replace('@lid','').replace(/\+/g, '');
         const filtered = lines.filter(m => {
           const mJid = (m.jid || '').replace('@c.us','').replace('@lid','').replace(/\+/g, '');
