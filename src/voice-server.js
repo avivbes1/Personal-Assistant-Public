@@ -171,6 +171,73 @@ function createServer() {
       return;
     }
 
+    // GET /chat-history?jid=972504606660@c.us&limit=30
+    // Returns last N messages. Tries fetchMessages() first; falls back to
+    // the local dm-history.jsonl log when Puppeteer page eval is broken.
+    if (req.method === 'GET' && req.url.startsWith('/chat-history')) {
+      try {
+        const urlObj = new URL(req.url, 'http://localhost');
+        const jid = urlObj.searchParams.get('jid') || '972504606660@c.us';
+        const limit = Math.min(parseInt(urlObj.searchParams.get('limit') || '30', 10), 100);
+
+        // Try live fetchMessages first
+        if (_client) {
+          try {
+            const chat = await _client.getChatById(jid);
+            if (chat) {
+              const messages = await chat.fetchMessages({ limit });
+              const result = messages.map(m => ({
+                id: m.id._serialized,
+                ts: m.timestamp * 1000,
+                from: m.fromMe ? 'bot' : (m.author || m.from),
+                body: m.body,
+                type: m.type,
+                fromMe: m.fromMe,
+              }));
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({ ok: true, jid, count: result.length, messages: result, source: 'live' }));
+            }
+          } catch (_liveErr) {
+            // fall through to log file
+          }
+        }
+
+        // Fallback: read from dm-history.jsonl
+        const histPath = require('path').join(__dirname, '../data/dm-history.jsonl');
+        let lines = [];
+        try {
+          const content = require('fs').readFileSync(histPath, 'utf8');
+          lines = content.split('\n').filter(Boolean).map(l => {
+            try { return JSON.parse(l); } catch { return null; }
+          }).filter(Boolean);
+        } catch (_) {}
+        // Filter by jid — match on normalized jid OR stored phone field (covers LID→phone mapping)
+        // Also support known LID aliases (e.g. Aviv's WhatsApp LID differs from his phone number)
+        const LID_TO_PHONE = { '245500498423818': '972504606660' }; // known LID→phone mappings
+        const jidUser = jid.replace('@c.us','').replace('@lid','').replace(/\+/g, '');
+        const filtered = lines.filter(m => {
+          const mJid = (m.jid || '').replace('@c.us','').replace('@lid','').replace(/\+/g, '');
+          const mPhone = (m.phone || '').replace(/\D/g, '');
+          // Direct JID match, phone field match, LID alias match, or outbound
+          const resolvedPhone = LID_TO_PHONE[mJid] || mJid;
+          return mJid === jidUser || resolvedPhone === jidUser || mPhone === jidUser || m.fromMe;
+        });
+        const result = filtered.slice(-limit).map(m => ({
+          ts: m.ts || m.logged,
+          from: m.fromMe ? 'bot' : (m.phone || m.jid),
+          body: m.body || '',
+          type: m.type || 'chat',
+          fromMe: m.fromMe,
+        }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, jid, count: result.length, messages: result, source: 'log' }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/send-message') {
       let body = '';
       req.on('data', chunk => { body += chunk; });

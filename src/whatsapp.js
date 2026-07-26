@@ -885,6 +885,8 @@ async function sendToMasterGroup(text) {
   try {
     await client.sendMessage(masterGroupId, result.text);
     console.log('[WhatsApp] Sent to master group:', result.text.substring(0, 60));
+    // Log outbound group message to dm-history.jsonl (used by /chat-history for group context)
+    appendDMHistory({ jid: masterGroupId, fromMe: true, body: result.text, ts: Date.now(), type: 'chat' });
   } catch (err) {
     console.error('[WhatsApp] sendToMasterGroup error:', err.message);
   }
@@ -1055,6 +1057,34 @@ function initWhatsApp() {
       addInitError(resolveErr);
       console.error('[WhatsApp] resolveMasterGroup failed in ready handler:', resolveErr.message, '— continuing init');
     }
+
+    // ── Context prefetch on startup (ISSUE-022) ──────────────────────────────
+    // Runs in a detached setTimeout so it cannot crash or delay the rest of startup.
+    // Pre-fills dm-history.jsonl with the last 30 msgs from Aviv DM + master group
+    // so /chat-history never returns zero right after a restart.
+    setTimeout(async () => {
+      try {
+        const PREFETCH_LIMIT = 30;
+        const chatsToPrefetch = [{ jid: `${config.AVIV_PHONE}@c.us`, label: 'Aviv DM' }];
+        if (masterGroupId) chatsToPrefetch.push({ jid: masterGroupId, label: 'master group' });
+        for (const { jid, label } of chatsToPrefetch) {
+          try {
+            const chat = await client.getChatById(jid);
+            if (!chat) continue;
+            const msgs = await chat.fetchMessages({ limit: PREFETCH_LIMIT });
+            let written = 0;
+            for (const m of msgs) {
+              const ct = await m.getContact().catch(() => null);
+              const senderName = (ct && (ct.pushname || ct.number)) || m.author || (m.fromMe ? 'bot' : 'unknown');
+              appendDMHistory({ jid, fromMe: m.fromMe, phone: m.fromMe ? null : senderName, body: m.body || '', ts: m.timestamp * 1000, type: m.type });
+              written++;
+            }
+            console.log(`[ContextPrefetch] ${label}: wrote ${written} messages to dm-history.jsonl`);
+          } catch (e) { console.warn(`[ContextPrefetch] ${label} failed: ${e.message}`); }
+        }
+      } catch (e) { console.warn('[ContextPrefetch] top-level error:', e.message); }
+    }, 5000);
+    // ── End context prefetch ─────────────────────────────────────────────────
 
     // Check babysitter booking onboarding state + resolve JIDs
     setTimeout(() => {
@@ -1310,7 +1340,9 @@ function initWhatsApp() {
           const phone = getPhoneByJid(msg.from);
           console.log('[WhatsApp] DM from JID:', msg.from, '→ phone:', phone || '(unknown)');
           // Log DM to rolling history file (used by /chat-history endpoint)
-          appendDMHistory({ jid: msg.from, phone, fromMe: false, body: msg.body || '', ts: msg.timestamp * 1000, type: msg.type });
+          // Normalize jid to phone@c.us format when available so /chat-history filter matches
+          const _dmJid = phone ? `${phone}@c.us` : msg.from;
+          appendDMHistory({ jid: _dmJid, phone, fromMe: false, body: msg.body || '', ts: msg.timestamp * 1000, type: msg.type });
           if (phone) {
             const ts = new Date(msg.timestamp * 1000).toISOString();
             await forwardToBabysitterService(phone, msg.body || '', ts);
@@ -1440,6 +1472,12 @@ function initWhatsApp() {
       if (masterGroupId && msg.from === masterGroupId && !msg.fromMe) {
         if (isMessageProcessed(msgId)) return;
         markMsgProcessed(msgId);
+        // Log inbound master group message to dm-history.jsonl for /chat-history context
+        try {
+          const _gc = await msg.getContact().catch(() => null);
+          const _gName = (_gc && (_gc.pushname || _gc.number)) || msg.author || 'Family';
+          appendDMHistory({ jid: masterGroupId, fromMe: false, phone: _gName, body: msg.body || '', ts: msg.timestamp * 1000, type: msg.type });
+        } catch (_) {}
 
         // Babysitter onboarding reply detection
         const handled = await handleOnboardingReply(msg.body || '', sendToMasterGroup).catch(() => false);

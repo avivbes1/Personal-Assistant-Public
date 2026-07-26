@@ -198,3 +198,27 @@ When a production incident, architect consultation, or expert review concludes w
 2. State: principle, source incident, rule, verification method
 3. Add a corresponding test in `tests/check-principles.js`
 4. Reference it in commit message and ISSUES.md if incident-driven
+
+---
+
+## P-010 — Single Owner Per Group (Conversation Continuity)
+
+**Principle:** Each WhatsApp group must have exactly one owning component responsible for message handling. Dual-consumer architectures (where two components both partially handle the same group) create gaps where neither handles a message.
+
+**Source incident:** ISSUE-022, 2026-07-26 — Liat's "תכניס ליומן" was ignored because Tudat's `handleMasterGroupCommand()` is a no-op and OpenClaw's mention-gate blocked messages without "ליפא". Follow-up question "ל2 היומנים?" was also dropped (no context + same gate). Aviv had to tag the bot by name for every single request.
+
+**Root causes:**
+1. OpenClaw mention-gate (`mentionPatterns: ["ליפא", "lipa"]`) required explicit name tagging even from authorized family members
+2. No `historyLimit` set → each session turn started with no prior context → follow-up questions had no connection to previous actions
+3. `handleMasterGroupCommand()` in Tudat was a no-op, so Tudat did nothing, and OpenClaw was mention-gated → gap
+
+**Rule:**
+- **Master group (משימות בסינסקי):** Owned by Lipa (OpenClaw). `requireMention: false` in OpenClaw group config. Tudat's `handleMasterGroupCommand()` remains a no-op.
+- **School/class groups:** Owned by Tudat for extraction. OpenClaw provides tools on request.
+- OpenClaw must have `historyLimit >= 20` on `messages.groupChat` so follow-up questions have context.
+- Tudat logs all master group messages (inbound + outbound) to `dm-history.jsonl` via `appendDMHistory()` for audit and fallback context.
+
+**Verification:**
+- `openclaw.json`: `channels.whatsapp.groups["120363426994367917@g.us"].requireMention === false`
+- `openclaw.json`: `messages.groupChat.historyLimit >= 20`
+- `whatsapp.js`: `appendDMHistory` called on master group inbound messages and `sendToMasterGroup` outbound
