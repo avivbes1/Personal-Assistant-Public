@@ -83,7 +83,7 @@ async function resolveLocationAddress(locationName) {
       path,
       method: 'GET',
       headers: {
-        'User-Agent':      'besinsky-bot/1.0 (family-calendar-assistant)',
+        'User-Agent':      'family-calendar-bot/1.0 (calendar-assistant)',
         'Accept-Language': 'he,en',
       },
     }, res => {
