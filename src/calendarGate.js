@@ -57,6 +57,75 @@ function callHaiku(system, userContent, maxTokens = 512) {
   });
 }
 
+// ── Location resolver (Nominatim / OSM) ─────────────────────────────────────────
+
+const _locationCache = new Map();
+
+/**
+ * Best-effort: resolve a venue name to a full street address via OSM Nominatim.
+ * Returns the resolved address string (trimmed to 3 segments), or the original
+ * name on any failure (timeout, parse error, no results).
+ * Results are cached in-memory for the lifetime of the process.
+ * @param {string} locationName  Raw venue name (e.g. "Bank Tefahot Afula")
+ * @returns {Promise<string>}
+ */
+async function resolveLocationAddress(locationName) {
+  if (!locationName) return locationName;
+  const key = locationName.toLowerCase().trim();
+  if (_locationCache.has(key)) return _locationCache.get(key);
+
+  const query = encodeURIComponent(`${locationName} Israel`);
+  const path  = `/search?q=${query}&format=json&limit=1&addressdetails=0`;
+
+  return new Promise(resolve => {
+    const req = https.request({
+      hostname: 'nominatim.openstreetmap.org',
+      path,
+      method: 'GET',
+      headers: {
+        'User-Agent':      'besinsky-bot/1.0 (family-calendar-assistant)',
+        'Accept-Language': 'he,en',
+      },
+    }, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try {
+          const results = JSON.parse(data);
+          if (results.length > 0 && results[0].display_name) {
+            // Trim to first 3 comma-segments for a clean, readable address
+            const resolved = results[0].display_name
+              .split(',')
+              .slice(0, 3)
+              .join(',')
+              .trim();
+            _locationCache.set(key, resolved);
+            console.log(`[CalendarGate] Location resolved: "${locationName}" → "${resolved}"`);
+            resolve(resolved);
+          } else {
+            console.log(`[CalendarGate] Location not found for "${locationName}", keeping raw`);
+            _locationCache.set(key, locationName);
+            resolve(locationName);
+          }
+        } catch (e) {
+          console.warn(`[CalendarGate] Nominatim parse error for "${locationName}":`, e.message);
+          resolve(locationName);
+        }
+      });
+    });
+    req.on('error', err => {
+      console.warn(`[CalendarGate] Nominatim request error for "${locationName}":`, err.message);
+      resolve(locationName);
+    });
+    req.setTimeout(3000, () => {
+      req.destroy();
+      console.warn(`[CalendarGate] Nominatim timeout for "${locationName}", keeping raw`);
+      resolve(locationName);
+    });
+    req.end();
+  });
+}
+
 // ── Stage 1: Extract event intent from raw action ─────────────────────────────
 
 /**
@@ -99,16 +168,22 @@ async function extractCandidate(action, rawMessage, groupName) {
     }
   }
 
+  // Resolve venue name to a real address (Nominatim, best-effort, 3s timeout)
+  const resolvedLocation = action.location
+    ? await resolveLocationAddress(action.location)
+    : null;
+
   return {
-    title: action.summary || action.title || 'אירוע',
+    title:       action.summary || action.title || 'אירוע',
     date,
-    time: timeSource === 'inferred' ? null : time,  // drop inferred times
+    time:        timeSource === 'inferred' ? null : time,  // drop inferred times
     timeSource,
-    owner: (action.owner || 'both').toLowerCase(),
-    location: action.location || null,
+    owner:       (action.owner || 'both').toLowerCase(),
+    location:    resolvedLocation,
+    description: action.description || null,
     durationMin: parseInt(action.duration_min, 10) || 60,
-    rawMessage: rawMessage || null,
-    groupName: groupName || null,
+    rawMessage:  rawMessage || null,
+    groupName:   groupName || null,
   };
 }
 
@@ -240,7 +315,8 @@ async function executeDecision(decision, candidate, existingEvents, sendToMaster
       patch.start = { dateTime: startISO, timeZone: 'Asia/Jerusalem' };
       patch.end   = { dateTime: endISO,   timeZone: 'Asia/Jerusalem' };
     }
-    if (candidate.location) patch.location = candidate.location;
+    if (candidate.location)    patch.location    = candidate.location;
+    if (candidate.description) patch.description = candidate.description;
 
     try {
       const tokenPath = config.AVIV_TOKEN_PATH;
@@ -260,6 +336,7 @@ async function executeDecision(decision, candidate, existingEvents, sendToMaster
       start_time:     candidate.time ? `${candidate.date}T${candidate.time}:00+03:00` : candidate.date,
       end_time:       candidate.time ? `${candidate.date}T${padTime(candidate.time, candidate.durationMin)}:00+03:00` : null,
       location:       candidate.location,
+      description:    candidate.description || undefined,
       calendar_owner: candidate.owner,
       _source:        candidate.groupName ? 'realtime' : 'command',
       _rawMessage:    candidate.rawMessage,

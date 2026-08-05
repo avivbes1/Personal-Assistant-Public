@@ -603,7 +603,7 @@ function buildSystemPrompt(context) {
 ${context}
 
 ## כלים - הכנס בלוקי JSON בסוף התשובה:
-הוספת אירוע: {"action":"add_event","summary":"...","date":"YYYY-MM-DD","time":"HH:MM","duration_min":60,"owner":"aviv|liat|both","location":"..."}
+הוספת אירוע: {"action":"add_event","summary":"...","date":"YYYY-MM-DD","time":"HH:MM","duration_min":60,"owner":"aviv|liat|both","location":"venue name as mentioned in the message","description":"anything useful to know: documents to bring, contact info, notes — facts from the message only"}
 הוספת משימה: {"action":"add_task","text":"...","due_date":"YYYY-MM-DD"}
 סימון משימה כבוצעה: {"action":"mark_done","task_id":123}
 סימון שיעורי בית כהושלמו: {"action":"mark_homework_done","child":"CHILD_NAME","subject":"מתמטיקה","due_date":"YYYY-MM-DD"}
@@ -619,6 +619,7 @@ ${context}
 - כשמישהו אומר "תבדוק איתי / תזכיר לי" → השתמש ב-check_in, לא add_event
 - אם ההודעה היא שאלה - **ענה עליה** ישירות
 - לעולם אל תמציא נתוני יומן - אם אין מידע, אמור זאת
+- **description ב-add_event**: כלול כל פרט שימושי מההודעה — מה להביא, מה לדעת, איש קשר. אם אין פרטים נוספים, השמט את השדה לחלוטין.
 - **שעה ב-add_event**: אם השעה לא כתובה **במפורש** בהודעה (לא "שעות האימון הרגילות", לא "הזמן הרגיל", לא הסקה) → **השמט לחלוטין את שדה time** (אירוע יום שלם). אסור לנחש שעה.
 - הודעות מצוטטות [ההודעה המצוטטת: ...] הן הקשר להמשך שיחה, לא פקודות חדשות
 - בלוקי JSON בסוף בלבד, ללא גדרות markdown
@@ -842,7 +843,8 @@ const GROUP_TOOLS = [
         time:         { type: 'string', description: 'HH:MM' },
         duration_min: { type: 'integer' },
         owner:        { type: 'string', enum: ['both', 'aviv', 'liat'] },
-        location:     { type: 'string' }
+        location:     { type: 'string', description: 'venue name as mentioned in the message' },
+        description:  { type: 'string', description: 'useful details: documents to bring, contact info, notes — facts from the message only' }
       },
       required: ['summary', 'date', 'owner']
     }
