@@ -328,16 +328,21 @@ class BaileysClient extends EventEmitter {
           console.error('[Baileys] Logged out. Need to re-authenticate.');
           this.emit('auth_failure', 'Logged out');
         } else if (shouldReconnect) {
-          // Only emit disconnected once per 5 minutes to prevent alert spam
-          const now = Date.now();
-          if (!this._lastDisconnectAlert || now - this._lastDisconnectAlert > 300000) {
-            this._lastDisconnectAlert = now;
-            this.emit('disconnected', `status_${statusCode}`);
-          } else {
-            console.log(`[Baileys] Suppressing disconnect alert (cooldown). Status: ${statusCode}`);
-          }
+          // Delay the disconnect event — Baileys auto-reconnects, so only
+          // alert if we're still down after 60 seconds
+          console.log(`[Baileys] Transient disconnect (status ${statusCode}). Waiting 60s before alerting...`);
+          if (this._disconnectTimer) clearTimeout(this._disconnectTimer);
+          this._disconnectTimer = setTimeout(() => {
+            if (!this._ready) {
+              console.warn('[Baileys] Still disconnected after 60s — alerting.');
+              this.emit('disconnected', `status_${statusCode}`);
+            } else {
+              console.log('[Baileys] Reconnected within 60s — no alert needed.');
+            }
+            this._disconnectTimer = null;
+          }, 60000);
+          this._ready = false;
           // Baileys handles its own reconnection — don't call initialize() again
-          // as that creates duplicate sockets
         }
       }
     });
