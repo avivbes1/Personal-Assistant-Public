@@ -3,7 +3,8 @@
  * Monitors specified groups and handles incoming messages.
  */
 
-const { Client, LocalAuth, Buttons } = require('whatsapp-web.js');
+// Baileys adapter (replaces whatsapp-web.js)
+const { BaileysClient } = require('./baileys-client');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
@@ -1012,18 +1013,7 @@ function startDisconnectWatchdog() {
  */
 function initWhatsApp() {
   startDisconnectWatchdog(); // ISSUE-021: start once, guard against duplicate starts
-  client = new Client({
-    authStrategy: new LocalAuth({ dataPath: './whatsapp-session' }),
-    webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1015901307-alpha.html',
-    },
-    puppeteer: {
-      headless: true,
-      executablePath: config.CHROMIUM_PATH,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
-    },
-  });
+  client = new BaileysClient();
 
   client.on('qr', (qr) => {
     console.log('\n[WhatsApp] Scan the QR code below to connect:\n');
@@ -1357,7 +1347,7 @@ function initWhatsApp() {
   const SKIP_MSG_TYPES = new Set(['sticker', 'audio', 'video', 'location', 'vcard']); // 'document' removed — PDFs/Word/Excel parsed by media-parser; 'image' removed — ISSUE-021
   const SKIP_REGEX = /^[\p{Emoji_Presentation}\s]{1,10}$|^(אוקיי|תודה|👍|ok|כן|לא|yes|no|ממ|יופי|ברור|בסדר|wow|nice)$/iu;
 
-  client.on('message', async (msg) => {
+  client.on('message_create', async (msg) => {
     try {
       _lastActivityMs = Date.now(); // track last WA activity for health checks
 

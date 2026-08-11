@@ -11,7 +11,14 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { MessageMedia } = require('whatsapp-web.js');
+// MessageMedia compatibility — works with both whatsapp-web.js and Baileys adapter
+class MessageMedia {
+  constructor(mimetype, data, filename) {
+    this.mimetype = mimetype;
+    this.data = data;
+    this.filename = filename;
+  }
+}
 
 const PORT = 3001;
 
@@ -304,7 +311,7 @@ function createServer() {
         fs.unlink(oggPath, () => {});
 
         const media = new MessageMedia('audio/ogg; codecs=opus', data, 'voice.ogg');
-        await _client.sendMessage(chatId, media, { sendMediaAsVoice: true });
+        await _client.sendMessage(chatId, media, { sendAudioAsVoice: true });
 
         console.log(`[VoiceServer] Voice sent to ${chatId}`);
         res.writeHead(200);
