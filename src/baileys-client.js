@@ -330,18 +330,20 @@ class BaileysClient extends EventEmitter {
         } else if (shouldReconnect) {
           // Delay the disconnect event — Baileys auto-reconnects, so only
           // alert if we're still down after 60 seconds
-          console.log(`[Baileys] Transient disconnect (status ${statusCode}). Waiting 60s before alerting...`);
+          console.log(`[Baileys] Transient disconnect (status ${statusCode}). Waiting 5min before alerting...`);
           if (this._disconnectTimer) clearTimeout(this._disconnectTimer);
           this._disconnectTimer = setTimeout(() => {
             if (!this._ready) {
-              console.warn('[Baileys] Still disconnected after 60s — alerting.');
+              console.warn('[Baileys] Still disconnected after 5min — alerting.');
               this.emit('disconnected', `status_${statusCode}`);
             } else {
-              console.log('[Baileys] Reconnected within 60s — no alert needed.');
+              console.log('[Baileys] Reconnected within 5min — no alert needed.');
             }
             this._disconnectTimer = null;
-          }, 60000);
-          this._ready = false;
+          }, 300000);
+          // Don't set _ready=false here — Baileys auto-reconnects and
+          // the 'open' handler will confirm. Health checks use getState()
+          // which queries the actual socket state instead.
           // Baileys handles its own reconnection — don't call initialize() again
         }
       }
@@ -660,9 +662,12 @@ class BaileysClient extends EventEmitter {
 
   /**
    * Get connection state. Compatible with whatsapp-web.js client.getState().
+   * Checks actual socket state, not just the _ready flag.
    */
   async getState() {
-    return this._ready ? 'CONNECTED' : 'DISCONNECTED';
+    if (this._sock && this._sock.ws && this._sock.ws.readyState === 1) return 'CONNECTED';
+    if (this._ready) return 'CONNECTED';
+    return 'DISCONNECTED';
   }
 }
 
