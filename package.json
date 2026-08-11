@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node tests/run-all.js",
-    "update-profile": "node scripts/update-profile.js"
+    "update-profile": "node scripts/update-profile.js",
+    "postinstall": "patch-package"
   },
   "keywords": [],
   "author": "",
@@ -26,5 +27,8 @@
     "tesseract.js": "^7.0.0",
     "whatsapp-web.js": "^1.34.7",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
   }
 }

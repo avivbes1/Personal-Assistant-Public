@@ -682,7 +682,7 @@ async function handleMessage(text, quotedMsg, senderName, conversationHistory = 
   messages.push({ role: 'user', content: String(text || '') });
 
   const bodyStr = JSON.stringify({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-opus-4-6',
     max_tokens: 768,
     system: systemPrompt,
     messages,

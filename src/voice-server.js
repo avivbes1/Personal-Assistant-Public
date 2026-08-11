@@ -261,10 +261,11 @@ function createServer() {
             return res.end(JSON.stringify({ error: 'WhatsApp client not ready' }));
           }
           const chatId = to.includes('@') ? to : `${to.replace('+', '')}@c.us`;
-          await _client.sendMessage(chatId, text);
-          console.log(`[VoiceServer] Text message sent to ${chatId}`);
+          const sentMsg = await _client.sendMessage(chatId, text);
+          const msgId = sentMsg && sentMsg.id ? sentMsg.id._serialized : null;
+          console.log(`[VoiceServer] Text message sent to ${chatId}${msgId ? ' (id: ' + msgId.substring(0, 40) + ')' : ''}`);
           res.writeHead(200);
-          res.end(JSON.stringify({ ok: true }));
+          res.end(JSON.stringify({ ok: true, msgId }));
         } catch (err) {
           console.error('[VoiceServer] send-message error:', err.message);
           res.writeHead(500);

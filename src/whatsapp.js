@@ -9,6 +9,12 @@ const fs = require('fs');
 const path = require('path');
 
 const config = require('./config');
+
+// Safe _serialized accessor (WhatsApp Web renamed _serialized to $1 in some builds)
+function _ser(obj) {
+  if (!obj) return undefined;
+  return obj._serialized || obj['$1'] || (typeof obj.toString === 'function' ? obj.toString() : undefined);
+}
 const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal } = require('./db');
 const { resolveMembersInText } = require('./family-profiles');
 const { validateOutgoing, repairMessage } = require('./validate-outgoing');
@@ -335,7 +341,7 @@ async function resolveMasterGroup() {
   const chats = await client.getChats();
   for (const chat of chats) {
     if (chat.isGroup && chat.name === masterName) {
-      masterGroupId = chat.id._serialized;
+      masterGroupId = _ser(chat.id);
       console.log(`[WhatsApp] Master group resolved: "${masterName}" (${masterGroupId})`);
       return;
     }
@@ -373,7 +379,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
   try {
     const chat = await msg.getChat();
     const contact = await msg.getContact();
-    const groupId = chat.id._serialized;
+    const groupId = _ser(chat.id);
     const sender = contact.pushname || contact.number || msg.from;
 
     // Resolve message body — for media, try to extract content
@@ -742,7 +748,7 @@ async function replayMasterGroupCommands() {
       const msgTs = msg.timestamp * 1000;
       if (msgTs < cutoff) continue;
       if (msg.fromMe) continue; // skip bot's own messages
-      const msgId = msg.id._serialized;
+      const msgId = _ser(msg.id);
       if (isMessageProcessed(msgId)) continue; // already handled
       markMsgProcessed(msgId);
       console.log(`[WhatsApp] Replaying missed master command: "${(msg.body || '').substring(0, 60)}"`);
@@ -774,14 +780,14 @@ async function scanGroupHistory(chat, { saveDays = 7, parseDays = 1 } = {}) {
 
     console.log(`[WhatsApp] History scan for "${chat.name}": fetched ${msgs.length} msgs`);
 
-    const groupId = chat.id._serialized;
+    const groupId = _ser(chat.id);
 
     for (const msg of msgs) {
       const msgTs = msg.timestamp * 1000;
       if (msgTs < saveCutoff) continue;
       if (msg.fromMe) continue;
 
-      const msgId = msg.id._serialized;
+      const msgId = _ser(msg.id);
       const contact = await msg.getContact().catch(() => null);
       const sender = contact?.pushname || contact?.number || msg.author || 'unknown';
 
@@ -902,7 +908,7 @@ async function sendToMasterGroupWithId(text) {
   if (!result.ok) return null;
   try {
     const sentMsg = await client.sendMessage(masterGroupId, result.text);
-    return sentMsg.id._serialized;
+    return _ser(sentMsg.id);
   } catch (err) {
     console.error('[WhatsApp] sendToMasterGroupWithId error:', err.message);
     return null;
@@ -921,13 +927,13 @@ async function sendToMasterGroupWithMentions(text, mentionIds = []) {
   try {
     const sentMsg = await client.sendMessage(masterGroupId, result.text, { mentions: mentionIds });
     console.log('[WhatsApp] Sent with mentions to master group:', result.text.substring(0, 60));
-    return sentMsg.id._serialized;
+    return _ser(sentMsg.id);
   } catch (err) {
     // Fallback to plain send if mentions not supported
     console.warn('[WhatsApp] Mentions failed, sending plain:', err.message);
     try {
       const sentMsg = await client.sendMessage(masterGroupId, result.text);
-      return sentMsg.id._serialized;
+      return _ser(sentMsg.id);
     } catch (e2) {
       console.error('[WhatsApp] sendToMasterGroupWithMentions error:', e2.message);
       return null;
@@ -944,7 +950,7 @@ async function getGroups() {
     const chats = await client.getChats();
     return chats
       .filter(c => c.isGroup)
-      .map(c => ({ id: c.id._serialized, name: c.name }));
+      .map(c => ({ id: _ser(c.id), name: c.name }));
   } catch (err) {
     console.error('[WhatsApp] getGroups error:', err.message);
     return [];
@@ -1124,16 +1130,25 @@ function initWhatsApp() {
     const monitoredNames = groupsConfig.monitored || [];
     const masterName = groupsConfig.master || config.MASTER_GROUP_NAME;
 
-    // Get all group chats
-    const allChats = await client.getChats();
+    // Get all group chats (with retry — whatsapp-web.js can fail on first attempt)
+    let allChats = [];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        allChats = await client.getChats();
+        break;
+      } catch (chatErr) {
+        console.warn(`[WhatsApp] getChats attempt ${attempt} failed:`, chatErr.message || String(chatErr));
+        if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt));
+      }
+    }
     const groupChats = allChats.filter(c => c.isGroup);
 
     console.log('[WhatsApp] Available groups:');
-    groupChats.forEach(g => console.log(`  - "${g.name}" (${g.id._serialized})`));
+    groupChats.forEach(g => console.log(`  - "${g.name}" (${_ser(g.id)})`));
 
     // â"€â"€ Feature 2: New group detection â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     for (const chat of groupChats) {
-      const chatId = chat.id._serialized;
+      const chatId = _ser(chat.id);
       const existing = getGroup(chatId);
 
       if (!existing) {
@@ -1152,8 +1167,8 @@ function initWhatsApp() {
           const question = `🆕 נוספתי לקבוצה חדשה: "${chat.name}"\nלמי הקבוצה קשורה? מעוניינים במעקב? (ענו בתגובה להודעה זו)`;
           try {
             const sentMsg = await client.sendMessage(masterGroupId, question);
-            pendingGroupQuestions.set(sentMsg.id._serialized, chatId);
-            savePendingGroupQuestion(sentMsg.id._serialized, chatId);
+            pendingGroupQuestions.set(_ser(sentMsg.id), chatId);
+            savePendingGroupQuestion(_ser(sentMsg.id), chatId);
             addToHistory('assistant', question);
             console.log(`[WhatsApp] Asked master group about new group "${chat.name}"`);
           } catch (err) {
@@ -1170,8 +1185,8 @@ function initWhatsApp() {
         const question = `❓ אני עוקב אחרי הקבוצה *${grp.name}* אבל אין לי הקשר עליה.\nלמי מהמשפחה היא קשורה? לאיזה ילד/פעילות? (ענו בתגובה)`;
         try {
           const sentMsg = await client.sendMessage(masterGroupId, question);
-          pendingGroupQuestions.set(sentMsg.id._serialized, grp.id);
-          savePendingGroupQuestion(sentMsg.id._serialized, grp.id);
+          pendingGroupQuestions.set(_ser(sentMsg.id), grp.id);
+          savePendingGroupQuestion(_ser(sentMsg.id), grp.id);
           addToHistory('assistant', question);
           console.log(`[WhatsApp] Asked about group context: "${grp.name}"`);
         } catch (err) {
@@ -1184,7 +1199,7 @@ function initWhatsApp() {
     // ── Feature 1: Startup history scan ─────────────────────────────────────
     // Use DB-monitored groups (not just static groups.json list)
     const monitoredChats = groupChats.filter(c => {
-      const rec = getGroup(c.id._serialized);
+      const rec = getGroup(_ser(c.id));
       return (rec && rec.related_to === 'monitored') || monitoredNames.includes(c.name);
     });
     for (const chat of monitoredChats) {
@@ -1249,29 +1264,42 @@ function initWhatsApp() {
 
   client.on('group_join', async (notification) => {
     try {
-      const chat = await notification.getChat();
-      if (!chat || !chat.isGroup) return;
-      const groupId = chat.id._serialized;
+      // Use getChatById — more reliable than notification.getChat() for group events
+      const groupId = notification.chatId;
+      if (!groupId || !groupId.endsWith('@g.us')) return;
       if (groupId === masterGroupId) return; // ignore master group itself
+
+      // Retry up to 3 times with backoff (group metadata may not be available immediately)
+      let chat = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          chat = await client.getChatById(groupId);
+          if (chat) break;
+        } catch (retryErr) {
+          console.warn(`[WhatsApp] group_join getChatById attempt ${attempt} failed:`, retryErr.message || retryErr);
+          if (attempt < 3) await new Promise(r => setTimeout(r, 1000 * attempt));
+        }
+      }
+      const groupName = (chat && chat.name) || groupId;
 
       const existing = getGroup(groupId);
       if (!existing) {
-        saveGroup(groupId, chat.name);
-        console.log(`[WhatsApp] Added to new group: "${chat.name}" (${groupId})`);
+        saveGroup(groupId, groupName);
+        console.log(`[WhatsApp] Added to new group: "${groupName}" (${groupId})`);
         if (masterGroupId) {
-          const question = `🆕 נוספתי לקבוצה חדשה: *${chat.name}*\nלמי הקבוצה קשורה? מעוניינים במעקב? (ענו בתגובה להודעה זו)`;
+          const question = `🆕 נוספתי לקבוצה חדשה: *${groupName}*\nלמי הקבוצה קשורה? מעוניינים במעקב? (ענו בתגובה להודעה זו)`;
           const sentMsg = await client.sendMessage(masterGroupId, question);
           if (sentMsg) {
-            pendingGroupQuestions.set(sentMsg.id._serialized, groupId);
-            savePendingGroupQuestion(sentMsg.id._serialized, groupId);
+            pendingGroupQuestions.set(_ser(sentMsg.id), groupId);
+            savePendingGroupQuestion(_ser(sentMsg.id), groupId);
             addToHistory('assistant', question);
           }
         }
       } else if (existing.related_to !== 'monitored') {
-        console.log(`[WhatsApp] Re-added to known group: "${chat.name}"`);
+        console.log(`[WhatsApp] Re-added to known group: "${groupName}"`);
       }
     } catch (err) {
-      console.error('[WhatsApp] group_join handler error:', err.message);
+      console.error('[WhatsApp] group_join handler error:', { message: err.message || String(err), code: err.code, stack: err.stack });
     }
   });
 
@@ -1365,13 +1393,13 @@ function initWhatsApp() {
       if (!isImageType && msgText.length < 6 && msg.from !== masterGroupId) return;
       if (!isImageType && SKIP_REGEX.test(msgText) && msg.from !== masterGroupId) return;
 
-      const msgId = msg.id._serialized;
+      const msgId = _ser(msg.id);
 
       // â"€â"€ Feature 2c: Master group reply handling â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
       if (masterGroupId && msg.from === masterGroupId && msg.hasQuotedMsg) {
         try {
           const quotedMsg = await msg.getQuotedMessage();
-          const quotedId = quotedMsg.id._serialized;
+          const quotedId = _ser(quotedMsg.id);
 
           // -- Pending group question reply --
           // Check both in-memory map AND persistent DB (survives restarts)
@@ -1463,7 +1491,7 @@ function initWhatsApp() {
             return;
           }
         } catch (err) {
-          console.error('[WhatsApp] Error handling master group reply:', err.message);
+          console.error('[WhatsApp] Error handling master group reply:', { message: err.message || String(err), code: err.code, stack: err.stack });
         }
       }
 
@@ -1570,7 +1598,7 @@ function initWhatsApp() {
           const ctxChat = await msg.getChat().catch(() => null);
           const mediaLabel = { image: '[\u05ea\u05de\u05d5\u05e0\u05d4]', video: '[\u05d5\u05d9\u05d3\u05d0\u05d5]', audio: '[\u05d4\u05e7\u05dc\u05d8\u05d4 \u05e7\u05d5\u05dc\u05d9\u05ea]', document: '[\u05de\u05e1\u05de\u05da]', sticker: '[\u05de\u05d3\u05d1\u05e7\u05d4]', location: '[\u05de\u05d9\u05e7\u05d5\u05dd]' };
           const ctxBody = msg.body && msg.body.trim() ? msg.body : (mediaLabel[msg.type] || '[\u05de\u05d3\u05d9\u05d4]');
-          saveMessage({ group_id: (ctxChat && ctxChat.id && ctxChat.id._serialized) || msg.from, sender: ctxSender, body: ctxBody, timestamp: msg.timestamp * 1000 });
+          saveMessage({ group_id: (ctxChat && ctxChat.id && _ser(ctxChat.id)) || msg.from, sender: ctxSender, body: ctxBody, timestamp: msg.timestamp * 1000 });
         } catch (_) {}
         // Full parse+act only for substantial text messages or images (ISSUE-021: images from
         // any sender in monitored groups must reach handleGroupMessage for vision OCR)
@@ -1582,13 +1610,13 @@ function initWhatsApp() {
         try {
           const chat = await msg.getChat();
           if (chat.isGroup) {
-            const existing = getGroup(chat.id._serialized);
+            const existing = getGroup(_ser(chat.id));
             if (!existing && masterGroupId) {
-              saveGroup(chat.id._serialized, chat.name);
+              saveGroup(_ser(chat.id), chat.name);
               const question = `🆕 נוספתי לקבוצה: *${chat.name}*\nלמי הקבוצה קשורה? מעוניינת במעקב? (ענו בתגובה להודעה זו)`;
               const sentMsg = await client.sendMessage(masterGroupId, question);
-              pendingGroupQuestions.set(sentMsg.id._serialized, chat.id._serialized);
-              savePendingGroupQuestion(sentMsg.id._serialized, chat.id._serialized);
+              pendingGroupQuestions.set(_ser(sentMsg.id), _ser(chat.id));
+              savePendingGroupQuestion(_ser(sentMsg.id), _ser(chat.id));
               console.log(`[WhatsApp] New group detected live: "${chat.name}"`);
             }
           }
