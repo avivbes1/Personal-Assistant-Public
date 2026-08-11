@@ -28,23 +28,27 @@ const pino = require('pino');
 const AUTH_DIR = path.join(__dirname, '..', '.baileys_auth');
 const STORE_DIR = path.join(__dirname, '..', 'data', 'baileys-store');
 
-// Minimal logger for Baileys (suppress noisy output)
-const logger = pino({ level: 'warn' });
+// Silent logger for Baileys — prevents signal keys leaking to pm2 logs
+const logger = pino({ level: 'silent' });
 
 /**
  * Normalize a JID: strip :0 device suffix, ensure @s.whatsapp.net for users.
  */
 function normalizeJid(jid) {
   if (!jid) return jid;
+  // Ensure string
+  if (typeof jid !== 'string') jid = String(jid);
   // Group JIDs stay as-is
   if (jid.endsWith('@g.us')) return jid;
   // Strip device suffix (e.g. 972501234567:0@s.whatsapp.net → 972501234567@s.whatsapp.net)
-  const decoded = jidDecode(jid);
-  if (decoded) {
-    const base = decoded.user;
-    const server = decoded.server || 's.whatsapp.net';
-    return `${base}@${server}`;
-  }
+  try {
+    const decoded = jidDecode(jid);
+    if (decoded) {
+      const base = decoded.user;
+      const server = decoded.server || 's.whatsapp.net';
+      return `${base}@${server}`;
+    }
+  } catch (_) {}
   return jid;
 }
 
@@ -397,7 +401,7 @@ class BaileysClient extends EventEmitter {
     // Group participant events → emit group_join for bot additions
     this._sock.ev.on('group-participants.update', async ({ id, participants, action }) => {
       const myJid = normalizeJid(this._myJid);
-      const iAmIncluded = participants.some(p => normalizeJid(p) === myJid);
+      const iAmIncluded = participants.some(p => normalizeJid(typeof p === "string" ? p : (p?.id || p?.jid || p?.lid || "")) === myJid);
 
       if (action === 'add' && iAmIncluded) {
         console.log(`[Baileys] Bot added to group: ${id}`);

@@ -35,3 +35,4 @@ query_tmp.js
 
 # OS
 .DS_Store
+.baileys_auth/
