@@ -40,7 +40,7 @@ function normalizeJid(jid) {
   if (typeof jid !== 'string') jid = String(jid);
   // Group JIDs stay as-is
   if (jid.endsWith('@g.us')) return jid;
-  // Strip device suffix (e.g. 972501234567:0@s.whatsapp.net → 972501234567@s.whatsapp.net)
+  // Strip device suffix (e.g. <phone>:0@s.whatsapp.net → <phone>@s.whatsapp.net)
   try {
     const decoded = jidDecode(jid);
     if (decoded) {
@@ -268,7 +268,7 @@ class BaileysClient extends EventEmitter {
     // Compatibility: whatsapp-web.js client.info
     this.info = {
       wid: { _serialized: null, user: null },
-      pushname: 'Besinsky Bot',
+      pushname: process.env.BOT_PUSH_NAME || 'WhatsApp Bot',
     };
   }
 
@@ -290,7 +290,7 @@ class BaileysClient extends EventEmitter {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
-      browser: Browsers.ubuntu('Besinsky Bot'),
+      browser: Browsers.ubuntu(process.env.BOT_PUSH_NAME || 'WhatsApp Bot'),
       printQRInTerminal: false, // We handle QR ourselves
       logger,
       generateHighQualityLinkPreview: false,
@@ -312,7 +312,7 @@ class BaileysClient extends EventEmitter {
         this._myJid = normalizeJid(this._sock.user.id);
         this.info.wid._serialized = toWWebJid(this._myJid);
         this.info.wid.user = this._myJid.split('@')[0];
-        this.info.pushname = this._sock.user.name || 'Besinsky Bot';
+        this.info.pushname = this._sock.user.name || process.env.BOT_PUSH_NAME || 'WhatsApp Bot';
         this._ready = true;
         console.log('[Baileys] Connected as:', this.info.wid._serialized);
         this.emit('authenticated');
