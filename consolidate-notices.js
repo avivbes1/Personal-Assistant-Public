@@ -12,22 +12,32 @@
  *   - relevance_date / relevance_time = from the group
  */
 
+require('dotenv').config();
 const https = require('https');
 const { initDB, getDB } = require('./src/db');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+if (!ANTHROPIC_API_KEY) {
+  console.error('[Consolidate] FATAL: ANTHROPIC_API_KEY not set. Check .env file.');
+  process.exit(1);
+}
 const TODAY = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' }); // YYYY-MM-DD
 const SEVEN_DAYS_AGO = Date.now() - 7 * 24 * 60 * 60 * 1000;
 
 // ── 1. Load active notices ──────────────────────────────────────────────────
 
 function getConsolidationCandidates() {
+  // BUG-FIX 2026-08-13: removed posted_to_master=0 and triage_decision IS NULL filters.
+  // Those filters meant consolidation never saw notices because the triage engine (every 5min)
+  // set triage_decision before consolidation (hourly) ran. Result: 0 candidates for months.
+  // Now we consolidate ALL non-dismissed, non-merged notices regardless of triage/delivery state.
   return getDB().prepare(`
-    SELECT id, group_name, content, relevance_date, relevance_time, sources, row_type
+    SELECT id, group_name, content, relevance_date, relevance_time, sources, row_type,
+           posted_to_master, triage_decision, delivery_status, digest_shown_at,
+           calendar_status, calendar_event_id
     FROM notices
     WHERE dismissed = 0
-      AND posted_to_master = 0      -- P-001/P-004: never touch sent notices
-      AND triage_decision IS NULL   -- P-001: never grab in-flight triaged notices
+      AND row_type != 'merged'       -- don't re-merge already-merged rows
       AND (
         relevance_date >= ?
         OR (relevance_date IS NULL AND created_at >= ?)
@@ -125,10 +135,22 @@ function applyMerges(groups, allNotices) {
     const primaryGroup = group.primary_group || originals[0].group_name;
     const now = Date.now();
 
-    // Insert merged row
+    // Inherit delivery/triage state from originals so we don't re-deliver or re-triage
+    const anyPosted = originals.some(n => n.posted_to_master) ? 1 : 0;
+    const anyDelivered = originals.find(n => n.delivery_status && n.delivery_status.startsWith('delivered'));
+    const deliveryStatus = anyDelivered ? anyDelivered.delivery_status : (originals[0].delivery_status || null);
+    const triageDecision = originals.find(n => n.triage_decision === 'send_now')?.triage_decision
+      || originals.find(n => n.triage_decision)?.triage_decision || null;
+    const digestShownAt = Math.max(...originals.map(n => n.digest_shown_at || 0)) || null;
+    const calendarStatus = originals.find(n => n.calendar_status === 'applied')?.calendar_status || null;
+    const calendarEventId = originals.find(n => n.calendar_event_id)?.calendar_event_id || null;
+
+    // Insert merged row with inherited state
     db.prepare(`
-      INSERT INTO notices (group_name, content, relevance_date, relevance_time, source_timestamp, dismissed, created_at, row_type, sources)
-      VALUES (?, ?, ?, ?, ?, 0, ?, 'merged', ?)
+      INSERT INTO notices (group_name, content, relevance_date, relevance_time, source_timestamp,
+        dismissed, created_at, row_type, sources, posted_to_master, delivery_status,
+        triage_decision, digest_shown_at, calendar_status, calendar_event_id)
+      VALUES (?, ?, ?, ?, ?, 0, ?, 'merged', ?, ?, ?, ?, ?, ?, ?)
     `).run(
       primaryGroup,
       group.merged_content,
@@ -136,16 +158,27 @@ function applyMerges(groups, allNotices) {
       group.relevance_time || null,
       now,
       now,
-      JSON.stringify(allSources)
+      JSON.stringify(allSources),
+      anyPosted,
+      deliveryStatus,
+      triageDecision,
+      digestShownAt,
+      calendarStatus,
+      calendarEventId
     );
 
+    // Reassign notice_event rows from originals to the new merged notice
+    const mergedId = db.prepare('SELECT last_insert_rowid() as id').get().id;
+    const idPlaceholders = group.ids.map(() => '?').join(',');
+    db.prepare(`UPDATE notice_event SET notice_id = ? WHERE notice_id IN (${idPlaceholders})`)
+      .run(mergedId, ...group.ids);
+
     // Delete originals
-    const placeholders = group.ids.map(() => '?').join(',');
-    const deleted = db.prepare(`DELETE FROM notices WHERE id IN (${placeholders})`).run(...group.ids);
+    const deleted = db.prepare(`DELETE FROM notices WHERE id IN (${idPlaceholders})`).run(...group.ids);
     deletedRows += deleted.changes;
     mergedGroups++;
 
-    console.log(`[Consolidate] Merged ${group.ids.length} notices into 1: "${group.merged_content.substring(0, 60)}..." (deleted IDs: ${group.ids.join(',')})`);
+    console.log(`[Consolidate] Merged ${group.ids.length} notices into 1 (id=${mergedId}): "${group.merged_content.substring(0, 60)}..." (deleted IDs: ${group.ids.join(',')})`);
   }
 
   return { mergedGroups, deletedRows };

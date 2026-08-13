@@ -44,12 +44,29 @@ function classifyEvent(content) {
 
 /**
  * Generate a stable fingerprint for deduplication.
+ * BUG-FIX 2026-08-13: fingerprint now ignores group_name so the same event
+ * mentioned in different WhatsApp groups produces the same fingerprint.
+ * Uses normalized content (stripped Hebrew prefixes ה/ו, punctuation) for
+ * better cross-group matching.
  */
+function _normalizeForFingerprint(text) {
+  if (!text) return '';
+  return text
+    .replace(/[\u0591-\u05C7]/g, '')   // strip niqqud
+    .replace(/[-–—:,.!?"'״]/g, ' ')    // punctuation to spaces
+    .replace(/\bה/g, '')               // strip definite article
+    .replace(/\bו/g, '')               // strip conjunction
+    .replace(/\s+/g, ' ')              // collapse whitespace
+    .trim()
+    .substring(0, 40);                  // shorter prefix for fuzzy matching
+}
+
 function fingerprint(groupName, date, contentPrefix) {
+  // NOTE: groupName is intentionally excluded from the hash so that
+  // the same event from different groups gets the same fingerprint.
   const raw = [
-    (groupName || '').trim(),
     (date || '').trim(),
-    (contentPrefix || '').substring(0, 60).trim(),
+    _normalizeForFingerprint(contentPrefix),
   ].join('|');
   return crypto.createHash('sha1').update(raw).digest('hex').substring(0, 16);
 }
