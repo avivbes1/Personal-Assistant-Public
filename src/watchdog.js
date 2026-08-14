@@ -1,5 +1,5 @@
 /**
- * watchdog.js — Three-layer zombie detection for besinsky-bot.
+ * watchdog.js — Three-layer zombie detection for the WhatsApp bot.
  *
  * Layer 1: Passive event tracking (last notify message, secondary heartbeat signals)
  * Layer 2: Active probe (sendPresenceUpdate with timeout)

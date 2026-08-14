@@ -291,7 +291,7 @@ class BaileysClient extends EventEmitter {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
-      browser: ['besinsky-bot', 'Chrome', '131.0.0'],
+      browser: [process.env.BOT_PUSH_NAME || 'WhatsApp Bot', 'Chrome', '131.0.0'],
       printQRInTerminal: false, // We handle QR ourselves
       logger,
       generateHighQualityLinkPreview: false,
