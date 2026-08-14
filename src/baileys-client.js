@@ -24,6 +24,7 @@ const path = require('path');
 const fs = require('fs');
 const EventEmitter = require('events');
 const pino = require('pino');
+const appLogger = require('./logger');
 
 const AUTH_DIR = path.join(__dirname, '..', '.baileys_auth');
 const STORE_DIR = path.join(__dirname, '..', 'data', 'baileys-store');
@@ -282,7 +283,7 @@ class BaileysClient extends EventEmitter {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
     const { version } = await fetchLatestBaileysVersion();
-    console.log('[Baileys] Using WA version:', version.join('.'));
+    appLogger.info({ component: 'Baileys', waVersion: version.join('.') }, 'Using WA version');
 
     this._sock = makeWASocket({
       version,
@@ -290,7 +291,7 @@ class BaileysClient extends EventEmitter {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
-      browser: Browsers.ubuntu(process.env.BOT_PUSH_NAME || 'WhatsApp Bot'),
+      browser: ['besinsky-bot', 'Chrome', '131.0.0'],
       printQRInTerminal: false, // We handle QR ourselves
       logger,
       generateHighQualityLinkPreview: false,
@@ -298,12 +299,12 @@ class BaileysClient extends EventEmitter {
       markOnlineOnConnect: true,
     });
 
-    // ── Connection events ──
+        // ── Connection events ──
     this._sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        console.log('[Baileys] QR code received. Emitting qr event.');
+        appLogger.info({ component: 'Baileys' }, 'QR code received');
         this.emit('qr', qr);
         this._qrEmitted = true;
       }
@@ -314,50 +315,73 @@ class BaileysClient extends EventEmitter {
         this.info.wid.user = this._myJid.split('@')[0];
         this.info.pushname = this._sock.user.name || process.env.BOT_PUSH_NAME || 'WhatsApp Bot';
         this._ready = true;
-        console.log('[Baileys] Connected as:', this.info.wid._serialized);
+        appLogger.info({ component: 'Baileys', jid: this.info.wid._serialized }, 'Connected');
         this.emit('authenticated');
         this.emit('ready');
+
+        // ── Watchdog: attach to socket on connection open ──
+        const watchdog = require('./watchdog');
+        watchdog.attachToSocket(this._sock, (action, reason) => {
+          console.error(`[Watchdog] Zombie detected: ${reason}, action: ${action}`);
+          if (action === 'reconnect') {
+            try { this._sock.ws.close(); } catch (_) {}
+            // reconnect logic in connection close handler will handle re-init
+          } else if (action === 'escalate') {
+            fs.writeFileSync('/tmp/bot-stuck-alert.json', JSON.stringify({
+              ts: Date.now(), msg: `Bot zombie 3x in 1h: ${reason}. Needs manual re-pair.`
+            }));
+          }
+        });
       }
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        console.warn('[Baileys] Connection closed. Status:', statusCode, 'Reconnect:', shouldReconnect);
+        appLogger.warn({ component: 'Baileys', statusCode, shouldReconnect }, 'Connection closed');
 
         if (statusCode === DisconnectReason.loggedOut) {
-          console.error('[Baileys] Logged out. Need to re-authenticate.');
+          appLogger.error({ component: 'Baileys' }, 'Logged out. Need to re-authenticate.');
           this.emit('auth_failure', 'Logged out');
         } else if (shouldReconnect) {
-          // Delay the disconnect event — Baileys auto-reconnects, so only
-          // alert if we're still down after 60 seconds
-          console.log(`[Baileys] Transient disconnect (status ${statusCode}). Waiting 5min before alerting...`);
+          appLogger.info({ component: 'Baileys', statusCode }, 'Transient disconnect. Reconnecting...');
+          this._ready = false;
+          // Baileys v7 does NOT auto-reconnect — we must create a new socket
+          const delay = statusCode === 515 ? 2000 : 5000;
+          setTimeout(() => {
+            appLogger.info({ component: 'Baileys', statusCode }, 'Reconnecting now');
+            this.initialize().catch(err => {
+              appLogger.error({ component: 'Baileys', err: err.message }, 'Reconnect failed');
+            });
+          }, delay);
           if (this._disconnectTimer) clearTimeout(this._disconnectTimer);
           this._disconnectTimer = setTimeout(() => {
             if (!this._ready) {
-              console.warn('[Baileys] Still disconnected after 5min — alerting.');
+              appLogger.warn({ component: 'Baileys' }, 'Still disconnected after 5min — alerting');
               this.emit('disconnected', `status_${statusCode}`);
-            } else {
-              console.log('[Baileys] Reconnected within 5min — no alert needed.');
             }
             this._disconnectTimer = null;
           }, 300000);
-          // Don't set _ready=false here — Baileys auto-reconnects and
-          // the 'open' handler will confirm. Health checks use getState()
-          // which queries the actual socket state instead.
-          // Baileys handles its own reconnection — don't call initialize() again
         }
       }
     });
 
     // ── Credentials update ──
-    this._sock.ev.on('creds.update', saveCreds);
+    this._sock.ev.on('creds.update', (creds) => {
+      saveCreds(creds);
+      try { require('./watchdog').onHeartbeat(); } catch (_) {}
+    });
 
     // ── Incoming messages ──
     this._sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return; // Only process new messages, not history sync
 
+      // Watchdog: track real-time message receipt
+      try { require('./watchdog').onNotify(); } catch (_) {}
+
       for (const rawMsg of messages) {
         try {
+          // Skip own messages to prevent infinite self-reply loops
+          if (rawMsg.key.fromMe) continue;
           // Skip protocol messages, reactions, status updates
           if (!rawMsg.message) continue;
           if (rawMsg.key.remoteJid === 'status@broadcast') continue;
@@ -382,7 +406,7 @@ class BaileysClient extends EventEmitter {
           // Emit whatsapp-web.js compatible event
           this.emit('message_create', msg);
         } catch (err) {
-          console.error('[Baileys] Error processing message:', err.message);
+          appLogger.error({ component: 'Baileys', err: err.message }, 'Error processing message');
         }
       }
     });
@@ -390,9 +414,10 @@ class BaileysClient extends EventEmitter {
     // ── Group events ──
     this._sock.ev.on('groups.upsert', (groups) => {
       for (const group of groups) {
-        console.log(`[Baileys] Group upsert: "${group.subject}" (${group.id})`);
+        appLogger.info({ component: 'Baileys', groupSubject: group.subject, groupId: group.id }, 'Group upsert');
         this._groupCache.set(group.id, group);
       }
+      try { require('./watchdog').onHeartbeat(); } catch (_) {}
     });
 
     this._sock.ev.on('groups.update', (updates) => {
@@ -401,8 +426,9 @@ class BaileysClient extends EventEmitter {
         if (existing) {
           Object.assign(existing, update);
         }
-        console.log(`[Baileys] Group update: ${update.id}`, update.subject || '');
+        appLogger.info({ component: 'Baileys', groupId: update.id, subject: update.subject || '' }, 'Group update');
       }
+      try { require('./watchdog').onHeartbeat(); } catch (_) {}
     });
 
     // Group participant events → emit group_join for bot additions
@@ -411,7 +437,7 @@ class BaileysClient extends EventEmitter {
       const iAmIncluded = participants.some(p => normalizeJid(typeof p === "string" ? p : (p?.id || p?.jid || p?.lid || "")) === myJid);
 
       if (action === 'add' && iAmIncluded) {
-        console.log(`[Baileys] Bot added to group: ${id}`);
+        appLogger.info({ component: 'Baileys', groupId: id }, 'Bot added to group');
         // Emit group_join compatible event
         this.emit('group_join', {
           chatId: id,
@@ -423,12 +449,13 @@ class BaileysClient extends EventEmitter {
       }
 
       if (action === 'remove' && iAmIncluded) {
-        console.log(`[Baileys] Bot removed from group: ${id}`);
+        appLogger.info({ component: 'Baileys', groupId: id }, 'Bot removed from group');
       }
     });
 
     // ── Contacts update ──
     this._sock.ev.on('contacts.upsert', (contacts) => {
+      try { require('./watchdog').onHeartbeat(); } catch (_) {}
       for (const contact of contacts) {
         if (contact.id) {
           this._contactCache.set(toWWebJid(contact.id), {
@@ -458,9 +485,9 @@ class BaileysClient extends EventEmitter {
       for (const [jid, meta] of Object.entries(groups)) {
         this._groupCache.set(jid, meta);
       }
-      console.log(`[Baileys] Pre-loaded ${Object.keys(groups).length} groups`);
+      appLogger.info({ component: 'Baileys', count: Object.keys(groups).length }, 'Pre-loaded groups');
     } catch (err) {
-      console.error('[Baileys] Failed to preload groups:', err.message);
+      appLogger.error({ component: 'Baileys', err: err.message }, 'Failed to preload groups');
     }
   }
 
@@ -556,7 +583,7 @@ class BaileysClient extends EventEmitter {
           meta = await this._sock.groupMetadata(jid);
           this._groupCache.set(jid, meta);
         } catch (err) {
-          console.warn(`[Baileys] getChatById failed for ${jid}:`, err.message);
+          appLogger.warn({ component: 'Baileys', jid, err: err.message }, 'getChatById failed');
           // Return a minimal chat object
           return new BaileysChat(this, jid, { subject: jid });
         }
@@ -608,7 +635,7 @@ class BaileysClient extends EventEmitter {
       }
       return null;
     } catch (err) {
-      console.warn('[Baileys] getNumberId failed:', err.message);
+      appLogger.warn({ component: 'Baileys', err: err.message }, 'getNumberId failed');
       return null;
     }
   }

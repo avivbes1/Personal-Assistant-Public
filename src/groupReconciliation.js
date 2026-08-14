@@ -1,23 +1,44 @@
 /**
  * groupReconciliation.js
- * Silently force-syncs monitored groups that appear to have gone quiet.
- * Does NOT alert on group silence — quiet groups are legitimate.
- * Real connection health is checked by health.js (WhatsApp state + cross-group ingestion gap).
+ * Silently checks monitored groups for silence and tracks incidents.
+ * Uses Baileys-native APIs (no whatsapp-web.js shims).
  *
- * Runs on startup (60s after ready) and every 6 hours.
+ * Runs on startup (60s after ready) and every ~60 minutes (with jitter).
+ *
+ * Thresholds:
+ *   - Daytime (08:00–22:00 Israel): 4 hours
+ *   - Nighttime: 12 hours
+ *
+ * Circuit breaker: after 3 consecutive errors, backs off to 6 hours.
  */
 
 const { getDB } = require('./db');
 const config = require('./config');
+const { getIsraelHour } = require('./timeUtils');
 
-const SILENT_THRESHOLD_MS       = 5  * 24 * 60 * 60 * 1000; // scan if no msgs for 5+ days
-const RECENTLY_ACTIVE_MS        = 30 * 24 * 60 * 60 * 1000; // only scan if was active in last 30d
-const RECONCILIATION_INTERVAL_MS = 6 * 60 * 60 * 1000;      // run every 6h
+const RECENTLY_ACTIVE_MS         = 30 * 24 * 60 * 60 * 1000; // only check groups active in last 30d
+const RECONCILIATION_INTERVAL_MS = 60 * 60 * 1000;           // base interval: 60 min
+const JITTER_MS                  = 5  * 60 * 1000;           // ±5 min random jitter
+const BACKOFF_INTERVAL_MS        = 6  * 60 * 60 * 1000;      // 6h after circuit trips
+const MAX_CONSECUTIVE_ERRORS     = 3;
 
 let _client        = null;
 let _masterGroupId = null;
 let _avivDm        = config.AVIV_PHONE ? `${config.AVIV_PHONE}@c.us` : null;
 let _scanFn        = null; // scanGroupHistory(chat, opts) — injected from whatsapp.js
+let _timer         = null;
+let _consecutiveErrors = 0;
+
+/**
+ * Get silence threshold based on Israel time of day.
+ */
+function getSilentThresholdMs() {
+  const hour = getIsraelHour();
+  if (hour >= 8 && hour < 22) {
+    return 4 * 60 * 60 * 1000;   // 4 hours daytime
+  }
+  return 12 * 60 * 60 * 1000;    // 12 hours nighttime
+}
 
 function init(client, masterGroupId, scanGroupHistory) {
   _client        = client;
@@ -27,13 +48,14 @@ function init(client, masterGroupId, scanGroupHistory) {
 
 /**
  * Returns monitored groups that:
- * - Had messages in the last 30 days (so we don't alert on dead groups)
- * - Have had NO messages in the last 5 days
+ * - Had messages in the last 30 days (not dead groups)
+ * - Have had NO messages within the current silence threshold
  */
 function getSilentActiveGroups() {
-  const now     = Date.now();
-  const cutoff  = now - SILENT_THRESHOLD_MS;
-  const recentCutoff = now - RECENTLY_ACTIVE_MS;
+  const now            = Date.now();
+  const silentThreshold = getSilentThresholdMs();
+  const cutoff         = now - silentThreshold;
+  const recentCutoff   = now - RECENTLY_ACTIVE_MS;
 
   return getDB().prepare(`
     SELECT g.id, g.name,
@@ -48,10 +70,8 @@ function getSilentActiveGroups() {
   `).all(recentCutoff, cutoff);
 }
 
-
-
 /**
- * Alert Aviv via DM (private, not family group).
+ * Alert Aviv via DM.
  */
 async function alertAviv(text) {
   try {
@@ -71,7 +91,6 @@ function openIncident(groupId) {
   getDB().prepare(
     'INSERT OR IGNORE INTO silence_incidents (group_id, first_detected_at) VALUES (?, ?)'
   ).run(groupId, Date.now());
-  // Mark acknowledged so we don't re-alert on subsequent runs
   getDB().prepare(
     'UPDATE silence_incidents SET acknowledged_at = ? WHERE group_id = ? AND acknowledged_at IS NULL'
   ).run(Date.now(), groupId);
@@ -89,16 +108,43 @@ function incidentIsOpen(groupId) {
 }
 
 /**
+ * Get the set of group JIDs the bot is actually participating in (Baileys-native).
+ * Returns a Map of jid → group metadata.
+ */
+async function fetchParticipatingGroups() {
+  const sock = _client && _client._sock;
+  if (!sock) return new Map();
+
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    return new Map(Object.entries(groups));
+  } catch (err) {
+    console.warn('[Reconciliation] groupFetchAllParticipating failed:', err.message);
+    // Fallback to cached group data on the client
+    return _client._groupCache || new Map();
+  }
+}
+
+/**
  * Main reconciliation pass.
  * - Find silent-but-recently-active monitored groups
- * - Force-sync each one
- * - Alert Aviv once per incident (acknowledgment-based suppression)
- * - Resolve incident when group becomes active again
+ * - Verify group membership via Baileys native API
+ * - Attempt force-sync via scanGroupHistory if available
+ * - Track incidents (acknowledgment-based suppression)
+ * - Resolve incidents when groups become active again
  */
 async function reconcileGroups() {
   if (!_client) return;
 
   try {
+    const silentThreshold = getSilentThresholdMs();
+    const thresholdLabel = silentThreshold < 12 * 60 * 60 * 1000
+      ? `${silentThreshold / (60 * 60 * 1000)}h (daytime)`
+      : `${silentThreshold / (60 * 60 * 1000)}h (nighttime)`;
+
+    // Fetch live group participation via Baileys native API
+    const liveGroups = await fetchParticipatingGroups();
+
     const silentGroups = getSilentActiveGroups();
 
     // Resolve incidents for groups that are now active
@@ -108,7 +154,7 @@ async function reconcileGroups() {
       WHERE g.related_to = 'monitored'
       GROUP BY g.id
       HAVING MAX(m.timestamp) >= ?
-    `).all(Date.now() - SILENT_THRESHOLD_MS);
+    `).all(Date.now() - silentThreshold);
 
     for (const g of activeGroups) {
       if (incidentIsOpen(g.id)) {
@@ -118,59 +164,94 @@ async function reconcileGroups() {
     }
 
     if (silentGroups.length === 0) {
-      console.log('[Reconciliation] All recently-active monitored groups have recent messages ✅');
+      console.log(`[Reconciliation] All recently-active monitored groups have recent messages ✅ (threshold: ${thresholdLabel})`);
+      _consecutiveErrors = 0;
       return;
     }
 
-    console.log(`[Reconciliation] Found ${silentGroups.length} silent group(s) to investigate`);
+    console.log(`[Reconciliation] Found ${silentGroups.length} silent group(s) to investigate (threshold: ${thresholdLabel})`);
 
     for (const group of silentGroups) {
-      const daysSilent = Math.floor((Date.now() - group.last_msg_ts) / 86400000);
-      const lastDate   = new Date(group.last_msg_ts).toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem' });
+      const hoursSilent = Math.round((Date.now() - group.last_msg_ts) / (60 * 60 * 1000));
+      const lastDate = new Date(group.last_msg_ts).toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem' });
+      const lastTime = new Date(group.last_msg_ts).toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit' });
 
-      // Already have an open incident — skip, we already warned once
+      // Already have an open incident — skip re-processing
       if (incidentIsOpen(group.id)) {
-        console.log(`[Reconciliation] "${group.name}" still silent (${daysSilent}d) — incident open, skipping re-alert`);
+        console.log(`[Reconciliation] "${group.name}" still silent (${hoursSilent}h) — incident open, skipping`);
         continue;
       }
 
-      console.log(`[Reconciliation] Silent: "${group.name}" — ${daysSilent}d (last: ${lastDate})`);
+      console.log(`[Reconciliation] Silent: "${group.name}" — ${hoursSilent}h (last: ${lastDate} ${lastTime})`);
 
-      // Find the live chat object
-      const chats    = await _client.getChats();
-      const liveChat = chats.find(c => c.id._serialized === group.id);
+      // Check if the group exists in Baileys live session using raw JID
+      // group.id is already in Baileys-compatible @g.us format
+      const groupJid = group.id;
+      const liveMeta = liveGroups.get(groupJid);
 
-      if (!liveChat) {
-        // Group not found in live session — log only, no per-group DM.
-        // Global silence detection in health.js handles the real outage alert.
-        console.warn(`[Reconciliation] "${group.name}" not found in live session (no per-group alert — handled by health monitor)`);
-        openIncident(group.id);
+      if (!liveMeta) {
+        console.warn(`[Reconciliation] "${group.name}" (${groupJid}) not found in live session — handled by health monitor`);
+        openIncident(groupJid);
         continue;
       }
 
-      // Re-scan with extended window (10 days) — fetchMessages pulls from server
+      // Attempt force-sync via the injected scanGroupHistory function
       if (_scanFn) {
-        await _scanFn(liveChat, { saveDays: 10, parseDays: 10 });
+        try {
+          // Build a minimal chat object compatible with scanGroupHistory
+          // Use the BaileysClient.getChatById which returns a BaileysChat
+          const chat = await _client.getChatById(groupJid);
+          await _scanFn(chat, { saveDays: 3, parseDays: 1 });
+        } catch (err) {
+          console.warn(`[Reconciliation] Force-sync failed for "${group.name}": ${err.message}`);
+        }
       }
 
-      // Check if we recovered anything
+      // Check if we recovered anything after sync attempt
       const recovered = getDB().prepare(
         'SELECT COUNT(*) as c FROM messages WHERE group_id = ? AND timestamp > ?'
-      ).get(group.id, Date.now() - SILENT_THRESHOLD_MS);
+      ).get(groupJid, Date.now() - silentThreshold);
 
       if (recovered.c > 0) {
         console.log(`[Reconciliation] ✅ Recovered messages for "${group.name}" (${recovered.c} in window)`);
-        resolveIncident(group.id); // in case there was a prior resolved incident
+        resolveIncident(groupJid);
       } else {
-        // Still silent after force-sync — genuinely quiet or global outage.
-        // No per-group alert. health.js detects global outages.
-        console.log(`[Reconciliation] "${group.name}" still silent after force-sync (${daysSilent}d) — no per-group alert`);
-        openIncident(group.id); // suppress re-scan until group becomes active again
+        console.log(`[Reconciliation] "${group.name}" still silent after check (${hoursSilent}h) — opening incident`);
+        openIncident(groupJid);
       }
     }
+
+    // Success — reset circuit breaker
+    _consecutiveErrors = 0;
   } catch (err) {
-    console.error('[Reconciliation] Error:', err.message);
+    _consecutiveErrors++;
+    console.error(`[Reconciliation] Error (consecutive: ${_consecutiveErrors}):`, err.message);
+
+    if (_consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      console.warn(`[Reconciliation] ⚠️ Circuit breaker tripped (${_consecutiveErrors} consecutive errors) — backing off to 6h`);
+    }
   }
+}
+
+/**
+ * Schedule the next reconciliation run with jitter.
+ * Respects circuit breaker backoff.
+ */
+function scheduleNext() {
+  if (_timer) clearTimeout(_timer);
+
+  let interval;
+  if (_consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+    interval = BACKOFF_INTERVAL_MS;
+  } else {
+    const jitter = Math.floor(Math.random() * JITTER_MS * 2) - JITTER_MS; // ±5 min
+    interval = RECONCILIATION_INTERVAL_MS + jitter;
+  }
+
+  _timer = setTimeout(async () => {
+    await reconcileGroups();
+    scheduleNext();
+  }, interval);
 }
 
 /**
@@ -180,13 +261,13 @@ async function reconcileGroups() {
 function startReconciliation(client, masterGroupId, scanGroupHistory) {
   init(client, masterGroupId, scanGroupHistory);
 
-  // First run: 60s after ready (give WhatsApp time to fully sync)
-  setTimeout(reconcileGroups, 60 * 1000);
+  // First run: 60s after ready
+  setTimeout(async () => {
+    await reconcileGroups();
+    scheduleNext();
+  }, 60 * 1000);
 
-  // Recurring: every 6h
-  setInterval(reconcileGroups, RECONCILIATION_INTERVAL_MS);
-
-  console.log('[Reconciliation] Started (first check in 60s, then every 6h)');
+  console.log('[Reconciliation] Started (first check in 60s, then every ~60min with ±5min jitter)');
 }
 
 module.exports = { startReconciliation, reconcileGroups };

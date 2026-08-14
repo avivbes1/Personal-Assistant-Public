@@ -82,14 +82,47 @@ async function resolveJids(waClient) {
 /**
  * Look up a phone by WhatsApp JID (handles both @c.us and @lid).
  */
+// LID→phone resolution cache (loaded from Baileys auth dir)
+const _lidToPhone = new Map();
+const _lidCacheLoaded = { done: false };
+
+function _loadLidMappings() {
+  if (_lidCacheLoaded.done) return;
+  _lidCacheLoaded.done = true;
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const authDir = path.join(__dirname, '..', '.baileys_auth');
+    if (!fs.existsSync(authDir)) return;
+    const files = fs.readdirSync(authDir).filter(f => f.startsWith('lid-mapping-') && f.endsWith('_reverse.json'));
+    for (const file of files) {
+      try {
+        const lid = file.replace('lid-mapping-', '').replace('_reverse.json', '');
+        const phone = JSON.parse(fs.readFileSync(path.join(authDir, file), 'utf8'));
+        if (lid && phone) _lidToPhone.set(lid, String(phone));
+      } catch (e) { /* skip malformed */ }
+    }
+  } catch (e) {
+    console.warn('[LID] Failed to load LID mappings:', e.message);
+  }
+}
+
 function getPhoneByJid(jid) {
-  // Direct JID match
+  // Direct JID match (babysitter DB)
   if (_jidToPhone.has(jid)) return _jidToPhone.get(jid);
   // Try @c.us format from JID user part
   const user = jid.replace(/@(c\.us|lid|s\.whatsapp\.net)$/, '');
   if (user.startsWith('972')) {
     const phone = '+' + user;
     if (_phones.has(phone)) return phone;
+    return phone; // return even if not in babysitter list
+  }
+  // LID resolution from Baileys auth mappings
+  if (jid.endsWith('@lid')) {
+    _loadLidMappings();
+    const lidNum = jid.replace('@lid', '');
+    const phone = _lidToPhone.get(lidNum);
+    if (phone) return '+' + phone;
   }
   return null;
 }

@@ -10,6 +10,8 @@ const fs = require('fs');
 const path = require('path');
 
 const config = require('./config');
+const logger = require('./logger');
+const { recordMessagePersisted, getMessagesPersisted5Min } = require('./message-counter');
 
 // Safe _serialized accessor (WhatsApp Web renamed _serialized to $1 in some builds)
 function _ser(obj) {
@@ -51,7 +53,7 @@ function appendDMHistory(entry) {
       }
     } catch (_) {}
   } catch (e) {
-    console.error('[DMHistory] append failed:', e.message);
+    logger.error({ component: 'DMHistory', err: e.message }, 'append failed');
   }
 }
 
@@ -77,12 +79,17 @@ let _reconnectTimer = null;     // active reconnect setTimeout
 let _watchdogStarted = false;   // prevent duplicate watchdog intervals
 const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_BASE_DELAY_MS = 30_000; // 30s initial delay
-const getHealthState = () => ({
-  whatsapp_connected: !!(client && client.info),
-  last_activity_ms: _lastActivityMs,
-  ready_failure_count: _readyFailureCount,
-  uptime_s: Math.round(process.uptime()),
-});
+const getHealthState = () => {
+  let watchdogState = null;
+  try { watchdogState = require('./watchdog').getState(); } catch (_) {}
+  return {
+    whatsapp_connected: !!(client && client.info),
+    last_activity_ms: _lastActivityMs,
+    ready_failure_count: _readyFailureCount,
+    uptime_s: Math.round(process.uptime()),
+    watchdog: watchdogState,
+  };
+};
 
 // Rolling conversation history for master group (last 20 messages — in-memory fallback)
 
@@ -176,7 +183,7 @@ async function executePendingAction(pending, userId, senderName) {
           const gcalEvent = await addSharedEvent(event, owner);
           if (gcalEvent) { scheduleRemindersForEvent(gcalEvent, owner); scheduleFollowUpForEvent(gcalEvent, owner); }
         } catch (e) {
-          console.error('[Confirm] addSharedEvent error:', e.message);
+          logger.error({ component: 'Confirm', err: e.message }, 'addSharedEvent error');
         }
         const dt = formatEventDateTime(event.start_time);
         confirmLines.push(`• ${event.title}${dt ? ` – ${dt}` : ''}`);
@@ -188,6 +195,7 @@ async function executePendingAction(pending, userId, senderName) {
     } else if (action_type === 'ADD_TASK') {
       const { actionItems, body: taskBody, senderName: sender } = params;
       const msgId = saveMessage({ group_id: masterGroupId, sender: sender || senderName, body: taskBody || '', timestamp: Date.now() });
+      recordMessagePersisted();
       const lines = [];
       for (const item of actionItems) {
         saveActionItem({ message_id: msgId, description: item.description, due_date: item.due_date });
@@ -222,13 +230,13 @@ async function executePendingAction(pending, userId, senderName) {
     } else if (action_type === 'CAPABILITY_CLARIFY') {
       // This shouldn't be "executed" as an approval — it's a mid-clarification step
       // When user replies, it goes through the normal query flow with conversation history
-      console.log('[Confirm] CAPABILITY_CLARIFY resolved via normal query path');
+      logger.info({ component: 'Confirm' }, 'CAPABILITY_CLARIFY resolved via normal query path');
 
     } else {
-      console.warn('[Confirm] Unknown pending action type:', action_type);
+      logger.warn({ component: 'Confirm', action_type }, 'Unknown pending action type');
     }
   } catch (e) {
-    console.error('[Confirm] executePendingAction error:', e.message);
+    logger.error({ component: 'Confirm', err: e.message }, 'executePendingAction error');
     await sendToMasterGroup('הייתה שגיאה בביצוע הפעולה — נסו שוב.');
   }
 }
@@ -273,7 +281,7 @@ function scheduleRecurringTask(task) {
 
     // Send the check-in message
     await sendToMasterGroup(check_in_message);
-    console.log(`[BotTask] Recurring fired: "${check_in_message.substring(0, 60)}" (group: ${group_key})`);
+    logger.info({ component: 'BotTask', group_key }, 'Recurring fired: %s', check_in_message.substring(0, 60));
 
     // If stop_on_confirm, don't auto-reschedule — user must reply to stop it,
     // but we reschedule the next occurrence now (it will be cancelled if user confirms)
@@ -301,7 +309,7 @@ function loadPendingGroupQuestionsFromDB() {
   for (const row of rows) {
     pendingGroupQuestions.set(row.msg_id, row.group_id);
   }
-  if (rows.length > 0) console.log(`[WhatsApp] Restored ${rows.length} pending group question(s) from DB`);
+  if (rows.length > 0) logger.info({ component: 'WhatsApp', count: rows.length }, 'Restored pending group questions from DB');
 }
 
 /**
@@ -316,7 +324,7 @@ function loadGroupsConfig() {
     try {
       _groupsConfigCache = JSON.parse(fs.readFileSync(_groupsConfigPath, 'utf8'));
     } catch (err) {
-      console.warn('[WhatsApp] Could not load groups.json:', err.message);
+      logger.warn({ component: 'WhatsApp', err: err.message }, 'Could not load groups.json');
       return { monitored: [], master: '' };
     }
   }
@@ -330,7 +338,7 @@ async function resolveMasterGroup() {
   // Fast path: JID already known from env — skip getChats() entirely
   if (config.MASTER_GROUP_JID) {
     masterGroupId = config.MASTER_GROUP_JID;
-    console.log(`[WhatsApp] Master group resolved from config JID: ${masterGroupId}`);
+    logger.info({ component: 'WhatsApp', masterGroupId }, 'Master group resolved from config JID');
     return;
   }
 
@@ -343,11 +351,11 @@ async function resolveMasterGroup() {
   for (const chat of chats) {
     if (chat.isGroup && chat.name === masterName) {
       masterGroupId = _ser(chat.id);
-      console.log(`[WhatsApp] Master group resolved: "${masterName}" (${masterGroupId})`);
+      logger.info({ component: 'WhatsApp', masterName, masterGroupId }, 'Master group resolved');
       return;
     }
   }
-  console.warn(`[WhatsApp] Master group "${masterName}" not found in chat list.`);
+  logger.warn({ component: 'WhatsApp', masterName }, 'Master group not found in chat list');
 }
 
 /**
@@ -395,10 +403,10 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
         const caption = msg.body ? ` (caption: ${msg.body.substring(0, 100)})` : '';
         if (isSchoolGroup(groupRecord)) {
           // ISSUE-014: school groups — always OCR; missing an event costs more than a wasted vision call
-          console.log(`[WhatsApp] School group image — forcing vision OCR for "${chat.name}"`);
+          logger.info({ component: 'WhatsApp', group: chat.name }, 'School group image — forcing vision OCR');
           const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true }).catch(() => null);
           body = described || `[תמונה${caption}]`;
-          if (described) console.log(`[WhatsApp] School image OCR: ${described.substring(0, 80)}`);
+          if (described) logger.info({ component: 'WhatsApp', ocrPreview: described.substring(0, 80) }, 'School image OCR result');
         } else {
           // Non-school: let agent decide based on context
           body = `[תמונה${caption}]`;
@@ -407,7 +415,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
         const extracted = await processMediaMessage(msg, groupRecord, chat.name).catch(() => null);
         if (extracted) {
           body = extracted;
-          console.log(`[WhatsApp] Media extracted from "${chat.name}": ${extracted.substring(0, 80)}`);
+          logger.info({ component: 'WhatsApp', group: chat.name, preview: extracted.substring(0, 80) }, 'Media extracted');
         } else {
           const mediaLabel = { video: '[וידאו]', audio: '[הקלטה קולית]', document: '[מסמך]', location: '[מיקום]' };
           body = mediaLabel[msg.type] || '[מדיה]';
@@ -419,6 +427,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
     let messageId;
     if (!alreadySaved) {
       messageId = saveMessage({ group_id: groupId, sender, body, timestamp: msg.timestamp * 1000 });
+      recordMessagePersisted();
     } else {
       // Update the already-saved row with the extracted body if we got real content
       const row = getDB().prepare('SELECT id FROM messages WHERE group_id=? AND timestamp=? ORDER BY id DESC LIMIT 1').get(groupId, msg.timestamp * 1000);
@@ -428,7 +437,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
       }
     }
 
-    console.log(`[WhatsApp] Message from "${chat.name}" by ${sender}: ${body.substring(0, 60)}`);
+    logger.info({ component: 'WhatsApp', group: chat.name, sender, bodyPreview: body.substring(0, 60) }, 'Message from group');
 
     // Build group context for agent
     const groupDescription = (groupRecord && groupRecord.description) ? groupRecord.description : null;
@@ -450,7 +459,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
     const senderNumber = (contact.number || '').replace(/\D/g, '');
     const ownerPhones = [config.AVIV_PHONE, config.LIAT_PHONE].map(p => String(p).replace(/\D/g, ''));
     if (ownerPhones.includes(senderNumber)) {
-      console.log(`[WhatsApp] Skipping notice extraction for owner message in "${chat.name}" by ${sender}`);
+      logger.info({ component: 'WhatsApp', group: chat.name, sender }, 'Skipping notice extraction for owner message');
       if (messageId) markMessageTerminal(messageId, 'NOT_ACTIONABLE', 'owner message');
       return;
     }
@@ -459,11 +468,11 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
 
     // If agent decided this image is worth reading, run vision now and upsert the notice
     if (isImageMsg && agentResult.downloadImage) {
-      console.log(`[WhatsApp] Agent requested image download for "${chat.name}" by ${sender}`);
+      logger.info({ component: 'WhatsApp', group: chat.name, sender }, 'Agent requested image download');
       try {
         const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true });
         if (described) {
-          console.log(`[WhatsApp] Image described: ${described.substring(0, 100)}`);
+          logger.info({ component: 'WhatsApp', preview: described.substring(0, 100) }, 'Image described');
           // Try UPDATE first (old path: agent also saved a notice)
           const updated = getDB().prepare(
             'UPDATE notices SET content = ? WHERE source_timestamp = ? AND group_name = ? AND dismissed = 0'
@@ -478,17 +487,17 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
               source_timestamp: msg.timestamp * 1000,
               urgency_hint: 'routine',
             });
-            console.log(`[WhatsApp] Image notice created (new) for "${chat.name}"`);
+            logger.info({ component: 'WhatsApp', group: chat.name }, 'Image notice created (new)');
             if (messageId) markMessageTerminal(messageId, 'NOTICE_CREATED', null, null);
           }
         }
       } catch (e) {
-        console.error('[WhatsApp] Vision post-processing error:', e.message);
+        logger.error({ component: 'WhatsApp', err: e.message }, 'Vision post-processing error');
       }
     }
 
   } catch (err) {
-    console.error('[WhatsApp] handleGroupMessage error:', err.message);
+    logger.error({ component: 'WhatsApp', err: err.message }, 'handleGroupMessage error');
   }
 }
 
@@ -509,10 +518,10 @@ async function isSenderAuthorized(msg) {
     const authorUser = (msg.author || msg.from || '').split('@')[0].trim();
     if (authorUser && ALLOWED_NUMBERS.has(authorUser)) return true;
     // Log the actual ID so we can diagnose mismatches
-    console.warn(`[WhatsApp] Unauthorized sender: id=${msg.author || msg.from}, number=${number}`);
+    logger.warn({ component: 'WhatsApp', senderId: msg.author || msg.from, number }, 'Unauthorized sender');
     return false;
   } catch (e) {
-    console.warn(`[WhatsApp] Could not resolve sender contact: ${e.message}`);
+    logger.warn({ component: 'WhatsApp', err: e.message }, 'Could not resolve sender contact');
     return false;
   }
 }
@@ -565,7 +574,7 @@ async function handleMasterGroupCommand(_msg) {
     const senderName = contact.pushname || contact.name || 'Family';
     const userId = contact.number || contact.id?.user || config.AVIV_PHONE;
 
-    console.log(`[WhatsApp] Master group command from ${senderName}: ${cleanBody.substring(0, 80)}`);
+    logger.info({ component: 'WhatsApp', senderName, bodyPreview: cleanBody.substring(0, 80) }, 'Master group command');
 
     // Phase 3+4: check for pending action (confirmation or clarification)
     if (config.FEATURE_CONFIRM_ACTIONS || config.FEATURE_CLARIFICATION_LOOP) {
@@ -576,7 +585,7 @@ async function handleMasterGroupCommand(_msg) {
 
         if (isClarification && config.FEATURE_CLARIFICATION_LOOP) {
           // Phase 4: user is answering a clarification question
-          console.log(`[Clarify] Resolving "${pending.action_type}" for ${userId}: "${reply}"`);
+          logger.info({ component: 'Clarify', action_type: pending.action_type, userId }, 'Resolving clarification');
           const { partialEvent, followUpCount = 0 } = pending.params;
           const question = pending.confirmation_text || '';
 
@@ -614,7 +623,7 @@ async function handleMasterGroupCommand(_msg) {
           // Phase 3: confirmation pending
           if (APPROVE_REGEX.test(reply)) {
             clearPendingAction(userId);
-            console.log(`[Confirm] Approved: ${pending.action_type} for ${userId}`);
+            logger.info({ component: 'Confirm', action_type: pending.action_type, userId }, 'Approved');
             await executePendingAction(pending, userId, senderName);
             return;
           } else if (REJECT_REGEX.test(reply)) {
@@ -622,11 +631,11 @@ async function handleMasterGroupCommand(_msg) {
             const cancelMsg = 'בוטל.';
             await sendToMasterGroup(cancelMsg);
             addToHistory('assistant', cancelMsg, userId);
-            console.log(`[Confirm] Rejected: ${pending.action_type} for ${userId}`);
+            logger.info({ component: 'Confirm', action_type: pending.action_type, userId }, 'Rejected');
             return;
           } else {
             // User moved on — discard pending
-            console.log(`[Confirm] Pending ${pending.action_type} discarded (new message)`);
+            logger.info({ component: 'Confirm', action_type: pending.action_type }, 'Pending action discarded (new message)');
             clearPendingAction(userId);
             // fall through
           }
@@ -647,7 +656,7 @@ async function handleMasterGroupCommand(_msg) {
       setGroupDescription(pendingGroupId, cleanBody);
       pendingGroupQuestions.delete(pendingMsgId);
       deletePendingGroupQuestion(pendingMsgId);
-      console.log(`[WhatsApp] Group "${groupName}" context saved via free-text: "${cleanBody}"`);
+      logger.info({ component: 'WhatsApp', groupName, context: cleanBody }, 'Group context saved via free-text');
       const confirmMsg = `✅ עודכן: "${groupName}" — ${cleanBody}`;
       await sendToMasterGroup(confirmMsg);
       addToHistory('assistant', confirmMsg, userId);
@@ -668,7 +677,7 @@ async function handleMasterGroupCommand(_msg) {
           resolvedMemberContext = members.map(m =>
             `${m.name_he} = ${m.name_en}, ${m.role}${m.calendar_id ? ', has calendar' : ', no personal calendar'}`
           ).join('; ');
-          console.log(`[WhatsApp] Resolved members: ${resolvedMemberContext}`);
+          logger.info({ component: 'WhatsApp', members: resolvedMemberContext }, 'Resolved members');
         }
       } catch (_) {}
     }
@@ -682,7 +691,7 @@ async function handleMasterGroupCommand(_msg) {
     // should not hit the full parser — they're likely typos or fragments
     const isApprovalKeyword = APPROVE_REGEX.test(cleanBody.trim()) || REJECT_REGEX.test(cleanBody.trim());
     if (cleanBody.trim().length < 4 && !isApprovalKeyword && !quotedFromMe) {
-      console.log(`[WhatsApp] Short non-command message ignored: "${cleanBody}"`);
+      logger.debug({ component: 'WhatsApp' }, 'Short non-command message ignored: %s', cleanBody);
       return;
     }
 
@@ -703,7 +712,7 @@ async function handleMasterGroupCommand(_msg) {
         const confirmMsg = `✅ הבנתי — עצרתי עדכונים על ${desc}`;
         await sendToMasterGroup(confirmMsg);
         addToHistory('assistant', confirmMsg, userId);
-        console.log(`[WhatsApp] Thread dismissed: ${recentThread.thread_key}`);
+        logger.info({ component: 'WhatsApp', threadKey: recentThread.thread_key }, 'Thread dismissed');
         return;
       }
     }
@@ -716,9 +725,9 @@ async function handleMasterGroupCommand(_msg) {
       if (effect.type === 'send_whatsapp' && effect.phone && effect.text) {
         try {
           await client.sendMessage(`${effect.phone}@c.us`, effect.text);
-          console.log(`[WhatsApp] Agent sent WA to ${effect.to} (${effect.phone}): ${effect.text.substring(0, 60)}`);
+          logger.info({ component: 'WhatsApp', to: effect.to, phone: effect.phone }, 'Agent sent WA: %s', effect.text.substring(0, 60));
         } catch (sendErr) {
-          console.error('[WhatsApp] Agent send_whatsapp failed:', sendErr.message);
+          logger.error({ component: 'WhatsApp', err: sendErr.message }, 'Agent send_whatsapp failed');
           await sendToMasterGroup(`שגיאה בשליחת ההודעה ל${effect.to} — נסה שוב.`);
         }
       }
@@ -727,7 +736,7 @@ async function handleMasterGroupCommand(_msg) {
     await sendToMasterGroup(agentResponse);
     addToHistory('assistant', agentResponse, userId);
   } catch (err) {
-    console.error('[WhatsApp] handleMasterGroupCommand error:', err.message);
+    logger.error({ component: 'WhatsApp', err: err.message }, 'handleMasterGroupCommand error');
   }
 }
 
@@ -752,16 +761,16 @@ async function replayMasterGroupCommands() {
       const msgId = _ser(msg.id);
       if (isMessageProcessed(msgId)) continue; // already handled
       markMsgProcessed(msgId);
-      console.log(`[WhatsApp] Replaying missed master command: "${(msg.body || '').substring(0, 60)}"`);
+      logger.info({ component: 'WhatsApp', bodyPreview: (msg.body || '').substring(0, 60) }, 'Replaying missed master command');
       await handleMasterGroupCommand(msg);
       replayed++;
     }
 
     if (replayed > 0) {
-      console.log(`[WhatsApp] Replayed ${replayed} missed master group command(s).`);
+      logger.info({ component: 'WhatsApp', replayed }, 'Replayed missed master group commands');
     }
   } catch (err) {
-    console.error('[WhatsApp] replayMasterGroupCommands error:', err.message);
+    logger.error({ component: 'WhatsApp', err: err.message }, 'replayMasterGroupCommands error');
   }
 }
 
@@ -779,7 +788,7 @@ async function scanGroupHistory(chat, { saveDays = 7, parseDays = 1 } = {}) {
     let saved = 0;
     let skippedProcessed = 0;
 
-    console.log(`[WhatsApp] History scan for "${chat.name}": fetched ${msgs.length} msgs`);
+    logger.info({ component: 'WhatsApp', group: chat.name, fetched: msgs.length }, 'History scan started');
 
     const groupId = _ser(chat.id);
 
@@ -801,6 +810,7 @@ async function scanGroupHistory(chat, { saveDays = 7, parseDays = 1 } = {}) {
 
       // Always save to DB for context
       saveMessage({ group_id: groupId, sender, body, timestamp: msgTs });
+      recordMessagePersisted();
       saved++;
 
       // Only parse+act on recent messages we haven't processed
@@ -811,9 +821,9 @@ async function scanGroupHistory(chat, { saveDays = 7, parseDays = 1 } = {}) {
       scanned++;
     }
 
-    console.log(`[WhatsApp] History scan for "${chat.name}": ${scanned} parsed, ${saved} saved for context, ${skippedProcessed} already processed.`);
+    logger.info({ component: 'WhatsApp', group: chat.name, scanned, saved, skippedProcessed }, 'History scan complete');
   } catch (err) {
-    console.error(`[WhatsApp] scanGroupHistory error for "${chat.name}":`, err.message);
+    logger.error({ component: 'WhatsApp', group: chat.name, err: err.message }, 'scanGroupHistory error');
   }
 }
 
@@ -827,15 +837,14 @@ async function applyRepairPipeline(text) {
   let v = validateOutgoing(text);
   if (v.ok) return { ok: true, text };
 
-  console.warn(`[OutgoingGate] Message failed validation: ${v.reason}`);
-  console.warn(`[OutgoingGate] Original: ${text.substring(0, 200)}`);
+  logger.warn({ component: 'OutgoingGate', reason: v.reason, original: text.substring(0, 200) }, 'Message failed validation');
 
   // Step 2: repair via LLM
   const repaired = await repairMessage(text, v.reason).catch(() => null);
   if (repaired) {
     const vr = validateOutgoing(repaired);
     if (vr.ok) {
-      console.log(`[OutgoingGate] Sending repaired message: ${repaired.substring(0, 100)}`);
+      logger.info({ component: 'OutgoingGate', preview: repaired.substring(0, 100) }, 'Sending repaired message');
       return { ok: true, text: repaired };
     }
   }
@@ -845,16 +854,16 @@ async function applyRepairPipeline(text) {
   const fallbackBase = text.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().substring(0, 100);
   const fallback = timeMatch ? `💡 ${fallbackBase}` : null;
   if (fallback && validateOutgoing(fallback).ok) {
-    console.log(`[OutgoingGate] Sending fallback: ${fallback}`);
+    logger.info({ component: 'OutgoingGate', fallback }, 'Sending fallback');
     return { ok: true, text: fallback };
   }
 
   // Step 4: DM Aviv — never lose information silently
   const avivJid = `${config.AVIV_PHONE}@c.us`;
   const dmText = `⚠️ ניסיתי לשלוח לקבוצה אבל ההודעה לא עברה בדיקת איכות.\nסיבה: ${v.reason}\n\nתוכן גולמי:\n${text.substring(0, 300)}`;
-  console.warn('[OutgoingGate] All repair attempts failed. DMing Aviv.');
+  logger.warn({ component: 'OutgoingGate' }, 'All repair attempts failed. DMing Aviv.');
   if (client) {
-    await client.sendMessage(avivJid, dmText).catch(e => console.error('[OutgoingGate] DM also failed:', e.message));
+    await client.sendMessage(avivJid, dmText).catch(e => logger.error({ component: 'OutgoingGate', err: e.message }, 'DM also failed'));
   }
   return { ok: false };
 }
@@ -874,15 +883,15 @@ function logOutgoingDM(jid, text) {
 
 async function sendToMasterGroup(text) {
   if (!client) {
-    console.warn('[WhatsApp] Client not initialized, cannot send message.');
+    logger.warn({ component: 'WhatsApp' }, 'Client not initialized, cannot send message.');
     return;
   }
 
   if (!masterGroupId) {
-    console.warn('[WhatsApp] Master group not resolved yet, trying to resolve...');
+    logger.warn({ component: 'WhatsApp' }, 'Master group not resolved yet, trying to resolve...');
     await resolveMasterGroup();
     if (!masterGroupId) {
-      console.warn('[WhatsApp] Still no master group. Message not sent:', text.substring(0, 60));
+      logger.warn({ component: 'WhatsApp', textPreview: text.substring(0, 60) }, 'Still no master group. Message not sent');
       return;
     }
   }
@@ -891,11 +900,11 @@ async function sendToMasterGroup(text) {
   if (!result.ok) return;
   try {
     await client.sendMessage(masterGroupId, result.text);
-    console.log('[WhatsApp] Sent to master group:', result.text.substring(0, 60));
+    logger.info({ component: 'WhatsApp', textPreview: result.text.substring(0, 60) }, 'Sent to master group');
     // Log outbound group message to dm-history.jsonl (used by /chat-history for group context)
     appendDMHistory({ jid: masterGroupId, fromMe: true, body: result.text, ts: Date.now(), type: 'chat' });
   } catch (err) {
-    console.error('[WhatsApp] sendToMasterGroup error:', err.message);
+    logger.error({ component: 'WhatsApp', err: err.message }, 'sendToMasterGroup error');
   }
 }
 
@@ -911,7 +920,7 @@ async function sendToMasterGroupWithId(text) {
     const sentMsg = await client.sendMessage(masterGroupId, result.text);
     return _ser(sentMsg.id);
   } catch (err) {
-    console.error('[WhatsApp] sendToMasterGroupWithId error:', err.message);
+    logger.error({ component: 'WhatsApp', err: err.message }, 'sendToMasterGroupWithId error');
     return null;
   }
 }
@@ -927,16 +936,16 @@ async function sendToMasterGroupWithMentions(text, mentionIds = []) {
   if (!result.ok) return null;
   try {
     const sentMsg = await client.sendMessage(masterGroupId, result.text, { mentions: mentionIds });
-    console.log('[WhatsApp] Sent with mentions to master group:', result.text.substring(0, 60));
+    logger.info({ component: 'WhatsApp', textPreview: result.text.substring(0, 60) }, 'Sent with mentions to master group');
     return _ser(sentMsg.id);
   } catch (err) {
     // Fallback to plain send if mentions not supported
-    console.warn('[WhatsApp] Mentions failed, sending plain:', err.message);
+    logger.warn({ component: 'WhatsApp', err: err.message }, 'Mentions failed, sending plain');
     try {
       const sentMsg = await client.sendMessage(masterGroupId, result.text);
       return _ser(sentMsg.id);
     } catch (e2) {
-      console.error('[WhatsApp] sendToMasterGroupWithMentions error:', e2.message);
+      logger.error({ component: 'WhatsApp', err: e2.message }, 'sendToMasterGroupWithMentions error');
       return null;
     }
   }
@@ -953,7 +962,7 @@ async function getGroups() {
       .filter(c => c.isGroup)
       .map(c => ({ id: _ser(c.id), name: c.name }));
   } catch (err) {
-    console.error('[WhatsApp] getGroups error:', err.message);
+    logger.error({ component: 'WhatsApp', err: err.message }, 'getGroups error');
     return [];
   }
 }
@@ -963,49 +972,12 @@ async function getGroups() {
  * /tmp/bot-stuck-alert.json so Lipa (OpenClaw heartbeat) can DM Aviv.
  * Started once; survives client reinitializations.
  */
+/**
+ * DEPRECATED: Old disconnect watchdog (ISSUE-021) — replaced by src/watchdog.js
+ * which provides 3-layer zombie detection. Kept as no-op stub so callers don't break.
+ */
 function startDisconnectWatchdog() {
-  if (_watchdogStarted) return;
-  _watchdogStarted = true;
-  const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000; // check every 5 min
-  const STUCK_THRESHOLD_MS   = 30 * 60 * 1000; // 30 min disconnect = stuck
-  const ISRAEL_TZ = 'Asia/Jerusalem';
-
-  setInterval(() => {
-    try {
-      // Only alert during Israel daytime (08:00–22:00)
-      const nowIsrael = new Date().toLocaleString('en-US', { timeZone: ISRAEL_TZ, hour: 'numeric', hour12: false });
-      const hourIsrael = parseInt(nowIsrael, 10);
-      if (hourIsrael < 8 || hourIsrael >= 22) return;
-
-      const isConnected = !!(client && client.info);
-      const disconnectedMs = _disconnectedSinceMs;
-
-      if (!isConnected && disconnectedMs > 0) {
-        const gapMs = Date.now() - disconnectedMs;
-        if (gapMs > STUCK_THRESHOLD_MS) {
-          const gapMin = Math.round(gapMs / 60000);
-          console.warn(`[Watchdog] Bot disconnected for ${gapMin}min during daytime — writing stuck alert.`);
-          try {
-            require('fs').writeFileSync('/tmp/bot-stuck-alert.json', JSON.stringify({
-              ts: Date.now(),
-              disconnected_since: disconnectedMs,
-              gap_minutes: gapMin,
-              message: `WhatsApp disconnected for ${gapMin} minutes during daytime. Auto-reconnect may have failed. Check linked devices.`,
-            }));
-          } catch (e) {
-            console.error('[Watchdog] Failed to write alert:', e.message);
-          }
-        }
-      } else if (isConnected) {
-        // Clean up stale alert if we're now connected
-        try { require('fs').unlinkSync('/tmp/bot-stuck-alert.json'); } catch (_) {}
-      }
-    } catch (e) {
-      console.error('[Watchdog] Error in watchdog check:', e.message);
-    }
-  }, WATCHDOG_INTERVAL_MS).unref();
-
-  console.log('[Watchdog] Disconnect watchdog started (5-min interval, 30-min threshold, daytime only).');
+  logger.info({ component: 'Watchdog' }, 'Old disconnect watchdog disabled — replaced by 3-layer watchdog.js');
 }
 
 /**
@@ -1016,13 +988,13 @@ function initWhatsApp() {
   client = new BaileysClient();
 
   client.on('qr', (qr) => {
-    console.log('\n[WhatsApp] Scan the QR code below to connect:\n');
+    logger.info({ component: 'WhatsApp' }, 'Scan the QR code below to connect');
     qrcode.generate(qr, { small: true });
     // Also save as PNG so it can be shared
     try {
       const QRCode = require('qrcode');
       QRCode.toFile('/tmp/whatsapp-qr.png', qr, { width: 400 }, (err) => {
-        if (!err) console.log('[WhatsApp] QR image saved to /tmp/whatsapp-qr.png');
+        if (!err) logger.info({ component: 'WhatsApp' }, 'QR image saved to /tmp/whatsapp-qr.png');
       });
     } catch (_) {}
   });
@@ -1038,7 +1010,7 @@ function initWhatsApp() {
     _backlogCutoffMs = Date.now() - 60000; // 1min grace for in-flight messages
     if (_lastDisconnectMs > 0) {
       const offlineMs = Date.now() - _lastDisconnectMs;
-      console.log(`[WhatsApp] Reconnected after ${Math.round(offlineMs/60000)}min offline. Backlog cutoff: ${new Date(_backlogCutoffMs).toISOString()}`);
+      logger.info({ component: 'WhatsApp', offlineMin: Math.round(offlineMs/60000), backlogCutoff: new Date(_backlogCutoffMs).toISOString() }, 'Reconnected after offline period');
     }
     // ISSUE-021: reset reconnect state on successful ready
     _disconnectedSinceMs = 0;
@@ -1046,12 +1018,12 @@ function initWhatsApp() {
     if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
     // Remove stale stuck-alert file if we successfully reconnected
     try { require('fs').unlinkSync('/tmp/bot-stuck-alert.json'); } catch (_) {}
-    console.log('[WhatsApp] ✅ Client connected and ready!');
+    logger.info({ component: 'WhatsApp' }, 'Client connected and ready');
     try {
       await resolveMasterGroup();
     } catch (resolveErr) {
       addInitError(resolveErr);
-      console.error('[WhatsApp] resolveMasterGroup failed in ready handler:', resolveErr.message, '— continuing init');
+      logger.error({ component: 'WhatsApp', err: resolveErr.message }, 'resolveMasterGroup failed in ready handler — continuing init');
     }
 
     // ── Context prefetch on startup (ISSUE-022) ──────────────────────────────
@@ -1075,10 +1047,10 @@ function initWhatsApp() {
               appendDMHistory({ jid, fromMe: m.fromMe, phone: m.fromMe ? null : senderName, body: m.body || '', ts: m.timestamp * 1000, type: m.type });
               written++;
             }
-            console.log(`[ContextPrefetch] ${label}: wrote ${written} messages to dm-history.jsonl`);
-          } catch (e) { console.warn(`[ContextPrefetch] ${label} failed: ${e.message}`); }
+            logger.info({ component: 'ContextPrefetch', label, written }, 'Wrote messages to dm-history.jsonl');
+          } catch (e) { logger.warn({ component: 'ContextPrefetch', label, err: e.message }, 'Prefetch failed'); }
         }
-      } catch (e) { console.warn('[ContextPrefetch] top-level error:', e.message); }
+      } catch (e) { logger.warn({ component: 'ContextPrefetch', err: e.message }, 'Top-level prefetch error'); }
     }, 5000);
     // ── End context prefetch ─────────────────────────────────────────────────
 
@@ -1097,7 +1069,7 @@ function initWhatsApp() {
     // Wire the (already-running) voice/health HTTP server to the live client
     try {
       setVoiceServerClient(client, getHealthState);
-    } catch (_) { console.error('[WhatsApp] Failed to wire client into voice server:', _.message); }
+    } catch (_) { logger.error({ component: 'WhatsApp', err: _.message }, 'Failed to wire client into voice server'); }
 
     loadPendingGroupQuestionsFromDB();
 
@@ -1133,8 +1105,8 @@ function initWhatsApp() {
     }
     const groupChats = allChats.filter(c => c.isGroup);
 
-    console.log('[WhatsApp] Available groups:');
-    groupChats.forEach(g => console.log(`  - "${g.name}" (${_ser(g.id)})`));
+    logger.info({ component: 'WhatsApp' }, 'Available groups:');
+    groupChats.forEach(g => logger.info({ component: 'WhatsApp', groupName: g.name, groupId: _ser(g.id) }, 'Group'));
 
     // â"€â"€ Feature 2: New group detection â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     for (const chat of groupChats) {
@@ -1144,7 +1116,7 @@ function initWhatsApp() {
       if (!existing) {
         // New group â€" save it
         saveGroup(chatId, chat.name);
-        console.log(`[WhatsApp] New group detected: "${chat.name}"`);
+        logger.info({ component: 'WhatsApp', groupName: chat.name }, 'New group detected');
 
         const isMonitored = monitoredNames.includes(chat.name);
         const isMaster = chat.name === masterName;
@@ -1160,9 +1132,9 @@ function initWhatsApp() {
             pendingGroupQuestions.set(_ser(sentMsg.id), chatId);
             savePendingGroupQuestion(_ser(sentMsg.id), chatId);
             addToHistory('assistant', question);
-            console.log(`[WhatsApp] Asked master group about new group "${chat.name}"`);
+            logger.info({ component: 'WhatsApp', groupName: chat.name }, 'Asked master group about new group');
           } catch (err) {
-            console.error('[WhatsApp] Failed to send new-group question:', err.message);
+            logger.error({ component: 'WhatsApp', err: err.message }, 'Failed to send new-group question');
           }
         }
       }
@@ -1178,9 +1150,9 @@ function initWhatsApp() {
           pendingGroupQuestions.set(_ser(sentMsg.id), grp.id);
           savePendingGroupQuestion(_ser(sentMsg.id), grp.id);
           addToHistory('assistant', question);
-          console.log(`[WhatsApp] Asked about group context: "${grp.name}"`);
+          logger.info({ component: 'WhatsApp', groupName: grp.name }, 'Asked about group context');
         } catch (err) {
-          console.error(`[WhatsApp] Failed to ask about group "${grp.name}":`, err.message);
+          logger.error({ component: 'WhatsApp', groupName: grp.name, err: err.message }, 'Failed to ask about group');
         }
         await new Promise(r => setTimeout(r, 1000)); // small delay between messages
       }
@@ -1204,19 +1176,19 @@ function initWhatsApp() {
   });
 
   client.on('authenticated', () => {
-    console.log('[WhatsApp] Authenticated.');
+    logger.info({ component: 'WhatsApp' }, 'Authenticated.');
 
     // Watchdog: if ready doesn't fire within 2 minutes, the WA page is stuck.
     // Uses module-level _readyFailureCount so retries don't reset the counter.
     const readyWatchdog = setTimeout(async () => {
       _readyFailureCount++;
       const backoffMs = Math.min(_readyFailureCount * 5000, 30000); // 5s, 10s, 15s, 20s, 30s
-      console.error(`[WhatsApp] ⚠️ Ready event never fired (attempt ${_readyFailureCount}/${MAX_READY_FAILURES}) — will retry in ${backoffMs/1000}s`);
+      logger.error({ component: 'WhatsApp', attempt: _readyFailureCount, maxAttempts: MAX_READY_FAILURES, retrySec: backoffMs/1000 }, 'Ready event never fired');
 
       if (_readyFailureCount >= MAX_READY_FAILURES) {
         // Stop the loop — write flag file for Lipa to detect and DM Aviv out-of-band
         // (can't use sendAlertDirect — WhatsApp is the broken thing)
-        console.error('[WhatsApp] ❌ Giving up after max failures. Writing alert flag for Lipa.');
+        logger.error({ component: 'WhatsApp', failures: _readyFailureCount }, 'Giving up after max failures. Writing alert flag for Lipa.');
         try {
           require('fs').writeFileSync('/tmp/bot-stuck-alert.json', JSON.stringify({
             ts: Date.now(),
@@ -1224,7 +1196,7 @@ function initWhatsApp() {
             message: `Tudat stuck in reconnection loop (${_readyFailureCount} failed attempts). WhatsApp not responding. Check linked devices, may need QR re-scan.`
           }));
         } catch (flagErr) {
-          console.error('[WhatsApp] Failed to write alert flag:', flagErr.message);
+          logger.error({ component: 'WhatsApp', err: flagErr.message }, 'Failed to write alert flag');
         }
         return; // Stop reinitializing
       }
@@ -1294,7 +1266,7 @@ function initWhatsApp() {
   });
 
   client.on('auth_failure', (msg) => {
-    console.error('[WhatsApp] Authentication failed:', msg);
+    logger.error({ component: 'WhatsApp', reason: msg }, 'Authentication failed');
     // ISSUE-009: log with timestamp so exact drop time is always visible
     const { checkAndAlert } = require('./health');
     checkAndAlert().catch(() => {});
@@ -1302,8 +1274,7 @@ function initWhatsApp() {
 
   client.on('disconnected', (reason) => {
     // ISSUE-009: log with ISO timestamp so the exact drop time is always visible in logs
-    const nowIso = new Date().toISOString();
-    console.warn(`[WhatsApp] Client disconnected at ${nowIso}: ${reason}`);
+    logger.warn({ component: 'WhatsApp', disconnectedAt: new Date().toISOString(), reason }, 'Client disconnected');
 
     // ISSUE-021: track disconnect time for watchdog
     _disconnectedSinceMs = _disconnectedSinceMs || Date.now();
@@ -1318,16 +1289,16 @@ function initWhatsApp() {
     // Don't reconnect if we're in a QR/auth-needed state (LOGOUT or auth_failure)
     const noReconnectReasons = ['LOGOUT', 'CONFLICT', 'UNLAUNCHED'];
     if (noReconnectReasons.includes(reason)) {
-      console.warn(`[WhatsApp] Disconnected reason "${reason}" — not attempting auto-reconnect (needs QR).`);
+      logger.warn({ component: 'WhatsApp', reason }, 'Disconnected — not attempting auto-reconnect (needs QR)');
       return;
     }
     if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
     _reconnectAttempts++;
     const delayMs = Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, _reconnectAttempts - 1), 15 * 60 * 1000); // cap at 15min
-    console.log(`[WhatsApp] Scheduling reconnect attempt ${_reconnectAttempts} in ${Math.round(delayMs/1000)}s...`);
+    logger.info({ component: 'WhatsApp', attempt: _reconnectAttempts, delaySec: Math.round(delayMs/1000) }, 'Scheduling reconnect');
     _reconnectTimer = setTimeout(async () => {
       _reconnectTimer = null;
-      console.log(`[WhatsApp] Attempting reconnect (attempt ${_reconnectAttempts})...`);
+      logger.info({ component: 'WhatsApp', attempt: _reconnectAttempts }, 'Attempting reconnect');
       try { await client.destroy(); } catch (_) {}
       initWhatsApp();
     }, delayMs);
@@ -1335,7 +1306,7 @@ function initWhatsApp() {
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log('[FamilyBot] Received SIGINT. Shutting down gracefully...');
+    logger.info({ component: 'FamilyBot' }, 'Received SIGINT. Shutting down gracefully...');
     try { await client.destroy(); } catch (_) {}
     process.exit(0);
   };
@@ -1356,7 +1327,7 @@ function initWhatsApp() {
         try {
           // Resolve JID to phone (handles both @c.us and @lid LID format)
           const phone = getPhoneByJid(msg.from);
-          console.log('[WhatsApp] DM from JID:', msg.from, '→ phone:', phone || '(unknown)');
+          logger.info({ component: 'WhatsApp', jid: msg.from, phone: phone || '(unknown)' }, 'DM received');
           // Log DM to rolling history file (used by /chat-history endpoint)
           // Normalize jid to phone@c.us format when available so /chat-history filter matches
           const _dmJid = phone ? `${phone}@c.us` : msg.from;
@@ -1364,10 +1335,10 @@ function initWhatsApp() {
           if (phone) {
             const ts = new Date(msg.timestamp * 1000).toISOString();
             await forwardToBabysitterService(phone, msg.body || '', ts);
-            console.log('[WhatsApp] Babysitter DM forwarded:', phone, msg.body?.substring(0, 30));
+            logger.info({ component: 'WhatsApp', phone, bodyPreview: msg.body?.substring(0, 30) }, 'Babysitter DM forwarded');
           }
         } catch (e) {
-          console.error('[WhatsApp] DM routing error:', e.message);
+          logger.error({ component: 'WhatsApp', err: e.message }, 'DM routing error');
         }
         return;
       }
@@ -1405,7 +1376,7 @@ function initWhatsApp() {
               deletePendingGroupQuestion(quotedId);
               const groupInfo = getGroup(pendingGroupId);
               const groupName = groupInfo ? groupInfo.name : pendingGroupId;
-              console.log(`[WhatsApp] Group "${groupName}" context saved: "${relatedTo}"`);
+              logger.info({ component: 'WhatsApp', groupName, context: relatedTo }, 'Group context saved');
               await client.sendMessage(masterGroupId, `✅ עודכן: "${groupName}" — ${relatedTo}`);
               // Scan history for the newly-confirmed monitored group
               try {
@@ -1433,7 +1404,7 @@ function initWhatsApp() {
                 if (relatedTo) {
                   setGroupRelatedTo(matchedGroup.id, 'monitored');
                   setGroupDescription(matchedGroup.id, relatedTo);
-                  console.log(`[WhatsApp] Group "${matchedGroup.name}" context saved (pattern match): "${relatedTo}"`);
+                  logger.info({ component: 'WhatsApp', groupName: matchedGroup.name, context: relatedTo }, 'Group context saved (pattern match)');
                   await client.sendMessage(masterGroupId, `✅ עודכן: "${matchedGroup.name}" — ${relatedTo}`);
                   // Scan history for the newly-confirmed monitored group
                   try {
@@ -1455,7 +1426,7 @@ function initWhatsApp() {
             if (isYes) {
               updateFollowUpStatus(followUp.id, 'done');
               await client.sendMessage(masterGroupId, '✅ מעולה! רשמתי שביצעת.');
-              console.log(`[WhatsApp] Follow-up marked done: "${followUp.event_title}"`);
+              logger.info({ component: 'WhatsApp', eventTitle: followUp.event_title }, 'Follow-up marked done');
             } else if (isNo) {
               updateFollowUpStatus(followUp.id, 'rescheduling');
               const q = '⏰ בסדר. לאיזה יום ושעה לדחות?';
@@ -1481,7 +1452,7 @@ function initWhatsApp() {
             return;
           }
         } catch (err) {
-          console.error('[WhatsApp] Error handling master group reply:', { message: err.message || String(err), code: err.code, stack: err.stack });
+          logger.error({ component: 'WhatsApp', err: err.message || String(err), code: err.code }, 'Error handling master group reply');
         }
       }
 
@@ -1514,7 +1485,7 @@ function initWhatsApp() {
               if (freeIsYes) {
                 updateFollowUpStatus(activeFollowUp.id, 'done');
                 await client.sendMessage(masterGroupId, '✅ מעולה! רשמתי שביצעת.');
-                console.log(`[WhatsApp] Follow-up (free-text) marked done: "${activeFollowUp.event_title}"`);
+                logger.info({ component: 'WhatsApp', eventTitle: activeFollowUp.event_title }, 'Follow-up (free-text) marked done');
               } else {
                 updateFollowUpStatus(activeFollowUp.id, 'rescheduling');
                 await client.sendMessage(masterGroupId, '⏰ בסדר. לאיזה יום ושעה לדחות?');
@@ -1535,7 +1506,7 @@ function initWhatsApp() {
             ).all(Date.now() - 72 * 3600000);
 
             const parsed = await parseDismissal(msg.body, sentRecent);
-            console.log('[Dismissal] Parsed:', JSON.stringify(parsed));
+            logger.info({ component: 'Dismissal', parsed }, 'Dismissal parsed');
 
             if (parsed.is_dismissal) {
               const scopeValue = parsed.matched_topic_key || parsed.scope_hint || null;
@@ -1560,11 +1531,11 @@ function initWhatsApp() {
                 : `"${scopeValue || parsed.scope_hint}"`;
               const confirmMsg = `‏🔕 הבנתי — לא אשלח עוד על ${scopeLabel} ב-${hours} השעות הקרובות.`;
               await sendToMasterGroup(confirmMsg);
-              console.log(`[Dismissal] Confirmed to master group: ${confirmMsg}`);
+              logger.info({ component: 'Dismissal' }, 'Confirmed to master group: %s', confirmMsg);
               return;
             }
           } catch (e) {
-            console.error('[Dismissal] Error:', e.message);
+            logger.error({ component: 'Dismissal', err: e.message }, 'Dismissal error');
             // Fall through to normal command handling
           }
         }
@@ -1589,6 +1560,7 @@ function initWhatsApp() {
           const mediaLabel = { image: '[\u05ea\u05de\u05d5\u05e0\u05d4]', video: '[\u05d5\u05d9\u05d3\u05d0\u05d5]', audio: '[\u05d4\u05e7\u05dc\u05d8\u05d4 \u05e7\u05d5\u05dc\u05d9\u05ea]', document: '[\u05de\u05e1\u05de\u05da]', sticker: '[\u05de\u05d3\u05d1\u05e7\u05d4]', location: '[\u05de\u05d9\u05e7\u05d5\u05dd]' };
           const ctxBody = msg.body && msg.body.trim() ? msg.body : (mediaLabel[msg.type] || '[\u05de\u05d3\u05d9\u05d4]');
           saveMessage({ group_id: (ctxChat && ctxChat.id && _ser(ctxChat.id)) || msg.from, sender: ctxSender, body: ctxBody, timestamp: msg.timestamp * 1000 });
+          recordMessagePersisted();
         } catch (_) {}
         // Full parse+act only for substantial text messages or images (ISSUE-021: images from
         // any sender in monitored groups must reach handleGroupMessage for vision OCR)
@@ -1607,22 +1579,22 @@ function initWhatsApp() {
               const sentMsg = await client.sendMessage(masterGroupId, question);
               pendingGroupQuestions.set(_ser(sentMsg.id), _ser(chat.id));
               savePendingGroupQuestion(_ser(sentMsg.id), _ser(chat.id));
-              console.log(`[WhatsApp] New group detected live: "${chat.name}"`);
+              logger.info({ component: 'WhatsApp', groupName: chat.name }, 'New group detected live');
             }
           }
         } catch (err) {
-          console.error('[WhatsApp] New group detection error:', err.message);
+          logger.error({ component: 'WhatsApp', err: err.message }, 'New group detection error');
         }
       }
     } catch (err) {
-      console.error('[WhatsApp] message handler error:', err.message);
+      logger.error({ component: 'WhatsApp', err: err.message }, 'message handler error');
     }
   });
 
-  console.log('[WhatsApp] Initializing client...');
+  logger.info({ component: 'WhatsApp' }, 'Initializing client...');
   client.initialize().catch(err => {
     addInitError(err);
-    console.error('[WhatsApp] initialize failed:', err.message);
+    logger.error({ component: 'WhatsApp', err: err.message }, 'initialize failed');
   });
 
   return client;

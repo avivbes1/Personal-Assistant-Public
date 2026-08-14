@@ -110,6 +110,10 @@ function buildHealthPayload() {
     };
   }
   payload.init_errors = _initErrors;
+  try {
+    const { getMessagesPersisted5Min } = require('./message-counter');
+    payload.messagesPersistedLast5Min = getMessagesPersisted5Min();
+  } catch (_) {}
   return payload;
 }
 

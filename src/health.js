@@ -8,6 +8,7 @@ const path = require('path');
 const { getDB, clearExpiredPendingActions } = require('./db');
 const { verifyCalendarAuth, generateAuthUrl } = require('./calendar');
 const config = require('./config');
+const logger = require('./logger');
 
 let _client = null;
 let _masterGroupId = null;
@@ -35,7 +36,7 @@ function saveHealthState(state) {
     fs.mkdirSync(path.dirname(HEALTH_STATE_PATH), { recursive: true });
     fs.writeFileSync(HEALTH_STATE_PATH, JSON.stringify(state, null, 2));
   } catch (e) {
-    console.warn('[Health] Could not save health state:', e.message);
+    logger.warn({ component: 'Health', err: e.message }, 'Could not save health state');
   }
 }
 
@@ -53,9 +54,9 @@ async function initHealth(client, masterGroupId) {
     for (const alert of state.pendingAlerts) {
       try {
         await _client.sendMessage(ALERT_TARGET, alert.msg);
-        console.log('[Health] Flushed queued alert:', alert.msg.substring(0, 80));
+        logger.info({ component: 'Health' }, 'Flushed queued alert: %s', alert.msg.substring(0, 80));
       } catch (e) {
-        console.error('[Health] Failed to flush alert:', e.message);
+        logger.error({ component: 'Health', err: e.message }, 'Failed to flush alert');
       }
     }
     state.pendingAlerts = [];
@@ -66,13 +67,13 @@ async function initHealth(client, masterGroupId) {
   if (state.pendingReauth) {
     for (const [key, entry] of Object.entries(state.pendingReauth)) {
       if (entry.pending && _client && _masterGroupId) {
-        console.log(`[Health] Flushing pending re-auth for ${key}`);
+        logger.info({ component: 'Health', key }, 'Flushing pending re-auth');
         try {
           await _client.sendMessage(_masterGroupId, entry.msg);
           entry.pending = false;
           entry.sentAt = Date.now();
         } catch (e) {
-          console.error(`[Health] Failed to flush re-auth for ${key}:`, e.message);
+          logger.error({ component: 'Health', key, err: e.message }, 'Failed to flush re-auth');
         }
       }
     }
@@ -183,7 +184,7 @@ async function runChecks() {
             (nowIsraelDay === 0 && israelHour < 14);
 
           if (lastMsgWasWeekend && nowIsWeekendOrSundayMorning) {
-            console.log('[Health] Skipping outage alert — gap explained by Shabbat/weekend');
+            logger.info({ component: 'Health' }, 'Skipping outage alert — gap explained by Shabbat/weekend');
           } else {
             // Check outage alert cooldown separately (4h, not 24h)
             const OUTAGE_COOLDOWN_MS = 4 * 60 * 60 * 1000;
@@ -206,16 +207,16 @@ async function runChecks() {
               healthState.lastOutageAlert = nowMs;
               saveHealthState(healthState);
               await sendAlertDirect(outageMsg);
-              console.error('[Health] Global outage alert sent. Active gap:', hours + 'h, WA state:', connState);
+              logger.error({ component: 'Health', activeGapH: hours, waState: connState }, 'Global outage alert sent');
             } else {
               const minLeft = Math.round((OUTAGE_COOLDOWN_MS - (nowMs - lastOutageAlert)) / 60000);
-              console.warn(`[Health] Outage detected but alert on cooldown (${minLeft}min left). Active gap: ${activeHours.toFixed(1)}h`);
+              logger.warn({ component: 'Health', cooldownMinLeft: minLeft, activeGapH: activeHours.toFixed(1) }, 'Outage detected but alert on cooldown');
             }
           }
         }
       }
     } catch (e) {
-      console.warn('[Health] Outage check error:', e.message);
+      logger.warn({ component: 'Health', err: e.message }, 'Outage check error');
     }
   }
 
@@ -225,7 +226,7 @@ async function runChecks() {
     const stale = db.prepare('SELECT COUNT(*) as c FROM pending_actions WHERE created_at < ?').get(Date.now() - 30 * 60 * 1000);
     if (stale && stale.c > 0) failures.push(`${stale.c} stale pending action(s) (>30 min)`);
     const cleared = clearExpiredPendingActions();
-    if (cleared > 0) console.log(`[Health] Cleared ${cleared} expired pending action(s)`);
+    if (cleared > 0) logger.info({ component: 'Health', cleared }, 'Cleared expired pending action(s)');
   } catch (_) {}
 
   return failures;
@@ -253,18 +254,18 @@ async function sendCalendarAuthRequest(key, email, nameHe, verbHe) {
   if (_client && _masterGroupId) {
     try {
       await _client.sendMessage(_masterGroupId, msg);
-      console.log(`[Health] Sent calendar re-auth request for ${key}`);
+      logger.info({ component: 'Health', key }, 'Sent calendar re-auth request');
       state.pendingReauth = state.pendingReauth || {};
       if (state.pendingReauth[key]) state.pendingReauth[key].pending = false;
     } catch (e) {
-      console.error(`[Health] Failed to send re-auth for ${key}:`, e.message);
+      logger.error({ component: 'Health', key, err: e.message }, 'Failed to send re-auth');
       // Queue for next boot
       state.pendingReauth = state.pendingReauth || {};
       state.pendingReauth[key] = { pending: true, msg, queuedAt: now };
     }
   } else {
     // Client not ready — queue for when it becomes ready
-    console.warn(`[Health] Client not ready — queuing re-auth request for ${key}`);
+    logger.warn({ component: 'Health', key }, 'Client not ready — queuing re-auth request');
     state.pendingReauth = state.pendingReauth || {};
     state.pendingReauth[key] = { pending: true, msg, queuedAt: now };
   }
@@ -279,11 +280,11 @@ async function sendCalendarAuthRequest(key, email, nameHe, verbHe) {
 async function sendAlert(message) {
   const now = Date.now();
   if (now - _lastAlertTime < ALERT_COOLDOWN_MS) {
-    console.warn('[Health] Alert suppressed (cooldown):', message);
+    logger.warn({ component: 'Health' }, 'Alert suppressed (cooldown): %s', message);
     return;
   }
   _lastAlertTime = now;
-  console.error('[Health] ALERT:', message);
+  logger.error({ component: 'Health' }, 'ALERT: %s', message);
 
   const alertMsg = `🚨 *Health Alert*\n${message}`;
 
@@ -292,7 +293,7 @@ async function sendAlert(message) {
       await _client.sendMessage(ALERT_TARGET, alertMsg);
       return;
     } catch (e) {
-      console.error('[Health] Failed to send alert (WhatsApp down) — queuing:', e.message);
+      logger.error({ component: 'Health', err: e.message }, 'Failed to send alert (WhatsApp down) — queuing');
     }
   }
 
@@ -301,7 +302,7 @@ async function sendAlert(message) {
   state.pendingAlerts = state.pendingAlerts || [];
   state.pendingAlerts.push({ msg: alertMsg, queuedAt: now });
   saveHealthState(state);
-  console.warn('[Health] Alert queued to disk for later delivery');
+  logger.warn({ component: 'Health' }, 'Alert queued to disk for later delivery');
 }
 
 /**
@@ -313,7 +314,7 @@ async function checkAndAlert() {
     const nowIsrael = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
     const dayOfWeek = nowIsrael.getDay(); // 0=Sun, 5=Fri, 6=Sat
     if (dayOfWeek === 5 || dayOfWeek === 6) {
-      console.log('[Health] Skipping checks — Friday/Saturday');
+      logger.info({ component: 'Health' }, 'Skipping checks — Friday/Saturday');
       return;
     }
 
@@ -321,10 +322,10 @@ async function checkAndAlert() {
     if (failures.length > 0) {
       await sendAlert(failures.join('\n'));
     } else {
-      console.log('[Health] ✅ All checks passed');
+      logger.info({ component: 'Health' }, 'All checks passed');
     }
   } catch (e) {
-    console.error('[Health] checkAndAlert error:', e.message);
+    logger.error({ component: 'Health', err: e.message }, 'checkAndAlert error');
   }
 }
 
@@ -333,7 +334,7 @@ async function checkAndAlert() {
  * Call after WhatsApp is connected.
  */
 function startHealthMonitor(intervalMs = 5 * 60 * 1000) {
-  console.log(`[Health] Starting monitor (every ${intervalMs / 1000}s)`);
+  logger.info({ component: 'Health', intervalS: intervalMs / 1000 }, 'Starting monitor');
   setInterval(checkAndAlert, intervalMs);
 }
 
@@ -342,7 +343,7 @@ function startHealthMonitor(intervalMs = 5 * 60 * 1000) {
  * Uses the same queue-to-disk fallback if client is unavailable.
  */
 async function sendAlertDirect(message) {
-  console.error('[Health] DIRECT ALERT:', message);
+  logger.error({ component: 'Health' }, 'DIRECT ALERT: %s', message);
   const alertMsg = `🚨 *Alert*\n${message}`;
   if (_client) {
     try { await _client.sendMessage(ALERT_TARGET, alertMsg); return; } catch (_) {}
