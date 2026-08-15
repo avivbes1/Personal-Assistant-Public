@@ -223,18 +223,23 @@ function createServer() {
             try { return JSON.parse(l); } catch { return null; }
           }).filter(Boolean);
         } catch (_) {}
-        // Filter by jid — match on normalized jid OR stored phone field (covers LID→phone mapping)
-        // Also support known LID aliases (e.g. Aviv's WhatsApp LID differs from his phone number)
-        // Known LID→phone mappings (loaded from env to avoid hardcoded PII)
-        const LID_TO_PHONE = {};
-        if (process.env.AVIV_PHONE && process.env.AVIV_LID) LID_TO_PHONE[process.env.AVIV_LID] = process.env.AVIV_PHONE;
-        const jidUser = jid.replace('@c.us','').replace('@lid','').replace(/\+/g, '');
+        // Filter by jid — resolve LID to phone via getPhoneByJid, then match
+        const { getPhoneByJid } = require('./babysitter-onboarding');
+        // Resolve the query JID to a phone number if it's a LID
+        let queryPhone = null;
+        if (jid.endsWith('@lid')) {
+          try { queryPhone = await getPhoneByJid(jid); } catch (_) {}
+        }
+        const jidUser = jid.replace(/@(c\.us|lid|s\.whatsapp\.net)$/g, '').replace(/\+/g, '');
+        const queryPhoneNorm = queryPhone ? queryPhone.replace(/\D/g, '') : null;
         const filtered = lines.filter(m => {
-          const mJid = (m.jid || '').replace('@c.us','').replace('@lid','').replace(/\+/g, '');
+          const mJid = (m.jid || '').replace(/@(c\.us|lid|s\.whatsapp\.net)$/g, '').replace(/\+/g, '');
           const mPhone = (m.phone || '').replace(/\D/g, '');
-          // Direct JID match, phone field match, LID alias match, or outbound
-          const resolvedPhone = LID_TO_PHONE[mJid] || mJid;
-          return mJid === jidUser || resolvedPhone === jidUser || mPhone === jidUser || m.fromMe;
+          // Match by: direct JID user part, resolved phone, stored phone field, or outbound
+          if (m.fromMe) return true;
+          if (mJid === jidUser) return true;
+          if (queryPhoneNorm && (mPhone === queryPhoneNorm || mJid === queryPhoneNorm)) return true;
+          return false;
         });
         const result = filtered.slice(-limit).map(m => ({
           ts: m.ts || m.logged,

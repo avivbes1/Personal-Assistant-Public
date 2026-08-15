@@ -96,7 +96,7 @@ const getHealthState = () => {
 const masterGroupHistory = []; // { role: 'user'|'assistant', content: string }
 
 // ── Babysitter Booking microservice integration ──────────────────────────────
-const { getBabysitterPhones, resolveJids: resolveJidsForBabysitters, getPhoneByJid, checkOnboarding: checkBabysitterOnboarding, handleOnboardingReply } = require('./babysitter-onboarding');
+const { getBabysitterPhones, resolveJids: resolveJidsForBabysitters, getPhoneByJid, setWaClient: setBabysitterWaClient, checkOnboarding: checkBabysitterOnboarding, handleOnboardingReply } = require('./babysitter-onboarding');
 const BOOKING_SECRET = process.env.SHARED_SECRET || '';
 
 async function forwardToBabysitterService(from_phone, body, ts) {
@@ -505,7 +505,6 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
 const ALLOWED_NUMBERS = new Set([
   config.AVIV_PHONE, // primary parent phone
   config.LIAT_PHONE, // secondary parent phone
-  '245500498423818', // Aviv LID
 ]);
 
 async function isSenderAuthorized(msg) {
@@ -514,11 +513,24 @@ async function isSenderAuthorized(msg) {
     // contact.number may be a string or number - coerce to string
     const number = String(contact.number || '').trim();
     if (number && ALLOWED_NUMBERS.has(number)) return true;
-    // Also check raw author/from ID part (covers LID format: 245500498423818@lid)
-    const authorUser = (msg.author || msg.from || '').split('@')[0].trim();
-    if (authorUser && ALLOWED_NUMBERS.has(authorUser)) return true;
+    // For @c.us JIDs, check the user part directly
+    const senderJid = msg.author || msg.from || '';
+    const authorUser = senderJid.split('@')[0].trim();
+    if (!senderJid.endsWith('@lid') && authorUser && ALLOWED_NUMBERS.has(authorUser)) return true;
+    // For @lid JIDs, resolve to phone via signalRepository
+    if (senderJid.endsWith('@lid')) {
+      try {
+        const resolvedPhone = await getPhoneByJid(senderJid);
+        if (resolvedPhone) {
+          const phoneNum = resolvedPhone.replace(/^\+/, '');
+          if (ALLOWED_NUMBERS.has(phoneNum)) return true;
+        }
+      } catch (e) {
+        logger.warn({ component: 'WhatsApp', err: e.message, lid: senderJid }, 'LID resolution failed in auth check');
+      }
+    }
     // Log the actual ID so we can diagnose mismatches
-    logger.warn({ component: 'WhatsApp', senderId: msg.author || msg.from, number }, 'Unauthorized sender');
+    logger.warn({ component: 'WhatsApp', senderId: senderJid, number }, 'Unauthorized sender');
     return false;
   } catch (e) {
     logger.warn({ component: 'WhatsApp', err: e.message }, 'Could not resolve sender contact');
@@ -814,6 +826,8 @@ function initWhatsApp() {
   });
 
   client.on('ready', async () => {
+    // Set WA client ref immediately for LID resolution (before resolveJids delay)
+    setBabysitterWaClient(client);
     // Mark reconnect point — messages older than this are backlog
     _backlogCutoffMs = Date.now() - 60000; // 1min grace for in-flight messages
     if (_lastDisconnectMs > 0) {
@@ -1134,7 +1148,7 @@ function initWhatsApp() {
       if (!msg.from.endsWith('@g.us') && !msg.fromMe) {
         try {
           // Resolve JID to phone (handles both @c.us and @lid LID format)
-          const phone = getPhoneByJid(msg.from);
+          const phone = await getPhoneByJid(msg.from);
           logger.info({ component: 'WhatsApp', jid: msg.from, phone: phone || '(unknown)' }, 'DM received');
           // Log DM to rolling history file (used by /chat-history endpoint)
           // Normalize jid to phone@c.us format when available so /chat-history filter matches

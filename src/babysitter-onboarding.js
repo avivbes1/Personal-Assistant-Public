@@ -63,6 +63,7 @@ async function getBabysitterPhones() {
  * Call once after client is ready. Handles LID mode.
  */
 async function resolveJids(waClient) {
+  _waClient = waClient; // store reference for LID resolution in getPhoneByJid
   const phones = await getBabysitterPhones();
   for (const phone of phones) {
     try {
@@ -81,48 +82,47 @@ async function resolveJids(waClient) {
 
 /**
  * Look up a phone by WhatsApp JID (handles both @c.us and @lid).
+ * Async — uses Baileys signalRepository for LID→PN resolution.
  */
-// LID→phone resolution cache (loaded from Baileys auth dir)
-const _lidToPhone = new Map();
-const _lidCacheLoaded = { done: false };
+// LID→phone resolution cache (resolved via signalRepository)
+const _lidPhoneCache = new Map();
+let _waClient = null; // set during resolveJids()
 
-function _loadLidMappings() {
-  if (_lidCacheLoaded.done) return;
-  _lidCacheLoaded.done = true;
-  try {
-    const fs = require('fs');
-    const path = require('path');
-    const authDir = path.join(__dirname, '..', '.baileys_auth');
-    if (!fs.existsSync(authDir)) return;
-    const files = fs.readdirSync(authDir).filter(f => f.startsWith('lid-mapping-') && f.endsWith('_reverse.json'));
-    for (const file of files) {
-      try {
-        const lid = file.replace('lid-mapping-', '').replace('_reverse.json', '');
-        const phone = JSON.parse(fs.readFileSync(path.join(authDir, file), 'utf8'));
-        if (lid && phone) _lidToPhone.set(lid, String(phone));
-      } catch (e) { /* skip malformed */ }
-    }
-  } catch (e) {
-    console.warn('[LID] Failed to load LID mappings:', e.message);
-  }
-}
-
-function getPhoneByJid(jid) {
+async function getPhoneByJid(jid) {
   // Direct JID match (babysitter DB)
   if (_jidToPhone.has(jid)) return _jidToPhone.get(jid);
   // Try @c.us format from JID user part
-  const user = jid.replace(/@(c\.us|lid|s\.whatsapp\.net)$/, '');
-  if (user.startsWith('972')) {
+  const user = jid.replace(/@(c\.us|s\.whatsapp\.net)$/, '');
+  if (!jid.endsWith('@lid') && user.startsWith('972')) {
     const phone = '+' + user;
-    if (_phones.has(phone)) return phone;
-    return phone; // return even if not in babysitter list
+    return phone;
   }
-  // LID resolution from Baileys auth mappings
+  // LID resolution via Baileys signalRepository
   if (jid.endsWith('@lid')) {
-    _loadLidMappings();
-    const lidNum = jid.replace('@lid', '');
-    const phone = _lidToPhone.get(lidNum);
-    if (phone) return '+' + phone;
+    // Check cache first
+    if (_lidPhoneCache.has(jid)) return _lidPhoneCache.get(jid);
+    // Try signalRepository.lidMapping.getPNForLID
+    try {
+      const sigRepo = _waClient && _waClient.signalRepository;
+      if (sigRepo && sigRepo.lidMapping) {
+        const pnJid = await sigRepo.lidMapping.getPNForLID(jid);
+        if (pnJid) {
+          // pnJid is like "972504606660:0@s.whatsapp.net" — extract phone
+          const pnUser = pnJid.split('@')[0].split(':')[0];
+          if (pnUser) {
+            const phone = '+' + pnUser;
+            _lidPhoneCache.set(jid, phone);
+            console.log('[LID] Resolved', jid, '→', phone);
+            return phone;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[LID] getPNForLID failed for', jid, ':', e.message);
+    }
+    // No resolution possible for this LID
+    console.warn('[LID] Could not resolve LID to phone:', jid);
+    return null;
   }
   return null;
 }
@@ -204,4 +204,7 @@ async function handleOnboardingReply(text, sendFn) {
   return true;
 }
 
-module.exports = { getBabysitterPhones, resolveJids, getPhoneByJid, checkOnboarding, handleOnboardingReply };
+/** Set the WhatsApp client ref for LID resolution (call early, before resolveJids delay). */
+function setWaClient(client) { _waClient = client; }
+
+module.exports = { getBabysitterPhones, resolveJids, getPhoneByJid, setWaClient, checkOnboarding, handleOnboardingReply };

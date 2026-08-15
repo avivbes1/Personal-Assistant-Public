@@ -688,6 +688,14 @@ class BaileysClient extends EventEmitter {
   }
 
   /**
+   * Access Baileys signalRepository (for LID↔PN mapping).
+   * Returns null if socket not initialized.
+   */
+  get signalRepository() {
+    return this._sock ? this._sock.signalRepository : null;
+  }
+
+  /**
    * Get connection state. Compatible with whatsapp-web.js client.getState().
    * Checks actual socket state, not just the _ready flag.
    */
