@@ -114,10 +114,11 @@ function buildHealthPayload() {
     const { getMessagesPersisted5Min } = require('./message-counter');
     payload.messagesPersistedLast5Min = getMessagesPersisted5Min();
   } catch (_) {}
-  // OpenClaw channel status
+  // OpenClaw channel status — served from the cached result of the periodic
+  // health monitor's check (runChecks), so /health never shells out per request.
   try {
-    const { checkOpenClawChannel } = require('./health');
-    const chStatus = checkOpenClawChannel();
+    const { getLastOpenClawChannelResult } = require('./health');
+    const chStatus = getLastOpenClawChannelResult();
     payload.openclaw_channel = {
       ok: chStatus.ok,
       ...(chStatus.details || {}),

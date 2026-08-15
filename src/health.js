@@ -5,7 +5,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 const { getDB, clearExpiredPendingActions } = require('./db');
 const { verifyCalendarAuth, generateAuthUrl } = require('./calendar');
 const config = require('./config');
@@ -223,7 +225,7 @@ async function runChecks() {
 
   // 4. OpenClaw channel status — verify WhatsApp channel is linked and connected
   try {
-    const channelStatus = checkOpenClawChannel();
+    const channelStatus = await checkOpenClawChannel();
     if (!channelStatus.ok) {
       const msg = channelStatus.error || 'OpenClaw WhatsApp channel not connected';
       failures.push(msg);
@@ -238,8 +240,10 @@ async function runChecks() {
       } catch (writeErr) {
         logger.warn({ component: 'Health', err: writeErr.message }, 'Could not write channel alert flag');
       }
-    } else {
-      // Clear alert flag if channel is healthy
+    } else if (!(channelStatus.details && channelStatus.details.skipped)) {
+      // Only clear the alert flag when the check actually confirmed the channel
+      // is healthy. If the check was skipped (CLI unavailable/timed out), we have
+      // no real signal about channel state — leave any existing flag in place.
       try { fs.unlinkSync('/tmp/openclaw-channel-alert.json'); } catch (_) {}
     }
   } catch (e) {
@@ -380,36 +384,82 @@ async function sendAlertDirect(message) {
   saveHealthState(state);
 }
 
+// A socket can report connected:true while silently dead (no traffic flowing) —
+// this was the Aug 11 failure mode. If neither an inbound message nor any socket
+// event has arrived within this window, treat the channel as stale/dead.
+const CHANNEL_STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 min
+
+// Cache the last real check result so the /health HTTP endpoint can serve it
+// without shelling out per request. Populated by checkOpenClawChannel().
+let _lastChannelResult = { ok: null, details: { pending: true } };
+
+/** Parse a timestamp that may be epoch-ms (number) or an ISO/date string. */
+function parseTimestamp(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const t = new Date(v).getTime();
+  return Number.isNaN(t) ? null : t;
+}
+
 /**
- * Check OpenClaw WhatsApp channel status via CLI.
- * Returns { ok: true } if channel is linked+connected, or { ok: false, error, details }.
+ * Check OpenClaw WhatsApp channel status via CLI (async — does not block the event loop).
+ * Returns { ok: true } if channel is linked+connected+healthy+fresh, or { ok: false, error, details }.
+ * The result is cached in _lastChannelResult for the /health endpoint to reuse.
  */
-function checkOpenClawChannel() {
+async function checkOpenClawChannel() {
+  let result;
   try {
-    const raw = execSync('openclaw channels status --json 2>/dev/null', {
+    const { stdout } = await execFileAsync('openclaw', ['channels', 'status', '--json'], {
       timeout: 15000,
       encoding: 'utf8',
     });
-    const data = JSON.parse(raw);
+    const data = JSON.parse(stdout);
     const wa = data.channels && data.channels.whatsapp;
     if (!wa) {
-      return { ok: false, error: 'OpenClaw WhatsApp channel not found in status', details: { channels: Object.keys(data.channels || {}) } };
+      result = { ok: false, error: 'OpenClaw WhatsApp channel not found in status', details: { channels: Object.keys(data.channels || {}) } };
+    } else if (!wa.configured) {
+      result = { ok: false, error: 'OpenClaw WhatsApp channel not configured', details: { configured: false } };
+    } else if (!wa.linked) {
+      result = { ok: false, error: 'OpenClaw WhatsApp channel not linked', details: { linked: false, statusState: wa.statusState } };
+    } else if (!wa.connected) {
+      result = { ok: false, error: 'OpenClaw WhatsApp channel disconnected', details: { connected: false, linked: wa.linked, statusState: wa.statusState } };
+    } else if (wa.healthState && wa.healthState !== 'healthy') {
+      result = { ok: false, error: `OpenClaw WhatsApp channel unhealthy (healthState: ${wa.healthState})`, details: { healthState: wa.healthState, connected: true, statusState: wa.statusState } };
+    } else {
+      // Connected + healthy. Guard against a silently-dead socket: if we have
+      // activity timestamps and NEITHER has updated within the staleness window,
+      // the socket is likely dead despite reporting connected:true.
+      const now = Date.now();
+      const lastInboundAt = parseTimestamp(wa.lastInboundAt);
+      const lastEventAt = parseTimestamp(wa.lastEventAt);
+      const lastActivity = Math.max(lastInboundAt || 0, lastEventAt || 0);
+
+      if (lastActivity > 0 && now - lastActivity > CHANNEL_STALE_THRESHOLD_MS) {
+        const staleMin = Math.round((now - lastActivity) / 60000);
+        result = {
+          ok: false,
+          error: `OpenClaw WhatsApp channel stale — connected but no inbound/events for ${staleMin} min (socket likely silently dead)`,
+          details: { connected: true, statusState: wa.statusState, healthState: wa.healthState, lastInboundAt, lastEventAt, staleMin },
+        };
+      } else {
+        result = { ok: true, details: { linked: true, connected: true, statusState: wa.statusState, healthState: wa.healthState, lastInboundAt, lastEventAt } };
+      }
     }
-    if (!wa.configured) {
-      return { ok: false, error: 'OpenClaw WhatsApp channel not configured', details: { configured: false } };
-    }
-    if (!wa.linked) {
-      return { ok: false, error: 'OpenClaw WhatsApp channel not linked', details: { linked: false, statusState: wa.statusState } };
-    }
-    if (!wa.connected) {
-      return { ok: false, error: 'OpenClaw WhatsApp channel disconnected', details: { connected: false, linked: wa.linked, statusState: wa.statusState } };
-    }
-    return { ok: true, details: { linked: true, connected: true, statusState: wa.statusState } };
   } catch (e) {
     // CLI not available or timed out — don't fail the whole health check
     logger.warn({ component: 'Health', err: e.message }, 'Could not run openclaw channels status');
-    return { ok: true, details: { skipped: true, reason: e.message } };
+    result = { ok: true, details: { skipped: true, reason: e.message } };
   }
+  _lastChannelResult = result;
+  return result;
 }
 
-module.exports = { initHealth, runChecks, checkAndAlert, startHealthMonitor, sendAlertDirect, checkOpenClawChannel };
+/**
+ * Return the most recent checkOpenClawChannel() result without shelling out.
+ * Used by the /health HTTP endpoint to avoid per-request subprocess overhead.
+ */
+function getLastOpenClawChannelResult() {
+  return _lastChannelResult;
+}
+
+module.exports = { initHealth, runChecks, checkAndAlert, startHealthMonitor, sendAlertDirect, checkOpenClawChannel, getLastOpenClawChannelResult };
