@@ -114,6 +114,18 @@ function buildHealthPayload() {
     const { getMessagesPersisted5Min } = require('./message-counter');
     payload.messagesPersistedLast5Min = getMessagesPersisted5Min();
   } catch (_) {}
+  // OpenClaw channel status
+  try {
+    const { checkOpenClawChannel } = require('./health');
+    const chStatus = checkOpenClawChannel();
+    payload.openclaw_channel = {
+      ok: chStatus.ok,
+      ...(chStatus.details || {}),
+      ...(chStatus.error ? { error: chStatus.error } : {}),
+    };
+  } catch (_) {
+    payload.openclaw_channel = { ok: null, error: 'check unavailable' };
+  }
   return payload;
 }
 

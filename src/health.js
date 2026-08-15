@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const { getDB, clearExpiredPendingActions } = require('./db');
 const { verifyCalendarAuth, generateAuthUrl } = require('./calendar');
 const config = require('./config');
@@ -220,7 +221,32 @@ async function runChecks() {
     }
   }
 
-  // 4. Stale pending actions (> 30 min — indicates stuck confirmation flow)
+  // 4. OpenClaw channel status — verify WhatsApp channel is linked and connected
+  try {
+    const channelStatus = checkOpenClawChannel();
+    if (!channelStatus.ok) {
+      const msg = channelStatus.error || 'OpenClaw WhatsApp channel not connected';
+      failures.push(msg);
+      logger.warn({ component: 'Health' }, msg);
+      // Write alert flag file for external monitoring
+      try {
+        fs.writeFileSync('/tmp/openclaw-channel-alert.json', JSON.stringify({
+          ts: Date.now(),
+          message: msg,
+          details: channelStatus.details || null,
+        }));
+      } catch (writeErr) {
+        logger.warn({ component: 'Health', err: writeErr.message }, 'Could not write channel alert flag');
+      }
+    } else {
+      // Clear alert flag if channel is healthy
+      try { fs.unlinkSync('/tmp/openclaw-channel-alert.json'); } catch (_) {}
+    }
+  } catch (e) {
+    logger.warn({ component: 'Health', err: e.message }, 'OpenClaw channel check error');
+  }
+
+  // 5. Stale pending actions (> 30 min — indicates stuck confirmation flow)
   try {
     const db = getDB();
     const stale = db.prepare('SELECT COUNT(*) as c FROM pending_actions WHERE created_at < ?').get(Date.now() - 30 * 60 * 1000);
@@ -354,4 +380,36 @@ async function sendAlertDirect(message) {
   saveHealthState(state);
 }
 
-module.exports = { initHealth, runChecks, checkAndAlert, startHealthMonitor, sendAlertDirect };
+/**
+ * Check OpenClaw WhatsApp channel status via CLI.
+ * Returns { ok: true } if channel is linked+connected, or { ok: false, error, details }.
+ */
+function checkOpenClawChannel() {
+  try {
+    const raw = execSync('openclaw channels status --json 2>/dev/null', {
+      timeout: 15000,
+      encoding: 'utf8',
+    });
+    const data = JSON.parse(raw);
+    const wa = data.channels && data.channels.whatsapp;
+    if (!wa) {
+      return { ok: false, error: 'OpenClaw WhatsApp channel not found in status', details: { channels: Object.keys(data.channels || {}) } };
+    }
+    if (!wa.configured) {
+      return { ok: false, error: 'OpenClaw WhatsApp channel not configured', details: { configured: false } };
+    }
+    if (!wa.linked) {
+      return { ok: false, error: 'OpenClaw WhatsApp channel not linked', details: { linked: false, statusState: wa.statusState } };
+    }
+    if (!wa.connected) {
+      return { ok: false, error: 'OpenClaw WhatsApp channel disconnected', details: { connected: false, linked: wa.linked, statusState: wa.statusState } };
+    }
+    return { ok: true, details: { linked: true, connected: true, statusState: wa.statusState } };
+  } catch (e) {
+    // CLI not available or timed out — don't fail the whole health check
+    logger.warn({ component: 'Health', err: e.message }, 'Could not run openclaw channels status');
+    return { ok: true, details: { skipped: true, reason: e.message } };
+  }
+}
+
+module.exports = { initHealth, runChecks, checkAndAlert, startHealthMonitor, sendAlertDirect, checkOpenClawChannel };
