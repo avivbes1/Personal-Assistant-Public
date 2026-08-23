@@ -423,6 +423,30 @@ function initDB() {
   // Day/date mismatch detection (Phase 1) — warn-only, never mutates source
   try { db.exec("ALTER TABLE notices ADD COLUMN weekday_mismatch INTEGER DEFAULT 0"); } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN validation_notes TEXT"); } catch (_) {}
+  // RC-2/RC-3 fix: query_visible for schedule queries, group_alerts for unknown group tracking
+  try { db.exec("ALTER TABLE notices ADD COLUMN query_visible INTEGER DEFAULT 1"); } catch (_) {}
+  try { db.exec(`CREATE TABLE IF NOT EXISTS group_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_name TEXT NOT NULL,
+    alert_type TEXT NOT NULL DEFAULT 'unknown_group',
+    alerted_at INTEGER NOT NULL
+  )`); } catch (_) {}
+  // query_visible — whether this notice may surface in user-facing queries/digests.
+  // Defaults to 1 so existing rows remain visible.
+  try { db.exec("ALTER TABLE notices ADD COLUMN query_visible INTEGER DEFAULT 1"); } catch (_) {}
+
+  // group_alerts — one row per "I joined a new/unknown group" alert we sent to
+  // the master group, so batched triage doesn't re-alert about the same group.
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS group_alerts (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_jid    TEXT,
+      group_name   TEXT,
+      action       TEXT,
+      alerted_at   INTEGER NOT NULL
+    )`);
+  } catch (_) {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_group_alerts_jid ON group_alerts(group_jid)"); } catch (_) {}
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS parse_errors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

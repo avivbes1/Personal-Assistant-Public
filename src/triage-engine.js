@@ -379,7 +379,7 @@ ${noticesText}`;
 
   console.time('synthesize');
   try {
-    return await callHaiku(SYNTHESIS_SYSTEM, user);
+    return await callHaiku(SYNTHESIS_SYSTEM, user, false, 0.3);
   } finally {
     console.timeEnd('synthesize');
   }

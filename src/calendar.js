@@ -272,8 +272,9 @@ async function addSharedEvent(event, owner = 'both') {
         if (event.location != null) patch.location = event.location;
         if (event.description != null) patch.description = event.description;
 
-        const updated = await updateCalendarEvent(calendarId, tokenPath, existing.id, patch);
-        if (updated) {
+        const updateResult = await updateCalendarEvent(calendarId, tokenPath, existing.id, patch);
+        if (updateResult && updateResult.ok !== false) {
+          const updated = updateResult.event || updateResult;
           console.log(`[Calendar] Dedup: updated existing event "${event.title}" instead of creating new (${existing.id})`);
           return { ...updated, _wasUpdated: true, _previousStart: previousStart };
         }
@@ -498,10 +499,10 @@ async function updateCalendarEvent(calendarId, tokenPath, eventId, patch) {
       sendUpdates: 'all',
     });
     console.log(`[Calendar] Event updated: ${response.data.summary} (${eventId})`);
-    return response.data;
+    return { ok: true, event: response.data };
   } catch (err) {
     console.error('[Calendar] updateCalendarEvent error:', err.message);
-    return null;
+    return { ok: false, reason: err.message, code: err.code || null, action: 'updateEvent', calendarId, eventId };
   }
 }
 
@@ -511,11 +512,11 @@ async function deleteCalendarEvent(calendarId, tokenPath, eventId) {
     const calendar = google.calendar({ version: 'v3', auth });
     await calendar.events.delete({ calendarId, eventId, sendUpdates: 'all' });
     console.log(`[Calendar] Event deleted: ${eventId} from ${calendarId}`);
-    return true;
+    return { ok: true };
   } catch (err) {
-    if (err.code === 410) return true; // already deleted
+    if (err.code === 410) return { ok: true }; // already deleted
     console.error('[Calendar] deleteCalendarEvent error:', err.message);
-    return false;
+    return { ok: false, reason: err.message, code: err.code || null, action: 'deleteEvent', calendarId, eventId };
   }
 }
 

@@ -16,6 +16,8 @@ const { processEventAction } = require('./calendarGate');
 const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveNoticeEvents, saveHomework, getPendingHomework, saveOrGetThread, dismissThread, linkNoticeToThread, getMostRecentDeliveredThread, markMessageProcessing, markMessageTerminal, markMessageFailed, getConfigValue } = require('./db');
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 const { buildProfileSlice, shouldSkipGroup } = require('./family-context');
+const { logToolCall, makeCorrelationId } = require('./audit-log');
+const { checkResponse } = require('./response-guard');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -192,7 +194,29 @@ function computeUrgencyHint(action, nowMs) {
   return 'routine';
 }
 
+/**
+ * Public entry point: times the action, executes it, and appends an audit record.
+ * The audit trail is the durable proof that an action was actually attempted —
+ * directly addresses the "claimed success without executing" incident.
+ */
 async function executeAction(action, senderName) {
+  const started = Date.now();
+  const correlationId = (action && action._correlationId) || makeCorrelationId();
+  let result;
+  try {
+    result = await _executeAction(action, senderName);
+    return result;
+  } finally {
+    const durationMs = Date.now() - started;
+    try {
+      logToolCall(action && action.action, action, result, correlationId, durationMs);
+    } catch (e) {
+      console.error('[Agent] audit logToolCall failed:', e.message);
+    }
+  }
+}
+
+async function _executeAction(action, senderName) {
   try {
     switch (action.action) {
 
@@ -216,10 +240,13 @@ async function executeAction(action, senderName) {
             scheduleFollowUpForEvent(gcalEvent, action.owner || 'both');
           }
 
+          if (!ok && result.action === 'error') {
+            return { type: 'add_event', ok: false, action: 'add_event', reason: result.reason || 'calendar write failed', details: result.details || null, title: action.summary || action.title };
+          }
           return { type: 'add_event', ok, action: result.action, title: action.summary || action.title };
         } catch (err) {
           console.error('[Agent] processEventAction error:', err.message);
-          return { type: 'add_event', ok: false, error: err.message };
+          return { type: 'add_event', ok: false, action: 'add_event', reason: err.message, error: err.message };
         }
       }
 
@@ -299,10 +326,28 @@ async function executeAction(action, senderName) {
           if (dvResult.mismatch) {
             console.warn('[Agent] Day/date mismatch detected:', dvResult.notes);
           }
+
+          // Date parser integration (RC-2 fix): validate/override LLM relevance_date
+          // Explicit dates in source text take precedence over LLM weekday inference
+          let finalRelevanceDate = action.relevance_date || null;
+          try {
+            const { parseDate: parseDateFn } = require('./date-parse');
+            const parsedDate = parseDateFn(finalContent);
+            if (parsedDate && dvResult.mismatch && parsedDate.iso && !parsedDate.inferred_from_weekday) {
+              // Mismatch detected AND parser found an explicit date — trust parser
+              if (finalRelevanceDate !== parsedDate.iso) {
+                console.log(`[Agent] Date override (mismatch fix): LLM said ${finalRelevanceDate}, parser found explicit ${parsedDate.iso}. Using parser.`);
+                finalRelevanceDate = parsedDate.iso;
+              }
+            }
+          } catch (parseErr) {
+            console.warn('[Agent] date-parse error (non-fatal):', parseErr.message);
+          }
+
           const noticeId = saveNotice({
             group_name:        action.group_name || 'unknown',
             content:           finalContent,
-            relevance_date:    action.relevance_date || null,
+            relevance_date:    finalRelevanceDate,
             relevance_time:    action.relevance_time || null,
             source_timestamp:  action.source_timestamp || Date.now(),
             urgency_hint:      urgencyHint,
@@ -490,12 +535,17 @@ async function executeAction(action, senderName) {
         }
 
         const updated = [];
+        const updateErrors = [];
         for (const r of results.slice(0, 3)) {
           const res = await updateCalendarEvent(r.calendarId, r.tokenPath, r.event.id, patch);
-          if (res) updated.push(res.summary || r.event.summary);
+          if (res && res.ok) updated.push(res.event?.summary || r.event.summary);
+          else updateErrors.push((res && res.reason) || 'unknown error');
         }
         console.log(`[Agent] Updated events: ${updated.join(', ')}`);
-        return { type: 'update_event', ok: updated.length > 0, updated };
+        if (updated.length === 0) {
+          return { type: 'update_event', ok: false, reason: updateErrors.join('; ') || 'update failed', action: 'update_event', details: { search_title: action.search_title, errors: updateErrors } };
+        }
+        return { type: 'update_event', ok: true, updated };
       }
 
       case 'delete_event': {
@@ -504,12 +554,17 @@ async function executeAction(action, senderName) {
         if (results.length === 0) return { type: 'delete_event', ok: false, reason: 'not_found' };
 
         const deleted = [];
+        const deleteErrors = [];
         for (const r of results.slice(0, 3)) {
-          const ok = await deleteCalendarEvent(r.calendarId, r.tokenPath, r.event.id);
-          if (ok) deleted.push(r.event.summary);
+          const res = await deleteCalendarEvent(r.calendarId, r.tokenPath, r.event.id);
+          if (res && res.ok) deleted.push(r.event.summary);
+          else deleteErrors.push((res && res.reason) || 'unknown error');
         }
         console.log(`[Agent] Deleted events: ${deleted.join(', ')}`);
-        return { type: 'delete_event', ok: deleted.length > 0, deleted };
+        if (deleted.length === 0) {
+          return { type: 'delete_event', ok: false, reason: deleteErrors.join('; ') || 'delete failed', action: 'delete_event', details: { search_title: action.search_title, errors: deleteErrors } };
+        }
+        return { type: 'delete_event', ok: true, deleted };
       }
 
       case 'check_in': {
@@ -628,6 +683,7 @@ ${context}
 - "מה שיעורי בית של X?" / "יש שיעורי בית למחר?" → ענה מתוך הנתונים בסקשן "שיעורי בית פתוחים" בהקשר
 - **אל אישר פעולה לפני שביצעת אותה** - כתוב תשובה כאילו הפעולה הצליחה רק לאחר שהJSON יבוצע. אם אינך בטוח, כתוב "מנסה..." ולא "נוסף ✅"
 - **מידע תחת הכותרת "לא נמצא בתיעוד"**: התשובה היחידה המותרת היא "המידע הזה לא נמצא בהודעות שקיבלתי". אסור מוחלט: אל תמלא חסרים בידע כללי ("בדרך כלל לוקחים...", "סביר ש..."). אם המשתמש מתעקש - הסבר שהמידע לא קיים בתיעוד ושיבדוק בקבוצה ישירות.
+- **אחרי ביטול/מחיקה/עדכון של אירוע**: אם המשתמש הרגע ביקש לבטל / למחוק / לבטל אירוע — **אסור** להציע לשחזר, ליצור מחדש, או "להשאיר" את אותו אירוע. אל תציע להוסיף אותו שוב. קבל את הביטול.
 
 ## ברירת מחדל לבעלות ביומן:
 - אם לא צוין במפורש → תמיד owner="both"
@@ -713,12 +769,27 @@ async function handleMessage(text, quotedMsg, senderName, conversationHistory = 
           const rawText = parsed.content?.[0]?.text?.trim() || 'מצטער, לא הצלחתי לענות.';
           console.log(`[Agent] Raw response (${rawText.length} chars): ${rawText.substring(0, 100)}`);
 
+          // P1 (Step 4): Response guard — flag capability-contradiction phrasing.
+          // Log-only for now; do not block the response.
+          try {
+            const guard = checkResponse(rawText);
+            if (guard && guard.flagged) {
+              console.warn(`[Agent] ⚠️ Response guard flagged capability contradiction: pattern="${guard.pattern}" | text="${rawText.substring(0, 160)}"`);
+            }
+          } catch (e) {
+            console.warn('[Agent] response guard error:', e.message);
+          }
+
           // Extract action blocks, execute them, strip from text
           const blocks = extractActionBlocks(rawText);
           const sideEffects = [];
 
+          // One correlation id per message turn — ties all audit records together
+          const correlationId = makeCorrelationId();
+
           const failedActions = [];
           for (const block of blocks) {
+            block.json._correlationId = correlationId;
             if (block.json.action === 'book_babysitter') {
               // Inject sender phone so microservice knows who requested
               block.json._senderPhone = senderPhone || process.env.AVIV_PHONE || '';
@@ -730,6 +801,15 @@ async function handleMessage(text, quotedMsg, senderName, conversationHistory = 
               if (result.ok === false) failedActions.push(block.json.action);
               console.log(`[Agent] Action result (${block.json.action}):`, JSON.stringify(result));
             }
+          }
+
+          // P1 (Step 5): Phantom confirmation detection.
+          // If the LLM's text claims success but emitted NO action block, that's
+          // the exact failure mode from the incident ("I deleted it" with no delete).
+          // Log-only for now.
+          const CONFIRMATION_PATTERNS = /✅|נמחק|בוצע|מחקתי|עודכן|עדכנתי|נוסף|הוספתי|\bdeleted\b|\bupdated\b|\bdone\b/i;
+          if (blocks.length === 0 && CONFIRMATION_PATTERNS.test(rawText)) {
+            console.warn(`[Agent] ⚠️ Phantom confirmation detected — LLM claimed success without action block | text="${rawText.substring(0, 160)}"`);
           }
 
           let cleanText = stripActionBlocks(rawText, blocks) || 'בוצע.';
@@ -1171,4 +1251,4 @@ ${isImageMsg ? `**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, 
   });
 }
 
-module.exports = { handleMessage, handleGroupEvent };
+module.exports = { handleMessage, handleGroupEvent, extractActionBlocks };

@@ -557,7 +557,34 @@ function isAddressedToBot(body, quotedFromMe) {
  * The function is kept as a no-op stub because it's still referenced by message routing.
  */
 async function handleMasterGroupCommand(_msg) {
-  // no-op: OpenClaw handles all master group conversation
+  // OpenClaw handles most master group conversation. A couple of explicit
+  // group-monitoring commands are handled deterministically here:
+  //   "נטר <שם קבוצה>"   → start monitoring matching groups
+  //   "התעלם <שם קבוצה>" → stop monitoring / ignore matching groups
+  const body = (_msg && _msg.body ? _msg.body : '').trim();
+  if (!body) return;
+
+  const monitorMatch = body.match(/^נטר\s+(.+)$/);
+  const ignoreMatch  = body.match(/^התעלם\s+(.+)$/);
+  if (!monitorMatch && !ignoreMatch) return;
+
+  const groupName = (monitorMatch ? monitorMatch[1] : ignoreMatch[1]).trim();
+  const relatedTo = monitorMatch ? 'monitored' : 'ignored';
+  try {
+    const rows = getDB().prepare('SELECT id, name FROM groups WHERE name LIKE ?').all(`%${groupName}%`);
+    if (rows.length === 0) {
+      await sendToMasterGroup(`❓ לא מצאתי קבוצה בשם: ${groupName}`);
+      return;
+    }
+    for (const r of rows) setGroupRelatedTo(r.id, relatedTo);
+    const header = monitorMatch
+      ? `✅ מתחיל לנטר קבוצות שמכילות: ${groupName}`
+      : `✅ מתעלם מקבוצות שמכילות: ${groupName}`;
+    await sendToMasterGroup(`${header}\n${rows.map(r => `• ${r.name}`).join('\n')}`);
+    logger.info({ component: 'WhatsApp', groupName, relatedTo, matched: rows.length }, 'monitor/ignore command applied');
+  } catch (e) {
+    logger.error({ component: 'WhatsApp', err: e.message }, 'monitor/ignore command error');
+  }
 }
 
 /**
@@ -1300,9 +1327,13 @@ function initWhatsApp() {
         const freeIsNo  = /^(\u274c|לא|ל|no|not yet|טרם)$/i.test(freeText);
         if (freeIsYes || freeIsNo) {
           try {
+            // Time guard: only auto-match a bare 'כן'/'לא' to a follow-up asked in
+            // the last 30 minutes. Without this, a stale 'asked' follow-up would
+            // hijack an unrelated confirmation (e.g. approving a group to monitor).
+            const freshCutoff = Date.now() - 30 * 60 * 1000;
             const activeFollowUp = getDB().prepare(
-              "SELECT * FROM follow_ups WHERE status='asked' ORDER BY id DESC LIMIT 1"
-            ).get();
+              "SELECT * FROM follow_ups WHERE status='asked' AND created_at > ? ORDER BY id DESC LIMIT 1"
+            ).get(freshCutoff);
             if (activeFollowUp) {
               if (freeIsYes) {
                 updateFollowUpStatus(activeFollowUp.id, 'done');
@@ -1313,6 +1344,15 @@ function initWhatsApp() {
                 await client.sendMessage(masterGroupId, '⏰ בסדר. לאיזה יום ושעה לדחות?');
               }
               return;
+            } else {
+              // Debug: surface when a bare yes/no was NOT matched because the only
+              // pending follow-up is older than the 30-minute time guard.
+              const staleFollowUp = getDB().prepare(
+                "SELECT * FROM follow_ups WHERE status='asked' ORDER BY id DESC LIMIT 1"
+              ).get();
+              if (staleFollowUp) {
+                logger.info({ component: 'WhatsApp', followUpId: staleFollowUp.id, eventTitle: staleFollowUp.event_title, createdAt: staleFollowUp.created_at }, 'Free-text yes/no ignored: pending follow-up is older than 30min time guard');
+              }
             }
           } catch (_) {}
         }
@@ -1362,6 +1402,33 @@ function initWhatsApp() {
           }
         }
         // ── End dismissal detection ───────────────────────────────────────────
+
+        // ── Group monitoring commands (RC-3 fix) ──────────────────────────────────
+        // נטר [group name] — start monitoring
+        // התעלם [שם קבוצה] — ignore group
+        const _monitorCmd = (msg.body || '').match(/^נטר\s+(.+)$/u);
+        if (_monitorCmd) {
+          const _gNameM = _monitorCmd[1].trim();
+          try {
+            const _r = getDB().prepare("UPDATE groups SET configured = 1, related_to = 'monitored' WHERE name LIKE ?").run(`%${_gNameM}%`);
+            await client.sendMessage(masterGroupId, _r.changes > 0
+              ? `✅ מתחיל לנטר קבוצות שמכילות: ${_gNameM}`
+              : `❓ לא מצאתי קבוצה בשם: ${_gNameM}`);
+          } catch (_e) { logger.error({ component: 'WhatsApp', err: _e.message }, 'נטר command error'); }
+          return;
+        }
+        const _ignoreCmd = (msg.body || '').match(/^התעלם\s+(.+)$/u);
+        if (_ignoreCmd) {
+          const _gNameI = _ignoreCmd[1].trim();
+          try {
+            const _r2 = getDB().prepare("UPDATE groups SET configured = 1, related_to = 'ignored' WHERE name LIKE ?").run(`%${_gNameI}%`);
+            await client.sendMessage(masterGroupId, _r2.changes > 0
+              ? `✅ מתעלם מקבוצות שמכילות: ${_gNameI}`
+              : `❓ לא מצאתי קבוצה בשם: ${_gNameI}`);
+          } catch (_e2) { logger.error({ component: 'WhatsApp', err: _e2.message }, 'התעלם command error'); }
+          return;
+        }
+        // ── End group monitoring commands ─────────────────────────────────────
 
         await handleMasterGroupCommand(msg);
         return;

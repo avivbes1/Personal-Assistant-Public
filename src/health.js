@@ -24,6 +24,8 @@ const CALENDAR_AUTH_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 // Calendar auth is checked at most once per hour (it makes real API calls)
 const CALENDAR_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 let _lastCalendarCheckMs = 0;
+// Rate-limit OpenClaw channel auto-reconnect to at most once per 30 min
+let lastChannelReconnectMs = 0;
 const HEALTH_STATE_PATH = path.join(__dirname, '../data/health-state.json');
 
 function loadHealthState() {
@@ -239,6 +241,21 @@ async function runChecks() {
         }));
       } catch (writeErr) {
         logger.warn({ component: 'Health', err: writeErr.message }, 'Could not write channel alert flag');
+      }
+
+      // Auto-reconnect OpenClaw channel when the socket is stale (silently dead).
+      // Only act on genuine staleness (>= 30 min), rate-limited to once per 30 min.
+      if (channelStatus.error && channelStatus.error.includes('stale')) {
+        const staleMin = channelStatus.details?.staleMin || 0;
+        const now = Date.now();
+        if (staleMin >= 30 && now - lastChannelReconnectMs > 30 * 60 * 1000) {
+          lastChannelReconnectMs = now;
+          logger.warn({ component: 'Health', staleMin }, 'Auto-reconnecting OpenClaw channel (stale socket)');
+          execFile('systemctl', ['--user', 'restart', 'openclaw-gateway'], { timeout: 30000 }, (err) => {
+            if (err) logger.error({ component: 'Health', err: err.message }, 'OpenClaw gateway restart failed');
+            else logger.info({ component: 'Health' }, 'OpenClaw gateway restart triggered successfully');
+          });
+        }
       }
     } else if (!(channelStatus.details && channelStatus.details.skipped)) {
       // Only clear the alert flag when the check actually confirmed the channel

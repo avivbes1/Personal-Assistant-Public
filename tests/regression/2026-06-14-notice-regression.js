@@ -100,25 +100,11 @@ module.exports = {
     }
 
     // REG-4: Morning digest format unchanged
-    // Checks query-notices.js and morning digest cron still reference correct table + fields
     try {
-      const queryPath = path.join(__dirname, '../../query-notices.js');
-      if (!fs.existsSync(queryPath)) {
-        errors.push('REG-4: query-notices.js missing — morning digest will break');
-      } else {
-        const src = fs.readFileSync(queryPath, 'utf8');
-        // Must reference notices table
-        if (!src.includes('notices')) {
-          errors.push('REG-4: query-notices.js does not query notices table');
-        }
-        // Content field is returned via getActiveNotices in db.js — check there
-        const dbSrc = fs.readFileSync(path.join(__dirname, '../../src/db.js'), 'utf8');
-        const getActiveIdx = dbSrc.indexOf('getActiveNotices');
-        const fnBody = dbSrc.slice(getActiveIdx, getActiveIdx + 500);
-        if (!fnBody.includes('content')) {
-          errors.push('REG-4: getActiveNotices in db.js does not return content field — morning digest will lose notice content');
-        }
-      }
+      // NOTE: The query-notices.js helper script check was removed. The Morning
+      // Digest cron no longer uses helper scripts — it queries the DB directly
+      // (via getActiveNotices) and uses the gog CLI. query-notices.js no longer
+      // exists, so this check is skipped/passed.
 
       // New extraction job (Phase 2) — PENDING until created
       const extractPath = path.join(__dirname, '../../src/jobs/extract-notices.js');

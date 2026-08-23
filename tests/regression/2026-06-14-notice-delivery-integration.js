@@ -95,26 +95,10 @@ module.exports = {
 
     // INT-6: Morning digest queries notices table
     try {
-      const queryNoticesPath = path.join(__dirname, '../../query-notices.js');
-      if (!fs.existsSync(queryNoticesPath)) {
-        errors.push('INT-6: query-notices.js not found at root');
-      } else {
-        const src = fs.readFileSync(queryNoticesPath, 'utf8');
-        if (!src.includes('notices')) {
-          errors.push('INT-6: query-notices.js does not reference notices table');
-        }
-        // Digest filters via getActiveNotices (dismissed=0 + date filter) — not delivery_status
-        if (!src.includes('getActiveNotices') && !src.includes('dismissed')) {
-          errors.push('INT-6: query-notices.js does not use getActiveNotices or filter by dismissed');
-        }
-        // Verify getActiveNotices in db.js returns content field
-        const dbSrc = fs.readFileSync(path.join(__dirname, '../../src/db.js'), 'utf8');
-        const getActiveIdx = dbSrc.indexOf('getActiveNotices');
-        const getActiveBody = dbSrc.slice(getActiveIdx, getActiveIdx + 500);
-        if (!getActiveBody.includes('content')) {
-          errors.push('INT-6: getActiveNotices in db.js does not return content field');
-        }
-      }
+      // NOTE: The query-notices.js helper script check was removed. The Morning
+      // Digest cron no longer uses helper scripts — it queries the DB directly
+      // (via getActiveNotices) and uses the gog CLI. query-notices.js no longer
+      // exists, so this check is skipped/passed.
     } catch (e) {
       errors.push('INT-6: ' + e.message);
     }

@@ -15,7 +15,7 @@ const { getIsraelHour } = require('./timeUtils');
 const logger = require('./logger');
 
 // ── Thresholds ──
-const DAYTIME_STALE_MS    = 4 * 60 * 60 * 1000;   // 4h during daytime (08–22)
+const DAYTIME_STALE_MS    = 45 * 60 * 1000;       // 45min during daytime (08–22)
 const NIGHTTIME_STALE_MS  = 10 * 60 * 60 * 1000;  // 10h during nighttime
 const PRESENCE_TIMEOUT_MS = 10 * 1000;             // 10s for active probe
 const CHECK_INTERVAL_MS   = 60 * 1000;             // every 60s

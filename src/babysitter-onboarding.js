@@ -107,7 +107,7 @@ async function getPhoneByJid(jid) {
       if (sigRepo && sigRepo.lidMapping) {
         const pnJid = await sigRepo.lidMapping.getPNForLID(jid);
         if (pnJid) {
-          // pnJid is like "972504606660:0@s.whatsapp.net" — extract phone
+          // pnJid is like "972XXXXXXXXX:0@s.whatsapp.net" — extract phone
           const pnUser = pnJid.split('@')[0].split(':')[0];
           if (pnUser) {
             const phone = '+' + pnUser;
