@@ -401,11 +401,6 @@ async function sendAlertDirect(message) {
   saveHealthState(state);
 }
 
-// A socket can report connected:true while silently dead (no traffic flowing) —
-// this was the Aug 11 failure mode. If neither an inbound message nor any socket
-// event has arrived within this window, treat the channel as stale/dead.
-const CHANNEL_STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 min
-
 // Cache the last real check result so the /health HTTP endpoint can serve it
 // without shelling out per request. Populated by checkOpenClawChannel().
 let _lastChannelResult = { ok: null, details: { pending: true } };
@@ -420,7 +415,7 @@ function parseTimestamp(v) {
 
 /**
  * Check OpenClaw WhatsApp channel status via CLI (async — does not block the event loop).
- * Returns { ok: true } if channel is linked+connected+healthy+fresh, or { ok: false, error, details }.
+ * Returns { ok: true } if channel is linked+connected+healthy, or { ok: false, error, details }.
  * The result is cached in _lastChannelResult for the /health endpoint to reuse.
  */
 async function checkOpenClawChannel() {
@@ -443,24 +438,12 @@ async function checkOpenClawChannel() {
     } else if (wa.healthState && wa.healthState !== 'healthy') {
       result = { ok: false, error: `OpenClaw WhatsApp channel unhealthy (healthState: ${wa.healthState})`, details: { healthState: wa.healthState, connected: true, statusState: wa.statusState } };
     } else {
-      // Connected + healthy. Guard against a silently-dead socket: if we have
-      // activity timestamps and NEITHER has updated within the staleness window,
-      // the socket is likely dead despite reporting connected:true.
-      const now = Date.now();
+      // Connected + healthy — trust it. Silently-dead-socket detection is now
+      // handled by the bot's active round-trip probe (/health-probe) plus
+      // OpenClaw's own internal reconnection logic. Timestamps kept for info.
       const lastInboundAt = parseTimestamp(wa.lastInboundAt);
       const lastEventAt = parseTimestamp(wa.lastEventAt);
-      const lastActivity = Math.max(lastInboundAt || 0, lastEventAt || 0);
-
-      if (lastActivity > 0 && now - lastActivity > CHANNEL_STALE_THRESHOLD_MS) {
-        const staleMin = Math.round((now - lastActivity) / 60000);
-        result = {
-          ok: false,
-          error: `OpenClaw WhatsApp channel stale — connected but no inbound/events for ${staleMin} min (socket likely silently dead)`,
-          details: { connected: true, statusState: wa.statusState, healthState: wa.healthState, lastInboundAt, lastEventAt, staleMin },
-        };
-      } else {
-        result = { ok: true, details: { linked: true, connected: true, statusState: wa.statusState, healthState: wa.healthState, lastInboundAt, lastEventAt } };
-      }
+      result = { ok: true, details: { linked: true, connected: true, statusState: wa.statusState, healthState: wa.healthState, lastInboundAt, lastEventAt } };
     }
   } catch (e) {
     // CLI not available or timed out — don't fail the whole health check
