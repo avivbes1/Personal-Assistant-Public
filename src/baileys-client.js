@@ -25,6 +25,7 @@ const fs = require('fs');
 const EventEmitter = require('events');
 const pino = require('pino');
 const appLogger = require('./logger');
+const { getGroup } = require('./db');
 
 const AUTH_DIR = path.join(__dirname, '..', '.baileys_auth');
 const STORE_DIR = path.join(__dirname, '..', 'data', 'baileys-store');
@@ -299,6 +300,17 @@ class BaileysClient extends EventEmitter {
       markOnlineOnConnect: true,
     });
 
+    // ── Health probe: track the live socket (attach once, update on reconnect) ──
+    try {
+      const healthProbe = require('./health-probe');
+      if (this._healthProbeAttached) {
+        healthProbe.updateSocket(this._sock);
+      } else {
+        healthProbe.attachSocket(this._sock);
+        this._healthProbeAttached = true;
+      }
+    } catch (_) {}
+
         // ── Connection events ──
     this._sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -416,6 +428,25 @@ class BaileysClient extends EventEmitter {
       for (const group of groups) {
         appLogger.info({ component: 'Baileys', groupSubject: group.subject, groupId: group.id }, 'Group upsert');
         this._groupCache.set(group.id, group);
+
+        // Fallback new-group detection: when the bot is added to a group, Baileys
+        // often fires groups.upsert WITHOUT group-participants.update, so the
+        // group_join handler below never runs. If this group is unknown to us,
+        // emit group_join here (same shape as the group-participants.update path).
+        try {
+          if (!getGroup(group.id)) {
+            appLogger.info({ component: 'Baileys', groupId: group.id }, 'New group detected via upsert (participants.update did not fire)');
+            this.emit('group_join', {
+              chatId: group.id,
+              participants: [],
+              type: 'add',
+              // Compatibility method
+              getChat: async () => this.getChatById(group.id),
+            });
+          }
+        } catch (err) {
+          appLogger.error({ component: 'Baileys', err: err.message, groupId: group.id }, 'Error in groups.upsert new-group detection');
+        }
       }
       try { require('./watchdog').onHeartbeat(); } catch (_) {}
     });

@@ -137,6 +137,29 @@ function createServer() {
       return res.end(JSON.stringify(buildHealthPayload()));
     }
 
+    // Active round-trip probe: send a tagged message to the test group and wait
+    // for it to arrive back. 20s hard request timeout (runProbe waits up to 15s).
+    if (req.method === 'GET' && req.url === '/health-probe') {
+      let responded = false;
+      const finish = (code, payload) => {
+        if (responded) return;
+        responded = true;
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      };
+      const timeout = setTimeout(() => finish(504, { ok: false, reason: 'request_timeout' }), 20000);
+      try {
+        const { runProbe } = require('./health-probe');
+        const result = await runProbe();
+        clearTimeout(timeout);
+        finish(200, result);
+      } catch (e) {
+        clearTimeout(timeout);
+        finish(500, { ok: false, error: e.message });
+      }
+      return;
+    }
+
     // ISSUE-019: Pipeline health endpoint for Lipa supervision
     if (req.method === 'GET' && req.url === '/health/pipeline') {
       try {
