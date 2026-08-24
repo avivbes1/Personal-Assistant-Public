@@ -27,10 +27,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
+      - run: npm ci
+      # Dry-run validates dataset structure only — no LLM calls, no tokens spent,
+      # no secrets required. (Duplicate IDs currently warn; add --strict here to
+      # enforce a fully deduplicated dataset once it has been cleaned.)
       - name: Validate eval dataset
         run: node tests/eval/run-eval.js --dry-run
-        env:
-          ANTHROPIC_API_KEY: "sk-ant-test-not-real"
 
   test:
     name: Tests (mock LLM)

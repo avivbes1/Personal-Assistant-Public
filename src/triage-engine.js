@@ -18,6 +18,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { sendMessage: voiceSend } = require('../lib/voice-client');
+const { traceCall } = require('./llm-trace');
 
 const GROUP_JID = process.env.MASTER_GROUP_JID; // set MASTER_GROUP_JID in .env
 const BUDGET_MS = 80_000; // 80s wall-clock budget for synthesis phase
@@ -43,7 +44,9 @@ const _classificationSchema = {
           action: { enum: ['send_now', 'defer', 'skip', 'send_update'] },
           merge_group: { type: ['string', 'null'] },
           reason: { type: 'string' },
-          material_change: { type: 'boolean' }
+          material_change: { type: 'boolean' },
+          // Phase 2.1: optional per-decision confidence (0.0-1.0). Absent = treated as high-confidence.
+          confidence: { type: 'number', minimum: 0, maximum: 1 }
         }
       }
     }
@@ -104,6 +107,53 @@ function callHaiku(system, user, jsonMode = false, temperature = 1) {
       });
     });
     req.setTimeout(30000, () => { req.destroy(); reject(new Error('Haiku timeout')); });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+// Sonnet variant for low-confidence escalation (Phase 2.1). Mirrors callHaiku but
+// uses the stronger model and returns token usage so escalations can be traced.
+// Resolves to { text, inputTokens, outputTokens } (callHaiku resolves to a bare string).
+function callSonnet(system, user, temperature = 0) {
+  return new Promise((resolve, reject) => {
+    const bodyObj = {
+      model: 'claude-sonnet-4-5',
+      max_tokens: 1024,
+      system,
+      messages: [{ role: 'user', content: user }],
+    };
+    if (temperature !== 1) bodyObj.temperature = temperature;
+    const body = JSON.stringify(bodyObj);
+
+    const req = https.request({
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+      },
+    }, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try {
+          const r = JSON.parse(data);
+          const text = r.content?.[0]?.text;
+          if (!text) return reject(new Error('Empty Sonnet response: ' + data.substring(0, 200)));
+          resolve({
+            text: text.trim(),
+            inputTokens: r.usage?.input_tokens,
+            outputTokens: r.usage?.output_tokens,
+          });
+        } catch (e) { reject(new Error('Sonnet parse error: ' + e.message)); }
+      });
+    });
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Sonnet timeout')); });
     req.on('error', reject);
     req.write(body);
     req.end();
@@ -211,7 +261,9 @@ let _classificationSystem = null;
 function getClassificationSystem() {
   if (!_classificationSystem) {
     _classificationSystem = `אתה מערכת הניהול של עוזר משפחתי חכם (${config.BOT_NAME}).
-בני המשפחה: ${getFamilyContext()}`;
+בני המשפחה: ${getFamilyContext()}
+לכל החלטה הוסף שדה "confidence" — מספר בין 0.0 ל-1.0 שמבטא כמה אתה בטוח בהחלטה.
+השתמש בערך גבוה (0.85 ומעלה) כשההחלטה ברורה, ובערך נמוך (מתחת ל-0.6) כשאתה מתלבט או המידע חלקי.`;
   }
   return _classificationSystem;
 }
@@ -220,7 +272,9 @@ const CLASSIFICATION_SYSTEM = `אתה מערכת הניהול של עוזר מש
 אתה מחליט אילו הודעות שווה לשלוח לקבוצת המשימות עכשיו, מה ניתן לדחות לסיכום הבוקר, ומה כדאי לדלג עליו לחלוטין.
 
 החזר JSON בלבד, ללא הסבר, לפי הסכימה הבאה:
-{"decisions":[{"notice_id":NUMBER,"action":"send_now"|"defer"|"skip"|"send_update","merge_group":STRING_OR_NULL,"reason":"SHORT_ENGLISH_REASON","material_change":true|false}]}
+{"decisions":[{"notice_id":NUMBER,"action":"send_now"|"defer"|"skip"|"send_update","merge_group":STRING_OR_NULL,"reason":"SHORT_ENGLISH_REASON","material_change":true|false,"confidence":0.0-1.0}]}
+
+confidence: מספר בין 0.0 ל-1.0 שמבטא כמה אתה בטוח בהחלטה. נמוך מ-0.6 = לא בטוח.
 
 material_change:
 - true: new date, price change, registration deadline, decision reached, urgent action added
@@ -244,7 +298,7 @@ const FEW_SHOT_EXAMPLES = `
 <notice id="505">סרט בקופה ראשית בעפולה היום בשעה 17:00. CHILD רוצה להצטרף. חובה להזמין כרטיסים מראש: 14.5 ₪. מצטרפים: אלון, CHILD, עידן וגולן.</notice>
 <notice id="506">סרט קופה ראשית בעפולה היום 17:05. אורי וליבי נוסעים, יש עוד מקום. כרטיס: 14.5 שח. צריך להזמין מראש.</notice>
 </bucket>
-<output>{"decisions":[{"notice_id":504,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"event today 17:05, action required"},{"notice_id":505,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"same movie, adds ticket detail"},{"notice_id":506,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"same movie, confirms spot"}]}</output>
+<output>{"decisions":[{"notice_id":504,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"event today 17:05, action required","confidence":0.95},{"notice_id":505,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"same movie, adds ticket detail","confidence":0.92},{"notice_id":506,"action":"send_now","merge_group":"movie-kupa-17jun","reason":"same movie, confirms spot","confidence":0.9}]}</output>
 </example>
 
 <example id="2" description="Skip: parent coordination noise — gift collections, planner orders, class funds">
@@ -253,7 +307,7 @@ const FEW_SHOT_EXAMPLES = `
 <notice id="510">דיון: מתנה לסייעת של CHILD — עציץ או מגנט עם תמונה, כ-400 שח. שרית תערוך סקר.</notice>
 <notice id="488">הזמנת יומנים/מחברות דרך פטיש בית שאן — צריך לאשר עד מחר, מחיר להבהיר. מתעניינים להירשם.</notice>
 </bucket>
-<output>{"decisions":[{"notice_id":510,"action":"skip","merge_group":null,"reason":"parent group coordination about teacher gift — not family-actionable, social noise","material_change":false},{"notice_id":488,"action":"skip","merge_group":null,"reason":"parent planner order coordination — school admin noise, not family logistics","material_change":false}]}</output>
+<output>{"decisions":[{"notice_id":510,"action":"skip","merge_group":null,"reason":"parent group coordination about teacher gift — not family-actionable, social noise","material_change":false,"confidence":0.88},{"notice_id":488,"action":"skip","merge_group":null,"reason":"parent planner order coordination — school admin noise, not family logistics","material_change":false,"confidence":0.82}]}</output>
 </example>
 
 <example id="3" description="Skip: chit-chat, photos, videos — no action needed">
@@ -263,7 +317,7 @@ const FEW_SHOT_EXAMPLES = `
 <notice id="502">[תמונה: ארבע תלמידות בכיתה עומדות ליד שולחן עם חטיפים ואוכל — ביסלי, ממתקים]</notice>
 <notice id="503">[תמונה: שלושה ילדים בחולצות אדומות ליד שולחן עם משקאות]</notice>
 </bucket>
-<output>{"decisions":[{"notice_id":501,"action":"skip","merge_group":null,"reason":"generic video, no action"},{"notice_id":502,"action":"skip","merge_group":null,"reason":"class party photo, no action"},{"notice_id":503,"action":"skip","merge_group":null,"reason":"class photo, no action"}]}</output>
+<output>{"decisions":[{"notice_id":501,"action":"skip","merge_group":null,"reason":"generic video, no action","confidence":0.9},{"notice_id":502,"action":"skip","merge_group":null,"reason":"class party photo, no action","confidence":0.95},{"notice_id":503,"action":"skip","merge_group":null,"reason":"class photo, no action","confidence":0.95}]}</output>
 </example>
 
 <example id="4" description="Defer: future event, not urgent today">
@@ -271,7 +325,7 @@ const FEW_SHOT_EXAMPLES = `
 <bucket group="הורי גן כוכב" date="2026-07-01">
 <notice id="901">פעילויות קייטנת קיץ — הרשמה פתוחה. מועד תחילה: 1 יולי. ניתן להירשם עד 28.6. אין דחיפות היום.</notice>
 </bucket>
-<output>{"decisions":[{"notice_id":901,"action":"defer","merge_group":null,"reason":"summer camp July, deadline June 28 — not urgent today"}]}</output>
+<output>{"decisions":[{"notice_id":901,"action":"defer","merge_group":null,"reason":"summer camp July, deadline June 28 — not urgent today","confidence":0.8}]}</output>
 </example>
 
 <example id="5" description="send_update: new meaningful info about event already sent today">
@@ -281,7 +335,7 @@ const FEW_SHOT_EXAMPLES = `
 <bucket group="כתה ו׳ רשפים" date="2026-06-17">
 <notice id="507">בקשה: אריאל רוצה להצטרף לסרט קופה ראשית בעפולה היום ב-17:05. יש מקום אחד פנוי. צריך להזמין כרטיס.</notice>
 </bucket>
-<output>{"decisions":[{"notice_id":507,"action":"send_update","merge_group":"movie-kupa-17jun","reason":"new participant, one spot left — meaningful update to already-sent event"}]}</output>
+<output>{"decisions":[{"notice_id":507,"action":"send_update","merge_group":"movie-kupa-17jun","reason":"new participant, one spot left — meaningful update to already-sent event","confidence":0.85}]}</output>
 </example>
 
 <example id="6" description="Skip: newsletter / weekly bulletin — informational, no family action">
@@ -290,7 +344,7 @@ const FEW_SHOT_EXAMPLES = `
 <notice id="601">ניוזלטר שבועי: השבוע התנסינו בפעילות יצירה — מדבקות, ציור, ציפורניים. הילדים נהנו מאוד. שבוע הבא נמשיך עם אותו פורמט. תודה על השתתפותכם.</notice>
 <notice id="602">תמונות מפעילות מסיבת תחפושות — שיתפנו גם סרטון. ילדים נהדרים!</notice>
 </bucket>
-<output>{"decisions":[{"notice_id":601,"action":"skip","merge_group":null,"reason":"weekly newsletter, no actionable item — event recap only, no payment, deadline, or family action needed","material_change":false},{"notice_id":602,"action":"skip","merge_group":null,"reason":"image/video dump from past event — no action required","material_change":false}]}</output>
+<output>{"decisions":[{"notice_id":601,"action":"skip","merge_group":null,"reason":"weekly newsletter, no actionable item — event recap only, no payment, deadline, or family action needed","material_change":false,"confidence":0.92},{"notice_id":602,"action":"skip","merge_group":null,"reason":"image/video dump from past event — no action required","material_change":false,"confidence":0.9}]}</output>
 </example>
 
 <example id="7" description="Skip: photo/video dump from completed past event">
@@ -301,7 +355,7 @@ const FEW_SHOT_EXAMPLES = `
 <notice id="703">[תמונה: ציור אצבעות, ילדות יוצרות — ללא מידע על מועד או פעולה]</notice>
 <notice id="704">וידאו מהאירוע שהסתיים. ללא מועדים, תשלומים, אנשי קשר.</notice>
 </bucket>
-<output>{"decisions":[{"notice_id":701,"action":"skip","merge_group":null,"reason":"photo dump from completed event, no action","material_change":false},{"notice_id":702,"action":"skip","merge_group":null,"reason":"photo dump, no action","material_change":false},{"notice_id":703,"action":"skip","merge_group":null,"reason":"photo dump, no action","material_change":false},{"notice_id":704,"action":"skip","merge_group":null,"reason":"event video recap, no action","material_change":false}]}</output>
+<output>{"decisions":[{"notice_id":701,"action":"skip","merge_group":null,"reason":"photo dump from completed event, no action","material_change":false,"confidence":0.95},{"notice_id":702,"action":"skip","merge_group":null,"reason":"photo dump, no action","material_change":false,"confidence":0.95},{"notice_id":703,"action":"skip","merge_group":null,"reason":"photo dump, no action","material_change":false,"confidence":0.95},{"notice_id":704,"action":"skip","merge_group":null,"reason":"event video recap, no action","material_change":false,"confidence":0.92}]}</output>
 </example>
 
 </examples>`;
@@ -328,9 +382,154 @@ ${noticesXml}
 החזר JSON בלבד:`;
 }
 
+// ── Phase 2.1: Pre-LLM deterministic rules ──────────────────────────────────────
+// Cheap, high-precision rules applied BEFORE the Haiku call. A matched notice
+// skips the LLM entirely (saves tokens). Returns a decision-like object
+// {action, reason, confidence, source:'rules'} or null if no rule matched.
+
+// Date keywords meaning "today / this evening / tomorrow"
+const RULE_DATE_KEYWORDS = ['היום', 'מחר', 'הערב'];
+// Actionable verbs/nouns that imply the family must do something soon
+const RULE_ACTION_VERBS = ['תשלום', 'הבאת', 'הרשמה', 'חובה', 'אישור'];
+// Newsletter / recap markers — informational only, never family-actionable
+const RULE_NEWSLETTER_PATTERNS = ['ניוזלטר', 'סיכום שבועי', 'תמונות מ'];
+// Pure media reference with no descriptive prose (kept conservative on purpose:
+// described media like "[תמונה: טופס הרשמה עד מחר]" is left for the LLM so we
+// never auto-skip an actionable image).
+const RULE_PURE_MEDIA = /^\s*\[?\s*(תמונה|וידאו|סרטון|גיף|מדבקה|מדיה|image|video|gif|sticker)\s*\]?\s*$/i;
+
+function preTriageRules(notice) {
+  const content = (notice.content || '').trim();
+  if (!content) {
+    // Empty content = nothing to act on
+    return { action: 'skip', reason: 'empty content', confidence: 1.0, source: 'rules' };
+  }
+
+  // Rule 1: today/tomorrow + actionable verb → send_now
+  const hasDate = RULE_DATE_KEYWORDS.some(k => content.includes(k));
+  const hasVerb = RULE_ACTION_VERBS.some(v => content.includes(v));
+  if (hasDate && hasVerb) {
+    return { action: 'send_now', reason: 'rule: date keyword + actionable verb', confidence: 1.0, source: 'rules' };
+  }
+
+  // Rule 2: pure media reference with no text → skip
+  if (RULE_PURE_MEDIA.test(content)) {
+    return { action: 'skip', reason: 'rule: media reference with no text', confidence: 1.0, source: 'rules' };
+  }
+
+  // Rule 3: newsletter / weekly recap → skip
+  if (RULE_NEWSLETTER_PATTERNS.some(p => content.includes(p))) {
+    return { action: 'skip', reason: 'rule: newsletter/recap pattern', confidence: 1.0, source: 'rules' };
+  }
+
+  return null;
+}
+
+// ── Phase 2.1: Sonnet escalation for low-confidence decisions ────────────────────
+// Re-classify only the low-confidence send_now/defer notices with the stronger
+// model. Abstention: if Sonnet is still uncertain (<0.5), default to 'defer'
+// (safe — the notice goes to the morning digest, never dropped).
+const ESCALATION_THRESHOLD = 0.6; // below this → escalate to Sonnet
+const ABSTENTION_THRESHOLD = 0.5; // below this even after Sonnet → defer
+
+async function escalateLowConfidence(decisions, bucket, sentToday) {
+  const lowConf = decisions.filter(d =>
+    typeof d.confidence === 'number' &&
+    d.confidence < ESCALATION_THRESHOLD &&
+    (d.action === 'send_now' || d.action === 'defer') // skip at low confidence is fine to keep
+  );
+  if (lowConf.length === 0) return decisions;
+
+  const lowIds = new Set(lowConf.map(d => d.notice_id));
+  const escalateNotices = bucket.notices.filter(n => lowIds.has(n.id));
+  if (escalateNotices.length === 0) return decisions;
+
+  console.log(`[Triage] Escalating ${escalateNotices.length} low-confidence decision(s) to Sonnet in ${bucket.group_name}: ${[...lowIds].map(id => '#' + id).join(', ')}`);
+
+  const escBucket = { ...bucket, notices: escalateNotices };
+  const prompt = buildClassificationPrompt(escBucket, sentToday);
+  const startMs = Date.now();
+  let sonnetById = {};
+  try {
+    const res = await callSonnet(getClassificationSystem(), prompt, 0);
+    traceCall({
+      model: 'claude-sonnet-4-5',
+      callSite: 'triage.escalate',
+      inputTokens: res.inputTokens,
+      outputTokens: res.outputTokens,
+      durationMs: Date.now() - startMs,
+      success: true,
+    });
+    const jsonMatch = res.text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (_validateClassification(parsed)) {
+        for (const d of parsed.decisions) sonnetById[d.notice_id] = d;
+      } else {
+        console.warn('[Triage] Sonnet escalation returned schema-invalid JSON — keeping Haiku decisions');
+      }
+    }
+  } catch (e) {
+    traceCall({
+      model: 'claude-sonnet-4-5',
+      callSite: 'triage.escalate',
+      durationMs: Date.now() - startMs,
+      success: false,
+      error: e.message,
+    });
+    console.error(`[Triage] Sonnet escalation failed for ${bucket.group_name}:`, e.message);
+    // Fall through — keep Haiku decisions, abstention below still applies as a safety net
+  }
+
+  return decisions.map(d => {
+    if (!lowIds.has(d.notice_id)) return d;
+    const s = sonnetById[d.notice_id];
+    const resolved = s ? { ...s, source: 'sonnet' } : d;
+
+    // Abstention: even the stronger model is uncertain → default to defer (safe)
+    if ((resolved.action === 'send_now' || resolved.action === 'defer') &&
+        typeof resolved.confidence === 'number' && resolved.confidence < ABSTENTION_THRESHOLD) {
+      console.log(`[Triage] Abstention: #${resolved.notice_id} still uncertain (confidence ${resolved.confidence}) — defaulting to defer`);
+      return {
+        ...resolved,
+        action: 'defer',
+        reason: (resolved.reason || 'uncertain') + ' [abstention: low confidence → defer]',
+        source: 'abstention',
+      };
+    }
+    return resolved;
+  });
+}
+
 async function classifyBucket(bucket, sentToday) {
+  // ── Pre-LLM deterministic rules: matched notices skip the LLM entirely ──
+  const ruleDecisions = [];
+  const llmNotices = [];
+  for (const n of bucket.notices) {
+    const rule = preTriageRules(n);
+    if (rule) {
+      ruleDecisions.push({
+        notice_id: n.id,
+        action: rule.action,
+        reason: rule.reason,
+        confidence: rule.confidence,
+        merge_group: null,
+        source: rule.source,
+      });
+    } else {
+      llmNotices.push(n);
+    }
+  }
+  if (ruleDecisions.length > 0) {
+    console.log(`[Triage] ${bucket.group_name}: ${ruleDecisions.length} notice(s) matched pre-LLM rules (${ruleDecisions.map(d => `#${d.notice_id}→${d.action}`).join(', ')})`);
+  }
+
+  // All notices handled by rules → no LLM call needed
+  if (llmNotices.length === 0) return ruleDecisions;
+
+  const llmBucket = { ...bucket, notices: llmNotices };
   console.time(`classify:${bucket.group_name}`);
-  const prompt = buildClassificationPrompt(bucket, sentToday);
+  const prompt = buildClassificationPrompt(llmBucket, sentToday);
   let raw;
   try {
     raw = await callHaiku(getClassificationSystem(), prompt, false, 0); // temperature=0: deterministic classification
@@ -347,7 +546,11 @@ async function classifyBucket(bucket, sentToday) {
   if (!_validateClassification(parsed)) {
     throw new Error('Classification schema validation failed: ' + JSON.stringify(_validateClassification.errors));
   }
-  return parsed.decisions;
+
+  // ── Phase 2.1: escalate low-confidence send_now/defer decisions to Sonnet ──
+  const llmDecisions = await escalateLowConfidence(parsed.decisions, llmBucket, sentToday);
+
+  return [...ruleDecisions, ...llmDecisions];
 }
 
 // ── Synthesis prompt ──────────────────────────────────────────────────────────
@@ -652,7 +855,7 @@ async function runTriage() {
 }
 
 // Export for test runner
-module.exports = { callHaiku, buildClassificationPrompt, CLASSIFICATION_SYSTEM, getClassificationSystem, FEW_SHOT_EXAMPLES };
+module.exports = { callHaiku, callSonnet, preTriageRules, escalateLowConfidence, classifyBucket, buildClassificationPrompt, CLASSIFICATION_SYSTEM, getClassificationSystem, FEW_SHOT_EXAMPLES };
 
 // Run if called directly
 if (require.main === module) {

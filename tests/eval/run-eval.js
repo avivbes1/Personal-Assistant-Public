@@ -54,8 +54,12 @@
 
 const path = require('path');
 
-// Load .env before ANY src/ require. (Harmless if the file is absent.)
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+// Load .env before ANY src/ require, because src/llm/anthropic.js captures
+// ANTHROPIC_API_KEY at load time. Tolerant of a missing dotenv/.env so the
+// dry-run path stays runnable in bare environments.
+try {
+  require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+} catch (_) { /* dotenv not installed — fine for --dry-run */ }
 
 const fs = require('fs');
 const readline = require('readline');
@@ -488,6 +492,14 @@ async function runEval(loaded, args) {
     return 2;
   }
 
+  // Load the family profile so buildGroupSystemPrompt's <FAMILY_CONTEXT> slice
+  // matches production (production calls this at startup). Non-fatal if absent.
+  try {
+    require('../../src/family-context').loadProfile();
+  } catch (e) {
+    console.warn('[eval] Family profile not loaded (prompt will omit the profile slice):', e.message);
+  }
+
   // Auto-dedup so duplicated/conflicting records don't corrupt the metrics.
   let queue = records.filter((r) => r.label);
   if (duplicates.dupIds > 0) {
@@ -671,7 +683,25 @@ async function main() {
   process.exit(code);
 }
 
-main().catch((e) => {
-  console.error('[eval] Fatal:', e);
-  process.exit(2);
-});
+// Only run when invoked directly, so the pure helpers can be unit-tested.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error('[eval] Fatal:', e);
+    process.exit(2);
+  });
+}
+
+module.exports = {
+  predictAction,
+  predictPriority,
+  predictPipeline,
+  labelPipeline,
+  prf,
+  confusion,
+  analyzeDuplicates,
+  dedupById,
+  estimateCost,
+  PRIORITIES,
+  ACTIONS,
+  PIPELINE_STATES,
+};
