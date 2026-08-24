@@ -1,5 +1,6 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const { normalizeText } = require('./notice-dedup');
 
 const DB_PATH = path.join(__dirname, '..', 'data', 'family.db');
 
@@ -418,6 +419,22 @@ function initDB() {
   // Notice pipeline fix — Phase 0+1
   try { db.exec("ALTER TABLE notices ADD COLUMN message_sent_at INTEGER"); } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN normalized_content TEXT"); } catch (_) {}
+  // Phase 2.2: backfill normalized_content for existing notices so semantic dedup
+  // can rely on it. Bounded per-run (2000 rows) to keep startup fast; repeats
+  // across restarts until fully populated. normalizeText is JS, so we loop in a tx.
+  try {
+    const pending = db.prepare(
+      "SELECT id, content FROM notices WHERE normalized_content IS NULL AND content IS NOT NULL LIMIT 2000"
+    ).all();
+    if (pending.length > 0) {
+      const upd = db.prepare('UPDATE notices SET normalized_content=? WHERE id=?');
+      const tx = db.transaction((rows) => {
+        for (const r of rows) upd.run(normalizeText(r.content), r.id);
+      });
+      tx(pending);
+      console.log(`[DB] Backfilled normalized_content for ${pending.length} notice(s)`);
+    }
+  } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN valid_until TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN digest_shown_at INTEGER"); } catch (_) {}
   // Day/date mismatch detection (Phase 1) — warn-only, never mutates source
@@ -595,12 +612,14 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
   if (existing) return existing.id;
   // valid_until defaults to relevance_date if not provided
   const validUntil = valid_until || relevance_date || null;
+  // Phase 2.2: precompute normalized content so future dedup passes are cheaper.
+  const normalized = normalizeText(content);
   const result = getDB().prepare(
     `INSERT INTO notices
       (group_name, content, relevance_date, relevance_time, source_timestamp, dismissed, created_at, row_type, sources,
        urgency_hint, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until,
-       weekday_mismatch, validation_notes)
-     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       weekday_mismatch, validation_notes, normalized_content)
+     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     group_name, content, relevance_date || null, relevance_time || null,
     source_timestamp || Date.now(), Date.now(), JSON.stringify([group_name]),
@@ -610,7 +629,8 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
     message_sent_at || null,
     validUntil,
     weekday_mismatch ? 1 : 0,
-    validation_notes || null
+    validation_notes || null,
+    normalized
   );
   return result.lastInsertRowid;
 }

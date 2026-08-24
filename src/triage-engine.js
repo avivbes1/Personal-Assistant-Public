@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { sendMessage: voiceSend } = require('../lib/voice-client');
 const { traceCall } = require('./llm-trace');
+const { findDuplicates } = require('./notice-dedup');
 
 const GROUP_JID = process.env.MASTER_GROUP_JID; // set MASTER_GROUP_JID in .env
 const BUDGET_MS = 80_000; // 80s wall-clock budget for synthesis phase
@@ -504,7 +505,7 @@ async function escalateLowConfidence(decisions, bucket, sentToday) {
 async function classifyBucket(bucket, sentToday) {
   // ── Pre-LLM deterministic rules: matched notices skip the LLM entirely ──
   const ruleDecisions = [];
-  const llmNotices = [];
+  let llmNotices = [];
   for (const n of bucket.notices) {
     const rule = preTriageRules(n);
     if (rule) {
@@ -524,8 +525,37 @@ async function classifyBucket(bucket, sentToday) {
     console.log(`[Triage] ${bucket.group_name}: ${ruleDecisions.length} notice(s) matched pre-LLM rules (${ruleDecisions.map(d => `#${d.notice_id}→${d.action}`).join(', ')})`);
   }
 
-  // All notices handled by rules → no LLM call needed
-  if (llmNotices.length === 0) return ruleDecisions;
+  // ── Phase 2.2: semantic dedup — near-duplicate notices skip the LLM ──
+  // Runs AFTER preTriageRules (so rule-handled notices are already out) but
+  // BEFORE the LLM call. A duplicate is auto-classified as 'skip' pointing at
+  // the earlier notice it repeats, saving both a token and a redundant message.
+  const dedupDecisions = [];
+  if (llmNotices.length > 1) {
+    const dupMap = findDuplicates(llmNotices);
+    if (dupMap.size > 0) {
+      const remaining = [];
+      for (const n of llmNotices) {
+        const dup = dupMap.get(n.id);
+        if (dup && dup.isDuplicate) {
+          dedupDecisions.push({
+            notice_id: n.id,
+            action: 'skip',
+            reason: `semantic dedup: similar to #${dup.originalId} (sim ${dup.similarity.toFixed(2)})`,
+            confidence: 1.0,
+            merge_group: null,
+            source: 'dedup',
+          });
+        } else {
+          remaining.push(n);
+        }
+      }
+      llmNotices = remaining;
+      console.log(`[Triage] ${bucket.group_name}: ${dedupDecisions.length} notice(s) deduped (${dedupDecisions.map(d => `#${d.notice_id}`).join(', ')})`);
+    }
+  }
+
+  // All notices handled by rules + dedup → no LLM call needed
+  if (llmNotices.length === 0) return [...ruleDecisions, ...dedupDecisions];
 
   const llmBucket = { ...bucket, notices: llmNotices };
   console.time(`classify:${bucket.group_name}`);
@@ -550,7 +580,7 @@ async function classifyBucket(bucket, sentToday) {
   // ── Phase 2.1: escalate low-confidence send_now/defer decisions to Sonnet ──
   const llmDecisions = await escalateLowConfidence(parsed.decisions, llmBucket, sentToday);
 
-  return [...ruleDecisions, ...llmDecisions];
+  return [...ruleDecisions, ...dedupDecisions, ...llmDecisions];
 }
 
 // ── Synthesis prompt ──────────────────────────────────────────────────────────
