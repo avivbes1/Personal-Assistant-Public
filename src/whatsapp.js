@@ -396,7 +396,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
     let body = msg.body || '';
     // Documents: always extract even if msg.body contains the filename
     const isDocumentMsg = msg.type === 'document';
-    const isMedia = (isDocumentMsg || !body.trim()) && ['image', 'sticker', 'document', 'audio', 'video', 'location', 'vcard'].includes(msg.type);
+    const isMedia = (isDocumentMsg || !body.trim()) && ['image', 'sticker', 'document', 'audio', 'ptt', 'video', 'location', 'vcard'].includes(msg.type);
     const isImageMsg = isMedia && (msg.type === 'image' || msg.type === 'sticker');
     if (isMedia) {
       if (isImageMsg) {
@@ -417,7 +417,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
           body = extracted;
           logger.info({ component: 'WhatsApp', group: chat.name, preview: extracted.substring(0, 80) }, 'Media extracted');
         } else {
-          const mediaLabel = { video: '[וידאו]', audio: '[הקלטה קולית]', document: '[מסמך]', location: '[מיקום]' };
+          const mediaLabel = { video: '[וידאו]', audio: '[הקלטה קולית]', ptt: '[הקלטה קולית]', document: '[מסמך]', location: '[מיקום]' };
           body = mediaLabel[msg.type] || '[מדיה]';
         }
       }

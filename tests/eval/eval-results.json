@@ -1,0 +1,41 @@
+{
+  "model": "claude-haiku-4-5",
+  "timestamp": "2026-08-24T09:06:22.833Z",
+  "total": 20,
+  "evaluated": 20,
+  "skipped": 0,
+  "errors": 0,
+  "correct": 20,
+  "accuracy": 1,
+  "accuracyPct": 100,
+  "threshold": 70,
+  "pass": true,
+  "confusion": {
+    "add_notice": {
+      "add_notice": 20
+    }
+  },
+  "metrics": {
+    "add_notice": {
+      "precision": "1.000",
+      "recall": "1.000",
+      "f1": "1.000",
+      "tp": 20,
+      "fp": 0,
+      "fn": 0
+    },
+    "no_action": {
+      "precision": "N/A",
+      "recall": "N/A",
+      "f1": "N/A",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0
+    }
+  },
+  "tokens": {
+    "input": 24633,
+    "output": 3090
+  },
+  "costUsd": 0.0401
+}

@@ -108,7 +108,7 @@ class BaileysMessage {
     this.body = this._extractBody(content, contentType);
 
     // Media check
-    this.hasMedia = ['image', 'video', 'audio', 'document', 'sticker'].includes(this.type);
+    this.hasMedia = ['image', 'video', 'audio', 'ptt', 'document', 'sticker'].includes(this.type);
 
     // Quoted message check
     const contextInfo = this._getContextInfo(content, contentType);
