@@ -16,7 +16,7 @@ const appLogger = require('./logger');
 
 // Aviv's JID (operator). Compared by phone/user part, so device suffixes and
 // @c.us vs @s.whatsapp.net server differences don't matter.
-const AVIV_JID = '972504606660@c.us';
+const AVIV_JID = (process.env.AVIV_PHONE || '').replace(/^\+/, '') + '@c.us';
 const AVIV_USER = AVIV_JID.split('@')[0];
 
 const SYSTEM_INBOX = path.join(__dirname, '..', 'data', 'system-inbox');
