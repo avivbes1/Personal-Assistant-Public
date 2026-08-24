@@ -28,6 +28,9 @@
  *   --limit N          Classify only the first N labeled messages (quick checks).
  *   --model MODEL      Override the classification model (model-matrix runs).
  *   --threshold F      Accuracy threshold for exit code (default 0.70).
+ *   --strict           Promote duplicate-ID detection to a fatal integrity error
+ *                      (default: duplicates warn, and the full eval auto-dedups
+ *                      by keeping the last occurrence of each ID).
  *   --out PATH         Override the results output path.
  *
  * Exit codes:
@@ -91,10 +94,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { dryRun: false, limit: null, model: null, threshold: DEFAULT_THRESHOLD, out: DEFAULT_RESULTS_PATH };
+  const args = { dryRun: false, limit: null, model: null, threshold: DEFAULT_THRESHOLD, strict: false, out: DEFAULT_RESULTS_PATH };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') args.dryRun = true;
+    else if (a === '--strict') args.strict = true;
     else if (a === '--limit') args.limit = parseInt(argv[++i], 10);
     else if (a.startsWith('--limit=')) args.limit = parseInt(a.split('=')[1], 10);
     else if (a === '--model') args.model = argv[++i];
@@ -122,6 +126,7 @@ function printUsage() {
   --limit N          Classify only the first N labeled messages
   --model MODEL      Override the classification model
   --threshold F      Accuracy threshold for exit code (default ${DEFAULT_THRESHOLD})
+  --strict           Treat duplicate IDs as a fatal integrity error
   --out PATH         Results output path (default tests/eval/eval-results.json)
   -h, --help         Show this help`);
 }
@@ -142,7 +147,6 @@ async function loadDataset() {
   const records = [];
   const fatal = [];
   const warnings = [];
-  const seenIds = new Set();
 
   const rl = readline.createInterface({
     input: fs.createReadStream(DATASET_PATH),
@@ -173,10 +177,6 @@ async function loadDataset() {
     if (rec.body === undefined || rec.body === null) {
       fatal.push(`line ${lineNo} (id=${rec.id ?? '?'}): missing field "body"`);
     }
-    if (rec.id != null) {
-      if (seenIds.has(rec.id)) fatal.push(`line ${lineNo}: duplicate id ${rec.id}`);
-      seenIds.add(rec.id);
-    }
     if (rec.timestamp != null && !Number.isFinite(Number(rec.timestamp))) {
       fatal.push(`line ${lineNo} (id=${rec.id}): timestamp is not numeric`);
     }
@@ -204,7 +204,45 @@ async function loadDataset() {
     records.push(rec);
   }
 
-  return { records, fatal, warnings };
+  return { records, fatal, warnings, duplicates: analyzeDuplicates(records) };
+}
+
+/**
+ * Group records by id and summarize duplication. A duplicate is "conflicting"
+ * when its copies disagree on (expected_action, priority) — i.e. contradictory
+ * ground truth, which genuinely corrupts metrics.
+ */
+function analyzeDuplicates(records) {
+  const byId = new Map();
+  for (const r of records) {
+    if (r.id == null) continue;
+    if (!byId.has(r.id)) byId.set(r.id, []);
+    byId.get(r.id).push(r);
+  }
+  let dupIds = 0;
+  let dupLines = 0;
+  const conflictingIds = [];
+  for (const [id, group] of byId) {
+    if (group.length < 2) continue;
+    dupIds++;
+    dupLines += group.length - 1; // extra copies beyond the first
+    const labelKeys = new Set(
+      group.map((r) => (r.label ? `${r.label.expected_action}|${r.label.priority}` : 'null'))
+    );
+    if (labelKeys.size > 1) conflictingIds.push(id);
+  }
+  return { uniqueIds: byId.size, dupIds, dupLines, conflictingIds };
+}
+
+/** Collapse to one record per id, keeping the LAST occurrence. */
+function dedupById(records) {
+  const byId = new Map();
+  const noId = [];
+  for (const r of records) {
+    if (r.id == null) noId.push(r);
+    else byId.set(r.id, r); // last write wins
+  }
+  return [...byId.values(), ...noId];
 }
 
 // ── Prediction mapping ──────────────────────────────────────────────────────
@@ -379,24 +417,44 @@ function estimateCost(model, inputTokens, outputTokens) {
 
 // ── Dry-run ─────────────────────────────────────────────────────────────────
 
-function runDryRun(loaded) {
-  const { records, fatal, warnings } = loaded;
+function runDryRun(loaded, args) {
+  const { records, fatal, warnings, duplicates } = loaded;
   const labeled = records.filter((r) => r.label);
   console.log('[eval] Dry-run: validating dataset integrity');
-  console.log(`[eval]   records:   ${records.length}`);
-  console.log(`[eval]   labeled:   ${labeled.length}`);
-  console.log(`[eval]   unlabeled: ${records.length - labeled.length}`);
+  console.log(`[eval]   records:    ${records.length}`);
+  console.log(`[eval]   unique ids: ${duplicates.uniqueIds}`);
+  console.log(`[eval]   labeled:    ${labeled.length}`);
+  console.log(`[eval]   unlabeled:  ${records.length - labeled.length}`);
 
-  if (warnings.length) {
-    console.log(`[eval]   warnings:  ${warnings.length}`);
-    for (const w of warnings.slice(0, 10)) console.log(`           • ${w}`);
-    if (warnings.length > 10) console.log(`           … and ${warnings.length - 10} more`);
+  // Duplicate handling — fatal under --strict, otherwise a loud warning.
+  const dupMsgs = [];
+  if (duplicates.dupIds > 0) {
+    dupMsgs.push(
+      `${duplicates.dupIds} id(s) duplicated across ${duplicates.dupLines} extra line(s); ` +
+        `${duplicates.conflictingIds.length} have CONFLICTING labels` +
+        (duplicates.conflictingIds.length
+          ? ` (e.g. ids ${duplicates.conflictingIds.slice(0, 5).join(', ')})`
+          : '')
+    );
   }
 
-  if (fatal.length) {
-    console.error(`\n[eval] ✗ ${fatal.length} integrity error(s):`);
-    for (const f of fatal.slice(0, 25)) console.error(`         • ${f}`);
-    if (fatal.length > 25) console.error(`         … and ${fatal.length - 25} more`);
+  if (warnings.length) {
+    console.log(`[eval]   unlabeled records: ${warnings.length}`);
+    for (const w of warnings.slice(0, 5)) console.log(`           • ${w}`);
+    if (warnings.length > 5) console.log(`           … and ${warnings.length - 5} more`);
+  }
+
+  const fatalAll = args.strict ? [...fatal, ...dupMsgs] : fatal;
+
+  if (!args.strict && dupMsgs.length) {
+    console.warn(`\n[eval] ⚠ duplicate ids (non-fatal; use --strict to enforce, full eval auto-dedups):`);
+    for (const m of dupMsgs) console.warn(`         • ${m}`);
+  }
+
+  if (fatalAll.length) {
+    console.error(`\n[eval] ✗ ${fatalAll.length} integrity error(s):`);
+    for (const f of fatalAll.slice(0, 25)) console.error(`         • ${f}`);
+    if (fatalAll.length > 25) console.error(`         … and ${fatalAll.length - 25} more`);
     console.error('\n[eval] Dataset FAILED integrity check.');
     return 1;
   }
@@ -408,9 +466,13 @@ function runDryRun(loaded) {
 // ── Full eval ────────────────────────────────────────────────────────────────
 
 async function runEval(loaded, args) {
-  const { records, fatal } = loaded;
+  const { records, fatal, duplicates } = loaded;
   if (fatal.length) {
     console.error(`[eval] Refusing to run: ${fatal.length} dataset integrity error(s). Run with --dry-run for details.`);
+    return 2;
+  }
+  if (args.strict && duplicates.dupIds > 0) {
+    console.error(`[eval] Refusing to run under --strict: ${duplicates.dupIds} duplicate id(s) in dataset.`);
     return 2;
   }
 
@@ -426,7 +488,13 @@ async function runEval(loaded, args) {
     return 2;
   }
 
+  // Auto-dedup so duplicated/conflicting records don't corrupt the metrics.
   let queue = records.filter((r) => r.label);
+  if (duplicates.dupIds > 0) {
+    const before = queue.length;
+    queue = dedupById(queue);
+    console.warn(`[eval] ⚠ Deduped ${before - queue.length} duplicate record(s) (kept last per id).`);
+  }
   if (args.limit != null) queue = queue.slice(0, args.limit);
 
   console.log(`[eval] Classifying ${queue.length} labeled message(s) with model "${model}"`);
@@ -526,6 +594,8 @@ async function runEval(loaded, args) {
     counts: {
       total_records: records.length,
       labeled: records.filter((r) => r.label).length,
+      duplicate_ids: duplicates.dupIds,
+      conflicting_ids: duplicates.conflictingIds.length,
       attempted: perRecord.length,
       scored: scored.length,
       errors,
@@ -597,7 +667,7 @@ async function main() {
 
   const loaded = await loadDataset();
 
-  const code = args.dryRun ? runDryRun(loaded) : await runEval(loaded, args);
+  const code = args.dryRun ? runDryRun(loaded, args) : await runEval(loaded, args);
   process.exit(code);
 }
 

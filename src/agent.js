@@ -17,6 +17,7 @@ const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveNoticeE
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 const { buildProfileSlice, shouldSkipGroup } = require('./family-context');
 const { logToolCall, makeCorrelationId } = require('./audit-log');
+const { traceCall } = require('./llm-trace');
 const { checkResponse } = require('./response-guard');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -1187,6 +1188,7 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
   };
   const bodyStr = JSON.stringify(reqBody);
 
+  const startMs = Date.now();
   return new Promise((resolve) => {
     const req = https.request({
       hostname: 'api.anthropic.com',
@@ -1209,6 +1211,15 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
             if (parsed.error.message && parsed.error.message.includes('credit balance')) {
               alertCreditExhausted(parsed.error.message);
             }
+            traceCall({
+              model: GROUP_MODEL,
+              callSite: 'agent.classify',
+              durationMs: Date.now() - startMs,
+              success: false,
+              error: parsed.error.message,
+              groupId: groupName,
+              messageId,
+            });
             if (messageId) markMessageFailed(messageId, JSON.stringify({ code: 'API_ERROR', detail: parsed.error.message }));
             return resolve({ text: '', sideEffects: [], acted: false, downloadImage: false });
           }
@@ -1216,6 +1227,18 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
           // Extract all tool_use blocks from the response
           const toolUseBlocks = (parsed.content || []).filter(c => c.type === 'tool_use');
           console.log(`[Agent] Group "${groupName}" tools called: ${toolUseBlocks.map(t => t.name).join(', ') || '(none)'} stop=${parsed.stop_reason}`);
+
+          traceCall({
+            model: GROUP_MODEL,
+            callSite: 'agent.classify',
+            inputTokens:  parsed.usage?.input_tokens  ?? 0,
+            outputTokens: parsed.usage?.output_tokens ?? 0,
+            durationMs: Date.now() - startMs,
+            toolCalls: toolUseBlocks.map(t => t.name),
+            success: true,
+            groupId: groupName,
+            messageId,
+          });
 
           if (toolUseBlocks.length === 0) {
             // Model returned no tools despite tool_choice=any - shouldn't happen but handle gracefully
@@ -1312,6 +1335,15 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
           resolve({ text: '', sideEffects, acted: sideEffects.length > 0 || downloadImage, downloadImage });
         } catch (e) {
           console.error('[Agent] handleGroupEvent parse error:', e.message);
+          traceCall({
+            model: GROUP_MODEL,
+            callSite: 'agent.classify',
+            durationMs: Date.now() - startMs,
+            success: false,
+            error: `PARSE_ERROR: ${e.message}`,
+            groupId: groupName,
+            messageId,
+          });
           if (messageId) markMessageFailed(messageId, JSON.stringify({ code: 'PARSE_ERROR', detail: e.message }));
           resolve({ text: '', sideEffects: [], acted: false, downloadImage: false });
         }
@@ -1320,6 +1352,15 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
 
     req.on('error', (err) => {
       console.error('[Agent] handleGroupEvent request error:', err.message);
+      traceCall({
+        model: GROUP_MODEL,
+        callSite: 'agent.classify',
+        durationMs: Date.now() - startMs,
+        success: false,
+        error: `REQUEST_ERROR: ${err.message}`,
+        groupId: groupName,
+        messageId,
+      });
       if (messageId) markMessageFailed(messageId, JSON.stringify({ code: 'REQUEST_ERROR', detail: err.message }));
       resolve({ text: '', sideEffects: [], acted: false, downloadImage: false });
     });

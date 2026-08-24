@@ -11,6 +11,7 @@
 'use strict';
 
 const https = require('https');
+const { traceCall } = require('./llm-trace');
 
 const VISION_MODEL = 'claude-sonnet-4-5';
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB limit for vision
@@ -64,6 +65,7 @@ async function describeImage(base64Data, mimeType, groupName) {
     }],
   });
 
+  const startMs = Date.now();
   return new Promise((resolve) => {
     const req = https.request({
       hostname: 'api.anthropic.com',
@@ -82,11 +84,41 @@ async function describeImage(base64Data, mimeType, groupName) {
         try {
           const parsed = JSON.parse(data);
           const text = parsed.content?.[0]?.text || '';
+          traceCall({
+            model: VISION_MODEL,
+            callSite: 'media.vision',
+            inputTokens:  parsed.usage?.input_tokens  ?? 0,
+            outputTokens: parsed.usage?.output_tokens ?? 0,
+            durationMs: Date.now() - startMs,
+            success: !parsed.error,
+            error: parsed.error?.message || null,
+            groupId: groupName,
+          });
           resolve(text ? `[תמונה: ${text.substring(0, 300)}]` : '[תמונה]');
-        } catch (_) { resolve('[תמונה]'); }
+        } catch (e) {
+          traceCall({
+            model: VISION_MODEL,
+            callSite: 'media.vision',
+            durationMs: Date.now() - startMs,
+            success: false,
+            error: `PARSE_ERROR: ${e.message}`,
+            groupId: groupName,
+          });
+          resolve('[תמונה]');
+        }
       });
     });
-    req.on('error', () => resolve('[תמונה]'));
+    req.on('error', (err) => {
+      traceCall({
+        model: VISION_MODEL,
+        callSite: 'media.vision',
+        durationMs: Date.now() - startMs,
+        success: false,
+        error: `REQUEST_ERROR: ${err.message}`,
+        groupId: groupName,
+      });
+      resolve('[תמונה]');
+    });
     req.write(body);
     req.end();
   });
@@ -145,6 +177,7 @@ async function transcribeAudio(buffer, mimeType) {
       Buffer.from(epilogue, 'utf8'),
     ]);
 
+    const startMs = Date.now();
     return await new Promise((resolve) => {
       const req = https.request({
         hostname: 'api.groq.com',
@@ -162,17 +195,46 @@ async function transcribeAudio(buffer, mimeType) {
           try {
             const parsed = JSON.parse(data);
             const text = (parsed.text || '').trim();
-            if (text) return resolve(text);
+            if (text) {
+              traceCall({
+                model: GROQ_WHISPER_MODEL,
+                callSite: 'media.transcribe',
+                durationMs: Date.now() - startMs,
+                success: true,
+              });
+              return resolve(text);
+            }
             console.error('[MediaParser] Groq transcription returned no text:', data.substring(0, 200));
+            traceCall({
+              model: GROQ_WHISPER_MODEL,
+              callSite: 'media.transcribe',
+              durationMs: Date.now() - startMs,
+              success: false,
+              error: parsed.error?.message || 'no text returned',
+            });
             resolve(null);
           } catch (e) {
             console.error('[MediaParser] Groq transcription parse error:', e.message, data.substring(0, 200));
+            traceCall({
+              model: GROQ_WHISPER_MODEL,
+              callSite: 'media.transcribe',
+              durationMs: Date.now() - startMs,
+              success: false,
+              error: `PARSE_ERROR: ${e.message}`,
+            });
             resolve(null);
           }
         });
       });
       req.on('error', (e) => {
         console.error('[MediaParser] Groq transcription request error:', e.message);
+        traceCall({
+          model: GROQ_WHISPER_MODEL,
+          callSite: 'media.transcribe',
+          durationMs: Date.now() - startMs,
+          success: false,
+          error: `REQUEST_ERROR: ${e.message}`,
+        });
         resolve(null);
       });
       req.write(body);
