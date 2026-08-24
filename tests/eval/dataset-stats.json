@@ -1,33 +1,35 @@
 {
-  "total": 525,
-  "byPipelineState": {
+  "total": 1018,
+  "by_pipeline_state": {
     "NOTICE_CREATED": 487,
-    "FAILED": 38
+    "FAILED": 81,
+    "NOT_ACTIONABLE": 300,
+    "RECEIVED": 150
   },
-  "byLabelPriority": {
-    "real_time": 81,
-    "batch": 388,
-    "noise": 28,
-    "archive": 28
-  },
-  "byLabelCategory": {
-    "reminder": 28,
-    "announcement": 124,
-    "logistics": 17,
-    "chatter": 20,
-    "event": 42,
+  "by_category": {
+    "reminder": 31,
+    "announcement": 188,
+    "logistics": 32,
+    "chatter": 247,
+    "event": 48,
     "clarification": 1,
-    "media_only": 283,
-    "request": 10
+    "media_only": 403,
+    "request": 67
   },
-  "byLabelAction": {
-    "send_now": 22,
-    "add_notice": 93,
-    "defer": 60,
-    "add_event": 51,
-    "none": 31,
-    "skip": 268
+  "by_priority": {
+    "real_time": 107,
+    "batch": 671,
+    "noise": 200,
+    "archive": 39
   },
-  "labeled": 525,
-  "unlabeled": 0
+  "by_expected_action": {
+    "send_now": 39,
+    "add_notice": 117,
+    "defer": 176,
+    "add_event": 59,
+    "none": 124,
+    "skip": 502
+  },
+  "unlabeled": 1,
+  "generated_at": "2026-08-24T08:09:59.668Z"
 }

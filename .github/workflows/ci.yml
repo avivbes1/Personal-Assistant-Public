@@ -19,6 +19,19 @@ jobs:
       - name: Scan prompts/ for PII
         run: node scripts/detect-pii.js prompts/
 
+  eval-validate:
+    name: Eval Dataset Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Validate eval dataset
+        run: node tests/eval/run-eval.js --dry-run
+        env:
+          ANTHROPIC_API_KEY: "sk-ant-test-not-real"
+
   test:
     name: Tests (mock LLM)
     runs-on: ubuntu-latest

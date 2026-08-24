@@ -9,21 +9,26 @@ const API_KEY = process.env.ANTHROPIC_API_KEY;
 /**
  * Complete a prompt using Anthropic Claude.
  * @param {object} opts
- * @param {string} opts.system   - System prompt
- * @param {Array}  opts.messages - Message array [{role, content}]
- * @param {string} opts.model    - Model ID (default: claude-haiku-4-5)
+ * @param {string} opts.system     - System prompt
+ * @param {Array}  opts.messages   - Message array [{role, content}]
+ * @param {string} opts.model      - Model ID (default: claude-haiku-4-5)
  * @param {number} opts.maxTokens
- * @returns {Promise<{text: string, inputTokens: number, outputTokens: number}>}
+ * @param {Array}  [opts.tools]      - Optional tool definitions (enables tool-calling)
+ * @param {object} [opts.toolChoice] - Optional tool_choice (e.g. {type:'any'})
+ * @returns {Promise<{text: string, content: Array, stopReason: string|null, inputTokens: number, outputTokens: number}>}
  */
-async function complete({ system, messages, model = 'claude-haiku-4-5', maxTokens = 1024 }) {
+async function complete({ system, messages, model = 'claude-haiku-4-5', maxTokens = 1024, tools, toolChoice }) {
   if (!API_KEY) throw new Error('[LLM/anthropic] ANTHROPIC_API_KEY not set');
 
-  const body = JSON.stringify({
+  const payload = {
     model,
     max_tokens: maxTokens,
     system,
     messages,
-  });
+  };
+  if (tools) payload.tools = tools;
+  if (toolChoice) payload.tool_choice = toolChoice;
+  const body = JSON.stringify(payload);
 
   return new Promise((resolve, reject) => {
     const req = https.request({
@@ -45,6 +50,8 @@ async function complete({ system, messages, model = 'claude-haiku-4-5', maxToken
           if (r.error) return reject(new Error(`[LLM/anthropic] ${r.error.message}`));
           resolve({
             text: r.content?.[0]?.text ?? '',
+            content: r.content ?? [],
+            stopReason: r.stop_reason ?? null,
             inputTokens:  r.usage?.input_tokens  ?? 0,
             outputTokens: r.usage?.output_tokens ?? 0,
           });

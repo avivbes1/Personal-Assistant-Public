@@ -21,6 +21,10 @@ const { checkResponse } = require('./response-guard');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
+// Model used to classify messages from monitored (non-master) groups.
+// Exported so the eval runner scores the exact same model production uses.
+const GROUP_MODEL = 'claude-haiku-4-5';
+
 // ISSUE-013: validate that a stated day name matches the actual date
 const HE_DAY_INDEX = { 'ראשון': 0, 'שני': 1, 'שלישי': 2, 'רביעי': 3, 'חמישי': 4, 'שישי': 5, 'שבת': 6 };
 function validateEventDate(event) {
@@ -974,13 +978,26 @@ const GROUP_TOOLS = [
   }
 ];
 
-async function handleGroupEvent(body, groupName, sender, groupDescription = null, recentMessages = [], msgTimestamp = null, isImageMsg = false, isBacklog = false, primaryChild = null, messageId = null) {
-  if (!ANTHROPIC_API_KEY) {
-    console.error('[Agent] No ANTHROPIC_API_KEY');
-    return { text: '', sideEffects: [], acted: false };
-  }
-
-  const ts = msgTimestamp || Date.now();
+/**
+ * Build the tool-oriented system prompt used to classify messages from
+ * monitored (non-master) groups.
+ *
+ * Extracted from handleGroupEvent so the eval runner can reproduce the EXACT
+ * production prompt without duplicating it (which would drift over time).
+ * All prompt-shaping context (dates, recent chat, family slice) is derived
+ * here from the timestamp + optional inputs.
+ *
+ * @param {object} opts
+ * @param {string}  opts.groupName
+ * @param {string}  opts.sender
+ * @param {number}  [opts.ts]              - message timestamp (ms); defaults to now
+ * @param {string}  [opts.groupDescription]
+ * @param {Array}   [opts.recentMessages]  - [{sender, body, timestamp}]
+ * @param {string}  [opts.primaryChild]
+ * @param {boolean} [opts.isImageMsg]
+ * @returns {string}
+ */
+function buildGroupSystemPrompt({ groupName, sender, ts = Date.now(), groupDescription = null, recentMessages = [], primaryChild = null, isImageMsg = false }) {
   const today = new Date(ts).toLocaleDateString('he-IL', {
     timeZone: config.TIMEZONE || 'Asia/Jerusalem',
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -1022,7 +1039,7 @@ ${JSON.stringify(slice, null, 2)}
 
   // ISSUE-019: System prompt is now tool-oriented - no prose, no JSON blocks in text.
   // The model MUST call add_notice or no_action. Other tools are optional.
-  const systemPrompt = `אתה ${config.BOT_NAME}, עוזר משפחתי אוטומטי שמנטר קבוצות WhatsApp.
+  return `אתה ${config.BOT_NAME}, עוזר משפחתי אוטומטי שמנטר קבוצות WhatsApp.
 
 קבוצה: "${groupName}"
 שולח: ${sender}
@@ -1073,6 +1090,67 @@ add_notice: content="ראשון 30.6 ניקיון, שני 1.7 יום רטוב, �
 ${isImageMsg ? `**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, קרא ל-download_image מכל שולח (הורה, מורה, מנהל) אם יש סיכוי שהתמונה מכילה הזמנה לאירוע, לוח זמנים, אישור נוכחות, או מידע לוגיסטי. אחרת no_action.` : ''}
 
 **אין לכתוב טקסט חופשי** - רק tool calls.`;
+}
+
+/**
+ * Classify a monitored-group message the way production does — same system
+ * prompt (buildGroupSystemPrompt), same tools (GROUP_TOOLS), same model
+ * (GROUP_MODEL), same tool_choice:'any' — but WITHOUT executing any of the
+ * resulting actions. Pure read: no DB writes, no calendar, no WhatsApp.
+ *
+ * This is the seam the eval runner drives so it measures the real classifier.
+ *
+ * @param {object} opts
+ * @param {string} opts.body                 - message text
+ * @param {string} opts.groupName
+ * @param {string} opts.sender
+ * @param {number} [opts.ts]                  - message timestamp (ms)
+ * @param {string} [opts.groupDescription]
+ * @param {Array}  [opts.recentMessages]
+ * @param {string} [opts.primaryChild]
+ * @param {boolean}[opts.isImageMsg]
+ * @param {string} [opts.model]              - override model (default GROUP_MODEL)
+ * @param {number} [opts.maxTokens]
+ * @returns {Promise<{toolCalls: Array<{name:string,input:object}>, stopReason:string|null, inputTokens:number, outputTokens:number}>}
+ */
+async function classifyGroupMessage({ body, groupName, sender, ts = Date.now(), groupDescription = null, recentMessages = [], primaryChild = null, isImageMsg = false, model = GROUP_MODEL, maxTokens = 2048 }) {
+  const anthropic = require('./llm/anthropic');
+  const system = buildGroupSystemPrompt({ groupName, sender, ts, groupDescription, recentMessages, primaryChild, isImageMsg });
+
+  const res = await anthropic.complete({
+    model,
+    maxTokens,
+    system,
+    tools: GROUP_TOOLS,
+    toolChoice: { type: 'any' }, // mirror production: force ≥1 tool call
+    messages: [{ role: 'user', content: String(body || '').trim() }],
+  });
+
+  const toolCalls = (res.content || [])
+    .filter(c => c && c.type === 'tool_use')
+    .map(c => ({ name: c.name, input: c.input || {} }));
+
+  return {
+    toolCalls,
+    stopReason: res.stopReason,
+    inputTokens: res.inputTokens,
+    outputTokens: res.outputTokens,
+  };
+}
+
+async function handleGroupEvent(body, groupName, sender, groupDescription = null, recentMessages = [], msgTimestamp = null, isImageMsg = false, isBacklog = false, primaryChild = null, messageId = null) {
+  if (!ANTHROPIC_API_KEY) {
+    console.error('[Agent] No ANTHROPIC_API_KEY');
+    return { text: '', sideEffects: [], acted: false };
+  }
+
+  const ts = msgTimestamp || Date.now();
+
+  // ISSUE-019: System prompt is tool-oriented — built by the shared helper so
+  // the eval runner (classifyGroupMessage) scores the exact same prompt.
+  const systemPrompt = buildGroupSystemPrompt({
+    groupName, sender, ts, groupDescription, recentMessages, primaryChild, isImageMsg,
+  });
 
   // Guard: don't call API with empty body — returns billing error
   if (!body || !body.trim()) {
@@ -1100,7 +1178,7 @@ ${isImageMsg ? `**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, 
   // Tool calls are structured, schema-validated, and cannot be truncated mid-output.
   // The model MUST call at least one tool (tool_choice: "any").
   const reqBody = {
-    model: 'claude-haiku-4-5',
+    model: GROUP_MODEL,
     max_tokens: maxTokens,
     system: systemPrompt,
     tools: GROUP_TOOLS,
@@ -1251,4 +1329,14 @@ ${isImageMsg ? `**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, 
   });
 }
 
-module.exports = { handleMessage, handleGroupEvent, extractActionBlocks };
+module.exports = {
+  handleMessage,
+  handleGroupEvent,
+  extractActionBlocks,
+  // Exposed for the eval runner (tests/eval/run-eval.js) so it scores the
+  // exact production classifier: same prompt, tools, and model.
+  classifyGroupMessage,
+  buildGroupSystemPrompt,
+  GROUP_TOOLS,
+  GROUP_MODEL,
+};
