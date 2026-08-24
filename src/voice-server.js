@@ -334,6 +334,44 @@ function createServer() {
       }
     }
 
+    // Phase 2.3: notice feedback — Aviv thumbs-up/down notices via the API.
+    // GET /feedback/stats → aggregate stats for triage tuning.
+    if (req.method === 'GET' && req.url === '/feedback/stats') {
+      try {
+        const { getFeedbackStats } = require('./db');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true, stats: getFeedbackStats() }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    }
+
+    // POST /feedback { notice_id, feedback, comment }
+    if (req.method === 'POST' && req.url === '/feedback') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { notice_id, feedback, comment } = JSON.parse(body || '{}');
+          if (!['good', 'bad', 'missed'].includes(feedback)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: "feedback must be one of 'good', 'bad', 'missed'" }));
+          }
+          const { saveFeedback } = require('./db');
+          const id = saveFeedback(notice_id != null ? notice_id : null, feedback, comment);
+          console.log(`[VoiceServer] Feedback saved (id=${id}): notice=${notice_id} → ${feedback}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, id }));
+        } catch (e) {
+          console.error('[VoiceServer] feedback error:', e.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/send-message') {
       let body = '';
       req.on('data', chunk => { body += chunk; });

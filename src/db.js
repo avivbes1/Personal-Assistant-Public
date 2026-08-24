@@ -495,6 +495,22 @@ function initDB() {
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(group_id, timestamp, body)`);
   } catch (_) {}
 
+  // Phase 2.3: notice feedback — thumbs up/down + "missed" reports for triage tuning
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS notice_feedback (
+        id         INTEGER PRIMARY KEY,
+        notice_id  INTEGER,
+        thread_key TEXT,
+        feedback   TEXT CHECK(feedback IN ('good','bad','missed')),
+        comment    TEXT,
+        created_at INTEGER DEFAULT (strftime('%s','now') * 1000),
+        FOREIGN KEY (notice_id) REFERENCES notices(id)
+      )
+    `);
+  } catch (_) {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_notice_feedback_notice ON notice_feedback(notice_id)"); } catch (_) {}
+
   console.log('[DB] Initialized at', DB_PATH);
   return db;
 }
@@ -1335,9 +1351,68 @@ function getMostRecentDeliveredThread() {
   }
 }
 
+// ── Phase 2.3: Notice feedback ───────────────────────────────────────────────
+
+/**
+ * Save user feedback on a notice ('good' | 'bad' | 'missed').
+ * Looks up the notice's thread_key (best-effort) so feedback survives even if the
+ * notice row is later purged. Returns the inserted row id.
+ */
+function saveFeedback(noticeId, feedback, comment) {
+  let threadKey = null;
+  if (noticeId != null) {
+    try {
+      const row = getDB().prepare('SELECT thread_key FROM notices WHERE id = ?').get(noticeId);
+      threadKey = row ? row.thread_key : null;
+    } catch (_) {}
+  }
+  const result = getDB().prepare(
+    'INSERT INTO notice_feedback (notice_id, thread_key, feedback, comment) VALUES (?, ?, ?, ?)'
+  ).run(noticeId != null ? noticeId : null, threadKey, feedback, comment || null);
+  return result.lastInsertRowid;
+}
+
+/**
+ * Aggregate feedback stats for tuning triage.
+ * Returns { total, good, bad, missed, byAction: { send_now, defer, skip } }
+ * where each byAction entry is { good, bad } counted by the notice's triage_decision.
+ */
+function getFeedbackStats() {
+  const db = getDB();
+  const stats = { total: 0, good: 0, bad: 0, missed: 0 };
+  const rows = db.prepare('SELECT feedback, COUNT(*) AS c FROM notice_feedback GROUP BY feedback').all();
+  for (const r of rows) {
+    stats.total += r.c;
+    if (r.feedback === 'good') stats.good = r.c;
+    else if (r.feedback === 'bad') stats.bad = r.c;
+    else if (r.feedback === 'missed') stats.missed = r.c;
+  }
+
+  const byAction = {
+    send_now: { good: 0, bad: 0 },
+    defer:    { good: 0, bad: 0 },
+    skip:     { good: 0, bad: 0 },
+  };
+  const actionRows = db.prepare(`
+    SELECT n.triage_decision AS action, f.feedback AS feedback, COUNT(*) AS c
+    FROM notice_feedback f
+    JOIN notices n ON n.id = f.notice_id
+    WHERE n.triage_decision IN ('send_now','defer','skip')
+      AND f.feedback IN ('good','bad')
+    GROUP BY n.triage_decision, f.feedback
+  `).all();
+  for (const r of actionRows) {
+    if (byAction[r.action]) byAction[r.action][r.feedback] = r.c;
+  }
+
+  return { ...stats, byAction };
+}
+
 module.exports = {
   initDB,
   getDB,
+  saveFeedback,
+  getFeedbackStats,
   saveMessage,
   getRecentGroupMessages,
   markMessageProcessed,

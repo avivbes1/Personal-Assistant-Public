@@ -161,6 +161,17 @@ function callSonnet(system, user, temperature = 0) {
   });
 }
 
+// ── Phase 2.3: Quiet hours ─────────────────────────────────────────────────────
+// Returns true during 22:00–07:00 Israel time (nightly no-ping window).
+// Uses hourCycle 'h23' so midnight reads as 0, never 24.
+function isQuietHours(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: ISRAEL_TZ, hour: 'numeric', hourCycle: 'h23',
+  }).formatToParts(now);
+  const hour = parseInt(parts.find(p => p.type === 'hour').value, 10);
+  return hour >= 22 || hour < 7;
+}
+
 // ── DB helpers ───────────────────────────────────────────────────────────────
 
 function getPendingNotices(db) {
@@ -777,6 +788,25 @@ async function runTriage() {
     }
   }
 
+  // ── Phase 2.3: Quiet hours (22:00–07:00 Israel) — defer non-immediate send_now ──
+  // During quiet hours we don't ping the family at night; send_now decisions are
+  // demoted to defer so they land in the morning digest instead. Notices with
+  // urgency_hint='immediate' are exempt — truly urgent, send regardless of hour.
+  if (isQuietHours()) {
+    let suppressed = 0;
+    for (const d of allDecisions) {
+      if (d.action !== 'send_now') continue;
+      const n = noticesById[d.notice_id];
+      if (n && n.urgency_hint === 'immediate') continue;
+      d.action = 'defer';
+      d.reason = (d.reason || '') + ' [quiet hours: send_now→defer]';
+      suppressed++;
+    }
+    if (suppressed > 0) {
+      console.log(`[Triage] Quiet hours (22:00–07:00 Israel) — deferred ${suppressed} send_now decision(s) to morning digest`);
+    }
+  }
+
   // ── Normalize decisions: auto-generate merge_group fallback for send_now with null (P-007) ──
   const normalizedDecisions = normalizeDecisions(allDecisions, noticesById);
 
@@ -885,7 +915,7 @@ async function runTriage() {
 }
 
 // Export for test runner
-module.exports = { callHaiku, callSonnet, preTriageRules, escalateLowConfidence, classifyBucket, buildClassificationPrompt, CLASSIFICATION_SYSTEM, getClassificationSystem, FEW_SHOT_EXAMPLES };
+module.exports = { callHaiku, callSonnet, preTriageRules, escalateLowConfidence, classifyBucket, buildClassificationPrompt, isQuietHours, CLASSIFICATION_SYSTEM, getClassificationSystem, FEW_SHOT_EXAMPLES };
 
 // Run if called directly
 if (require.main === module) {
