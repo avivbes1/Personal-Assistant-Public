@@ -34,7 +34,7 @@ const anthropic = require('../src/llm/anthropic');
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = process.env.EVAL_MODEL || 'claude-haiku-4-5';
 const WINDOW_DAYS = 60;
 const SAMPLE_NOT_ACTIONABLE = 100;
 const SAMPLE_RECEIVED = 50;
