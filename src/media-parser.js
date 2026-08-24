@@ -332,6 +332,58 @@ async function parseDocument(buffer, mimeType, filename) {
 }
 
 /**
+ * Extract content from an already-downloaded media buffer. This is the shared
+ * core used both by live processing (processMediaMessage) and by the retry
+ * pipeline (which re-reads archived files — see media-archive.js / /media/retry),
+ * where the original message object is no longer available.
+ *
+ * @param {Buffer} buffer    — raw media bytes
+ * @param {string} mimeType  — media mime type
+ * @param {string} type      — 'image' | 'sticker' | 'audio' | 'ptt' | 'document'
+ * @param {string} filename  — original filename (documents)
+ * @param {string} groupName — display name for context
+ * @returns {Promise<string|null>} extracted content, or null if nothing extractable
+ */
+async function extractFromMedia(buffer, mimeType, type, filename, groupName) {
+  if (!buffer || !buffer.length) return null;
+
+  // Images / stickers
+  if (type === 'image' || type === 'sticker') {
+    if (buffer.length > MAX_IMAGE_BYTES) {
+      console.log(`[MediaParser] Image too large (${Math.round(buffer.length / 1024)}KB), skipping vision.`);
+      return null;
+    }
+    console.log(`[MediaParser] Describing image from "${groupName}"...`);
+    let described = await describeImage(buffer.toString('base64'), mimeType, groupName);
+    // OCR fallback: if vision produced nothing useful, try Tesseract (Hebrew).
+    if (described === '[תמונה]') {
+      const ocr = tryOcr(buffer, mimeType);
+      if (ocr) {
+        console.log(`[MediaParser] OCR fallback recovered ${ocr.length} chars from "${groupName}".`);
+        described = `[תמונה (OCR): ${ocr.substring(0, 300)}]`;
+      }
+    }
+    return described;
+  }
+
+  // Audio / voice notes (baileys maps both 'audio' and voice to 'ptt')
+  if (type === 'audio' || type === 'ptt') {
+    console.log(`[MediaParser] Transcribing voice note from "${groupName}"...`);
+    const transcription = await transcribeAudio(buffer, mimeType);
+    if (!transcription) return null;
+    return `[הקלטה: ${transcription}]`;
+  }
+
+  // Documents (PDF / Word / Excel)
+  if (type === 'document') {
+    console.log(`[MediaParser] Parsing document "${filename || ''}" from "${groupName}"...`);
+    return await parseDocument(buffer, mimeType, filename || '');
+  }
+
+  return null; // video, location, vcard etc. — no content extraction
+}
+
+/**
  * Process a WhatsApp media message. Returns extracted content string,
  * or null if nothing could be extracted.
  *
@@ -344,61 +396,19 @@ async function parseDocument(buffer, mimeType, filename) {
 async function processMediaMessage(msg, groupRecord, groupName, { forceVision = false } = {}) {
   try {
     const type = msg.type;
-
-    // Images: processed for all groups (forceVision kept for backward compatibility)
-    if (type === 'image' || type === 'sticker') {
-      const media = await msg.downloadMedia();
-      if (!media) return null;
-
-      // Size check (base64 → ~75% of original, approximate)
-      const approxBytes = (media.data.length * 3) / 4;
-      if (approxBytes > MAX_IMAGE_BYTES) {
-        console.log(`[MediaParser] Image too large (${Math.round(approxBytes / 1024)}KB), skipping vision.`);
-        return null;
-      }
-
-      console.log(`[MediaParser] Describing image from "${groupName}"...`);
-      let described = await describeImage(media.data, media.mimetype, groupName);
-
-      // OCR fallback: if vision produced nothing useful, try Tesseract (Hebrew).
-      if (described === '[תמונה]') {
-        const ocr = tryOcr(Buffer.from(media.data, 'base64'), media.mimetype);
-        if (ocr) {
-          console.log(`[MediaParser] OCR fallback recovered ${ocr.length} chars from "${groupName}".`);
-          described = `[תמונה (OCR): ${ocr.substring(0, 300)}]`;
-        }
-      }
-      return described;
+    if (!['image', 'sticker', 'audio', 'ptt', 'document'].includes(type)) {
+      return null; // video, location, vcard etc. — no content extraction
     }
 
-    // Audio / voice notes: all groups (baileys maps both 'audio' and voice to 'ptt')
-    if (type === 'audio' || type === 'ptt') {
-      const media = await msg.downloadMedia();
-      if (!media) return null;
+    const media = await msg.downloadMedia();
+    if (!media || !media.data) return null;
 
-      const buffer = Buffer.from(media.data, 'base64');
-      console.log(`[MediaParser] Transcribing voice note from "${groupName}"...`);
-      const transcription = await transcribeAudio(buffer, media.mimetype);
-      if (!transcription) return null;
-      return `[הקלטה: ${transcription}]`;
-    }
-
-    // Documents: all groups
-    if (type === 'document') {
-      const media = await msg.downloadMedia();
-      if (!media) return null;
-
-      const buffer = Buffer.from(media.data, 'base64');
-      const filename = msg.filename || '';
-      console.log(`[MediaParser] Parsing document "${filename}" from "${groupName}"...`);
-      return await parseDocument(buffer, media.mimetype, filename);
-    }
-
-    return null; // video, location, vcard etc. — no content extraction
+    const buffer = Buffer.from(media.data, 'base64');
+    return await extractFromMedia(buffer, media.mimetype, type, msg.filename || media.filename, groupName);
   } catch (err) {
     console.error('[MediaParser] processMediaMessage error:', err.message);
     return null;
   }
 }
 
-module.exports = { processMediaMessage, transcribeAudio, isSchoolGroup };
+module.exports = { processMediaMessage, extractFromMedia, transcribeAudio, isSchoolGroup };

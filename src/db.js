@@ -495,6 +495,16 @@ function initDB() {
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(group_id, timestamp, body)`);
   } catch (_) {}
 
+  // ── Media archive & retry tracking (safe migrations) ────────────────────────
+  // Every media attachment is archived to disk and tracked here so extraction
+  // failures can be retried later (see media-archive.js + /media/retry).
+  try { db.exec('ALTER TABLE messages ADD COLUMN media_type TEXT'); } catch (_) {}
+  try { db.exec("ALTER TABLE messages ADD COLUMN media_status TEXT CHECK(media_status IN ('pending','processed','failed','retry'))"); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN media_path TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN media_error TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN media_retry_count INTEGER DEFAULT 0'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_media_status ON messages(media_status, media_retry_count)'); } catch (_) {}
+
   // Phase 2.3: notice feedback — thumbs up/down + "missed" reports for triage tuning
   try {
     db.exec(`
@@ -556,6 +566,49 @@ function markMessageFailed(id, errorJson) {
   getDB().prepare(
     'UPDATE messages SET pipeline_state=\'FAILED\', pipeline_error=?, processing_completed_at=?, retry_count=retry_count+1 WHERE id=?'
   ).run(errorJson || null, Date.now(), id);
+}
+
+// --- Media archive / retry tracking ---
+
+/** Record media archive info + processing status on a message row. */
+function updateMessageMedia(id, { media_type, media_path, media_status, media_error } = {}) {
+  if (!id) return;
+  getDB().prepare(
+    'UPDATE messages SET media_type=?, media_path=?, media_status=?, media_error=? WHERE id=?'
+  ).run(media_type || null, media_path || null, media_status || null, media_error || null, id);
+}
+
+/** Update only the media processing status (+ optional error) of a message. */
+function setMediaStatus(id, status, error) {
+  if (!id) return;
+  getDB().prepare('UPDATE messages SET media_status=?, media_error=? WHERE id=?')
+    .run(status, error || null, id);
+}
+
+/** Bump the retry counter after a failed re-processing attempt. */
+function incrementMediaRetry(id) {
+  if (!id) return;
+  getDB().prepare('UPDATE messages SET media_retry_count = media_retry_count + 1 WHERE id=?').run(id);
+}
+
+/** Update a message body after successful (re)extraction. */
+function updateMessageBody(id, body) {
+  if (!id) return;
+  getDB().prepare('UPDATE messages SET body=? WHERE id=?').run(body, id);
+}
+
+/**
+ * Failed media attachments still eligible for a retry (< 3 attempts).
+ * Ordered oldest-first so the backlog is worked in arrival order.
+ */
+function getFailedMedia(limit = 20) {
+  return getDB().prepare(
+    `SELECT id, group_id, sender, body, timestamp, media_type, media_path, media_error, media_retry_count
+     FROM messages
+     WHERE media_status='failed' AND media_retry_count < 3 AND media_path IS NOT NULL
+     ORDER BY timestamp ASC
+     LIMIT ?`
+  ).all(limit);
 }
 
 function getStuckMessages(thresholdMs) {
@@ -1504,6 +1557,12 @@ module.exports = {
   markMessageFailed,
   getStuckMessages,
   getPipelineStats,
+  // Media archive / retry tracking
+  updateMessageMedia,
+  setMediaStatus,
+  incrementMediaRetry,
+  updateMessageBody,
+  getFailedMedia,
   // Config management
   getConfigValue,
   setConfigValue,

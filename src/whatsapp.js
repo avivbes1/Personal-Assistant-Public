@@ -18,7 +18,8 @@ function _ser(obj) {
   if (!obj) return undefined;
   return obj._serialized || obj['$1'] || (typeof obj.toString === 'function' ? obj.toString() : undefined);
 }
-const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal } = require('./db');
+const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus } = require('./db');
+const { archiveMedia } = require('./media-archive');
 const { resolveMembersInText } = require('./family-profiles');
 const { validateOutgoing, repairMessage } = require('./validate-outgoing');
 const { extractFromText, detectMissingParams, buildClarificationQuestion, resolvePartialEvent } = require('./parser');
@@ -401,31 +402,44 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
       || (!body.trim() && ['video', 'location', 'vcard'].includes(msg.type));
     const isImageMsg = isMedia && (msg.type === 'image' || msg.type === 'sticker');
     if (isMedia) {
+      // Archive ALL media attachments to disk for retry/retroactive access
+      let archived = null;
+      try {
+        archived = await archiveMedia(msg, groupId, chat.name);
+      } catch (archErr) {
+        logger.warn({ component: 'WhatsApp', group: chat.name, err: archErr.message }, 'Media archive failed (non-blocking)');
+      }
+
+      let mediaProcessed = false;
       if (isImageMsg) {
         const captionText = (msg.body || '').trim();
         const caption = captionText ? ` (caption: ${captionText.substring(0, 100)})` : '';
-        if (isSchoolGroup(groupRecord)) {
-          // ISSUE-014: school groups — always OCR; missing an event costs more than a wasted vision call
-          logger.info({ component: 'WhatsApp', group: chat.name }, 'School group image — forcing vision OCR');
-          const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true }).catch(() => null);
-          // Keep the caption alongside the OCR/vision result — the attachment and the caption
-          // are both meaningful (caption may name the doc, image holds its content).
-          body = described ? `${described}${caption}` : `[תמונה${caption}]`;
-          if (described) logger.info({ component: 'WhatsApp', ocrPreview: described.substring(0, 80) }, 'School image OCR result');
-        } else {
-          // Non-school: let agent decide based on context
-          body = `[תמונה${caption}]`;
-        }
+        // Process images from ALL groups (not just school) — ISSUE-2026-08-24
+        logger.info({ component: 'WhatsApp', group: chat.name }, 'Processing image attachment');
+        const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true }).catch(() => null);
+        body = described ? `${described}${caption}` : `[תמונה${caption}]`;
+        mediaProcessed = !!described;
+        if (described) logger.info({ component: 'WhatsApp', ocrPreview: described.substring(0, 80) }, 'Image OCR result');
       } else {
         const extracted = await processMediaMessage(msg, groupRecord, chat.name).catch(() => null);
         if (extracted) {
           body = extracted;
+          mediaProcessed = true;
           logger.info({ component: 'WhatsApp', group: chat.name, preview: extracted.substring(0, 80) }, 'Media extracted');
         } else {
           const mediaLabel = { video: '[וידאו]', audio: '[הקלטה קולית]', ptt: '[הקלטה קולית]', document: '[מסמך]', location: '[מיקום]' };
           body = mediaLabel[msg.type] || '[מדיה]';
         }
       }
+
+      // Track media status in DB (after messageId is assigned below)
+      // We set a flag here and apply after save
+      msg._mediaTrack = {
+        type: msg.type,
+        path: archived ? archived.path : null,
+        status: mediaProcessed ? 'processed' : (archived ? 'failed' : 'failed'),
+        error: mediaProcessed ? null : 'processing failed or skipped'
+      };
     }
 
     // Save to DB (skip if caller already saved to avoid duplicates)
@@ -440,6 +454,18 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
       if (messageId && isMedia && body !== '[מדיה]' && body !== '[תמונה]' && body !== '[מסמך]') {
         getDB().prepare('UPDATE messages SET body=? WHERE id=?').run(body, messageId);
       }
+    }
+
+    // Track media processing status in DB
+    if (messageId && msg._mediaTrack) {
+      try {
+        updateMessageMedia(messageId, {
+          media_type: msg._mediaTrack.type,
+          media_path: msg._mediaTrack.path,
+          media_status: msg._mediaTrack.status,
+          media_error: msg._mediaTrack.error
+        });
+      } catch (_) {}
     }
 
     logger.info({ component: 'WhatsApp', group: chat.name, sender, bodyPreview: body.substring(0, 60) }, 'Message from group');

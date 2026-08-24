@@ -347,6 +347,50 @@ function createServer() {
       }
     }
 
+    // GET /media/retry — retry processing failed media attachments
+    if (req.method === 'GET' && req.url.startsWith('/media/retry')) {
+      try {
+        const { getFailedMedia, setMediaStatus } = require('./db');
+        const { getArchivedMedia } = require('./media-archive');
+        const { processMediaMessage } = require('./media-parser');
+        const failed = getFailedMedia(10);
+        const results = [];
+        for (const row of failed) {
+          const archived = getArchivedMedia(row.group_id, row.timestamp);
+          if (!archived) {
+            results.push({ id: row.id, status: 'no_archive', group: row.group_id });
+            continue;
+          }
+          try {
+            // Build a minimal msg object for processMediaMessage
+            const fakeMsg = {
+              type: row.media_type || 'image',
+              body: row.body,
+              hasMedia: true,
+              downloadMedia: async () => ({ data: archived.buffer.toString('base64'), mimetype: archived.mimeType }),
+            };
+            const extracted = await processMediaMessage(fakeMsg, null, row.group_id, { forceVision: true });
+            if (extracted) {
+              require('./db').getDB().prepare('UPDATE messages SET body=? WHERE id=?').run(extracted, row.id);
+              setMediaStatus(row.id, 'processed', null);
+              results.push({ id: row.id, status: 'processed', preview: extracted.substring(0, 80) });
+            } else {
+              setMediaStatus(row.id, 'failed', 'retry returned null');
+              results.push({ id: row.id, status: 'still_failed' });
+            }
+          } catch (e) {
+            setMediaStatus(row.id, 'failed', e.message);
+            results.push({ id: row.id, status: 'error', error: e.message });
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true, total: failed.length, results }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    }
+
     // POST /feedback { notice_id, feedback, comment }
     if (req.method === 'POST' && req.url === '/feedback') {
       let body = '';
