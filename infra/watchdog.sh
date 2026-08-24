@@ -109,6 +109,27 @@ async function run() {
     try { fs.unlinkSync('$ALERT_FILE'); } catch {}
   }
 
+  // Check 3: Volume anomaly (message/notice pipeline)
+  let volumeAlerts = [];
+  try {
+    const { execSync } = require('child_process');
+    const volRaw = execSync('cd /home/ubuntu/besinsky-bot && node scripts/volume-check.js 2>/dev/null', { encoding: 'utf8', timeout: 10000 });
+    const vol = JSON.parse(volRaw);
+    if (vol.alerts && vol.alerts.length > 0) {
+      vol.alerts.forEach(a => {
+        failures.push('volume-' + a);
+        details.push('Volume alert: ' + a + '.');
+      });
+    }
+    state.volume = vol;
+  } catch (e) {
+    // volume check failed — non-critical, log but don't alert
+    state.volumeError = e.message.substring(0, 100);
+  }
+
+  // Re-write state with volume info
+  fs.writeFileSync('$STATE_FILE', JSON.stringify(state, null, 2));
+
   // Give ntfy request time to complete
   setTimeout(() => process.exit(0), 1000);
 }
