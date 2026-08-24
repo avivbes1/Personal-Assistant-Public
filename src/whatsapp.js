@@ -394,18 +394,23 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
     // Resolve message body — for media, try to extract content
     const groupRecord = getGroup(groupId);
     let body = msg.body || '';
-    // Documents: always extract even if msg.body contains the filename
-    const isDocumentMsg = msg.type === 'document';
-    const isMedia = (isDocumentMsg || !body.trim()) && ['image', 'sticker', 'document', 'audio', 'ptt', 'video', 'location', 'vcard'].includes(msg.type);
+    // Attachment types worth extracting even when the message also carries caption text
+    // (e.g. a teacher captions an image with "מצ\"ב מכתב" and attaches the actual letter).
+    const alwaysMediaTypes = ['image', 'sticker', 'document', 'audio', 'ptt'];
+    const isMedia = alwaysMediaTypes.includes(msg.type)
+      || (!body.trim() && ['video', 'location', 'vcard'].includes(msg.type));
     const isImageMsg = isMedia && (msg.type === 'image' || msg.type === 'sticker');
     if (isMedia) {
       if (isImageMsg) {
-        const caption = msg.body ? ` (caption: ${msg.body.substring(0, 100)})` : '';
+        const captionText = (msg.body || '').trim();
+        const caption = captionText ? ` (caption: ${captionText.substring(0, 100)})` : '';
         if (isSchoolGroup(groupRecord)) {
           // ISSUE-014: school groups — always OCR; missing an event costs more than a wasted vision call
           logger.info({ component: 'WhatsApp', group: chat.name }, 'School group image — forcing vision OCR');
           const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true }).catch(() => null);
-          body = described || `[תמונה${caption}]`;
+          // Keep the caption alongside the OCR/vision result — the attachment and the caption
+          // are both meaningful (caption may name the doc, image holds its content).
+          body = described ? `${described}${caption}` : `[תמונה${caption}]`;
           if (described) logger.info({ component: 'WhatsApp', ocrPreview: described.substring(0, 80) }, 'School image OCR result');
         } else {
           // Non-school: let agent decide based on context
