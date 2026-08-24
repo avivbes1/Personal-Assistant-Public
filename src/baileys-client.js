@@ -26,6 +26,7 @@ const EventEmitter = require('events');
 const pino = require('pino');
 const appLogger = require('./logger');
 const { getGroup } = require('./db');
+const { captureSystemMessages } = require('./system-message-capture');
 
 const AUTH_DIR = path.join(__dirname, '..', '.baileys_auth');
 const STORE_DIR = path.join(__dirname, '..', 'data', 'baileys-store');
@@ -330,6 +331,19 @@ class BaileysClient extends EventEmitter {
         appLogger.info({ component: 'Baileys', jid: this.info.wid._serialized }, 'Connected');
         this.emit('authenticated');
         this.emit('ready');
+
+        // ── System message capture: attach inbound-DM capture to this socket.
+        // initialize() creates a fresh socket on every (re)connect, so guard by
+        // socket identity to avoid double-attaching if 'open' fires twice on the
+        // same socket (updateSocket pattern).
+        try {
+          if (this._captureSocket !== this._sock) {
+            captureSystemMessages(this._sock);
+            this._captureSocket = this._sock;
+          }
+        } catch (err) {
+          appLogger.error({ component: 'Baileys', err: err.message }, 'Failed to attach system message capture');
+        }
 
         // ── Watchdog: attach to socket on connection open ──
         const watchdog = require('./watchdog');

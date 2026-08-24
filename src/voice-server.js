@@ -228,7 +228,10 @@ function createServer() {
         const jid = urlObj.searchParams.get('jid') || defaultJid;
         const limit = Math.min(parseInt(urlObj.searchParams.get('limit') || '30', 10), 100);
 
-        // Try live fetchMessages first
+        // Try live fetchMessages first. Only use the live result when it
+        // actually has messages — some client backends (old whatsapp-web.js)
+        // return getChatById() successfully but fetchMessages() yields 0 rows.
+        // In that case fall through to the dm-history.jsonl log, which has data.
         if (_client) {
           try {
             const chat = await _client.getChatById(jid);
@@ -242,8 +245,11 @@ function createServer() {
                 type: m.type,
                 fromMe: m.fromMe,
               }));
-              res.writeHead(200, { 'Content-Type': 'application/json' });
-              return res.end(JSON.stringify({ ok: true, jid, count: result.length, messages: result, source: 'live' }));
+              if (result.length > 0) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ ok: true, jid, count: result.length, messages: result, source: 'live' }));
+              }
+              // 0 live messages — fall through to the log fallback below.
             }
           } catch (_liveErr) {
             // fall through to log file
@@ -291,6 +297,41 @@ function createServer() {
         res.end(JSON.stringify({ error: e.message }));
       }
       return;
+    }
+
+    // GET /system-inbox?limit=10&since=<unix_ts>
+    // Returns the latest N captured inbound DMs from Aviv (see
+    // system-message-capture.js), filtered to timestamp >= since, sorted desc.
+    if (req.method === 'GET' && req.url.startsWith('/system-inbox')) {
+      try {
+        const urlObj = new URL(req.url, 'http://localhost');
+        const limit = Math.min(parseInt(urlObj.searchParams.get('limit') || '10', 10), 100);
+        const since = parseInt(urlObj.searchParams.get('since') || '0', 10) || 0;
+
+        const { SYSTEM_INBOX } = require('./system-message-capture');
+        let messages = [];
+        try {
+          const files = fs.readdirSync(SYSTEM_INBOX).filter(f => f.endsWith('.json'));
+          for (const file of files) {
+            try {
+              const rec = JSON.parse(fs.readFileSync(path.join(SYSTEM_INBOX, file), 'utf8'));
+              const ts = Number(rec.timestamp) || 0;
+              if (ts >= since) messages.push(rec);
+            } catch (_) {}
+          }
+        } catch (_) {
+          // Inbox dir may not exist yet — treat as empty.
+        }
+
+        messages.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+        messages = messages.slice(0, limit);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true, count: messages.length, messages }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
     }
 
     if (req.method === 'POST' && req.url === '/send-message') {
