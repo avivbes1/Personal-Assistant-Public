@@ -347,35 +347,60 @@ function createServer() {
       }
     }
 
-    // GET /media/retry — retry processing failed media attachments
+    // GET /media/retry[?limit=N] — reprocess failed media attachments from the
+    // on-disk archive (the live message object is long gone by cron time).
+    // On success: update the message body + status, and replace the earlier
+    // "couldn't read this attachment" notice with the real extracted content.
     if (req.method === 'GET' && req.url.startsWith('/media/retry')) {
       try {
-        const { getFailedMedia, setMediaStatus } = require('./db');
-        const { getArchivedMedia } = require('./media-archive');
-        const { processMediaMessage } = require('./media-parser');
-        const failed = getFailedMedia(10);
+        const { getFailedMedia, setMediaStatus, incrementMediaRetry, updateMessageBody, getGroup, getDB } = require('./db');
+        const { getArchivedMedia, mimeForExt } = require('./media-archive');
+        const { extractFromMedia } = require('./media-parser');
+        const urlObj = new URL(req.url, 'http://localhost');
+        const limit = Math.min(parseInt(urlObj.searchParams.get('limit') || '10', 10), 50);
+        const failed = getFailedMedia(limit);
         const results = [];
+
         for (const row of failed) {
-          const archived = getArchivedMedia(row.group_id, row.timestamp);
-          if (!archived) {
-            results.push({ id: row.id, status: 'no_archive', group: row.group_id });
+          // Count the attempt up-front so a permanently-broken file eventually
+          // stops being retried (getFailedMedia caps at media_retry_count < 3).
+          incrementMediaRetry(row.id);
+
+          // Prefer the recorded path; fall back to a timestamp scan of the archive.
+          let buffer = null;
+          let mimeType = null;
+          try {
+            if (row.media_path && fs.existsSync(row.media_path)) {
+              buffer = fs.readFileSync(row.media_path);
+              mimeType = mimeForExt(row.media_path.split('.').pop());
+            }
+          } catch (_) {}
+          if (!buffer) {
+            const archived = getArchivedMedia(row.group_id, row.timestamp);
+            if (archived) { buffer = archived.buffer; mimeType = archived.mimeType; }
+          }
+          if (!buffer) {
+            setMediaStatus(row.id, 'failed', 'archived file missing');
+            results.push({ id: row.id, status: 'no_archive' });
             continue;
           }
+
           try {
-            // Build a minimal msg object for processMediaMessage
-            const fakeMsg = {
-              type: row.media_type || 'image',
-              body: row.body,
-              hasMedia: true,
-              downloadMedia: async () => ({ data: archived.buffer.toString('base64'), mimetype: archived.mimeType }),
-            };
-            const extracted = await processMediaMessage(fakeMsg, null, row.group_id, { forceVision: true });
-            if (extracted) {
-              require('./db').getDB().prepare('UPDATE messages SET body=? WHERE id=?').run(extracted, row.id);
+            const groupName = (getGroup(row.group_id) || {}).name || row.group_id;
+            const extracted = await extractFromMedia(buffer, mimeType, row.media_type, null, groupName);
+            const ok = extracted && extracted !== '[תמונה]' && !/לא הצלחתי לקרוא/.test(extracted);
+            if (ok) {
+              updateMessageBody(row.id, extracted);
               setMediaStatus(row.id, 'processed', null);
+              // Replace the "couldn't read" placeholder notice with real content.
+              try {
+                getDB().prepare(
+                  'UPDATE notices SET content=? WHERE source_timestamp=? AND group_name=? AND dismissed=0'
+                ).run(extracted, row.timestamp, groupName);
+              } catch (_) {}
               results.push({ id: row.id, status: 'processed', preview: extracted.substring(0, 80) });
             } else {
-              setMediaStatus(row.id, 'failed', 'retry returned null');
+              setMediaStatus(row.id, 'failed', 'retry returned no content');
               results.push({ id: row.id, status: 'still_failed' });
             }
           } catch (e) {
@@ -383,8 +408,10 @@ function createServer() {
             results.push({ id: row.id, status: 'error', error: e.message });
           }
         }
+
+        const processed = results.filter(r => r.status === 'processed').length;
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ ok: true, total: failed.length, results }));
+        return res.end(JSON.stringify({ ok: true, total: failed.length, processed, results }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ ok: false, error: e.message }));

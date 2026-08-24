@@ -383,6 +383,114 @@ async function extractFromMedia(buffer, mimeType, type, filename, groupName) {
   return null; // video, location, vcard etc. — no content extraction
 }
 
+const MAX_URL_FETCH_BYTES = 1024 * 1024; // 1 MB cap for link fetching
+const URL_FETCH_TIMEOUT_MS = 30_000;      // 30s
+
+/**
+ * Detect a Google Docs/Sheets/Slides/Drive URL and return its export URL,
+ * or null if the URL isn't a fetchable Google document.
+ *
+ * - docs.google.com/document/d/ID     → /export?format=txt
+ * - docs.google.com/spreadsheets/d/ID → /export?format=csv
+ * - docs.google.com/presentation/d/ID → /export?format=txt
+ * - drive.google.com/file/d/ID        → uc?export=download&id=ID
+ */
+function googleExportUrl(url) {
+  if (!url) return null;
+  let m;
+  if ((m = url.match(/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/))) {
+    return { url: `https://docs.google.com/document/d/${m[1]}/export?format=txt`, label: 'Google Doc' };
+  }
+  if ((m = url.match(/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/))) {
+    return { url: `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv`, label: 'Google Sheet' };
+  }
+  if ((m = url.match(/docs\.google\.com\/presentation\/d\/([a-zA-Z0-9_-]+)/))) {
+    return { url: `https://docs.google.com/presentation/d/${m[1]}/export?format=txt`, label: 'Google Slides' };
+  }
+  if ((m = url.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/))) {
+    return { url: `https://drive.google.com/uc?export=download&id=${m[1]}`, label: 'Google Drive file' };
+  }
+  return null; // forms, external sites, etc. — don't try
+}
+
+/**
+ * Fetch a URL over https, following redirects, capped at 1MB / 30s.
+ * Resolves { status, body } or null on error. Non-2xx statuses (private
+ * docs redirect to a login page) resolve with the status so the caller
+ * can bail gracefully.
+ */
+function httpsGetCapped(url, redirectsLeft = 5) {
+  return new Promise((resolve) => {
+    let req;
+    try {
+      req = https.get(url, (res) => {
+        const status = res.statusCode || 0;
+
+        // Follow redirects (Google export often 302s to a signed URL / login page)
+        if (status >= 300 && status < 400 && res.headers.location) {
+          res.resume(); // drain
+          if (redirectsLeft <= 0) return resolve({ status, body: '' });
+          const next = new URL(res.headers.location, url).toString();
+          return resolve(httpsGetCapped(next, redirectsLeft - 1));
+        }
+
+        if (status !== 200) {
+          res.resume();
+          return resolve({ status, body: '' });
+        }
+
+        let bytes = 0;
+        const chunks = [];
+        res.on('data', (chunk) => {
+          bytes += chunk.length;
+          if (bytes > MAX_URL_FETCH_BYTES) {
+            res.destroy();
+            return; // 'close' fires; we still resolve with what we have
+          }
+          chunks.push(chunk);
+        });
+        res.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8') }));
+        res.on('close', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8') }));
+      });
+    } catch (e) {
+      return resolve(null);
+    }
+    req.setTimeout(URL_FETCH_TIMEOUT_MS, () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve(null));
+  });
+}
+
+/**
+ * Extract text content from a shared link (Google Docs/Sheets/Slides/Drive).
+ * Returns a '[Google Doc: ...]'-style string truncated to MAX_TEXT_CHARS,
+ * or null if the URL isn't a supported Google document or the fetch failed
+ * (e.g. the doc is private and the export redirects to a login page).
+ */
+async function extractFromUrl(url, groupName) {
+  const target = googleExportUrl(url);
+  if (!target) return null; // not a fetchable Google doc — skip
+
+  try {
+    const result = await httpsGetCapped(target.url);
+    if (!result || result.status !== 200 || !result.body) {
+      console.log(`[MediaParser] Link fetch failed for ${target.label} from "${groupName}" (status ${result?.status ?? 'error'}) — likely private/auth-required.`);
+      return null;
+    }
+
+    const text = result.body.replace(/\s+/g, ' ').trim();
+    if (!text) {
+      console.log(`[MediaParser] ${target.label} from "${groupName}" was empty.`);
+      return null;
+    }
+
+    console.log(`[MediaParser] Extracted ${text.length} chars from ${target.label} in "${groupName}".`);
+    return `[${target.label}: ${text.substring(0, MAX_TEXT_CHARS)}]`;
+  } catch (e) {
+    console.warn(`[MediaParser] extractFromUrl error for "${groupName}":`, e.message);
+    return null;
+  }
+}
+
 /**
  * Process a WhatsApp media message. Returns extracted content string,
  * or null if nothing could be extracted.
@@ -411,4 +519,4 @@ async function processMediaMessage(msg, groupRecord, groupName, { forceVision = 
   }
 }
 
-module.exports = { processMediaMessage, extractFromMedia, transcribeAudio, isSchoolGroup };
+module.exports = { processMediaMessage, extractFromMedia, extractFromUrl, transcribeAudio, isSchoolGroup };

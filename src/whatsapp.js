@@ -23,7 +23,7 @@ const { archiveMedia } = require('./media-archive');
 const { resolveMembersInText } = require('./family-profiles');
 const { validateOutgoing, repairMessage } = require('./validate-outgoing');
 const { extractFromText, detectMissingParams, buildClarificationQuestion, resolvePartialEvent } = require('./parser');
-const { processMediaMessage, isSchoolGroup } = require('./media-parser');
+const { processMediaMessage, extractFromUrl, isSchoolGroup } = require('./media-parser');
 const { addEvent, addSharedEvent, searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent } = require('./calendar');
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 const { answerQuery } = require('./query');
@@ -410,36 +410,75 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
         logger.warn({ component: 'WhatsApp', group: chat.name, err: archErr.message }, 'Media archive failed (non-blocking)');
       }
 
+      const captionText = (msg.body || '').trim();
       let mediaProcessed = false;
+      let mediaError = null;
+
       if (isImageMsg) {
-        const captionText = (msg.body || '').trim();
         const caption = captionText ? ` (caption: ${captionText.substring(0, 100)})` : '';
         // Process images from ALL groups (not just school) — ISSUE-2026-08-24
         logger.info({ component: 'WhatsApp', group: chat.name }, 'Processing image attachment');
-        const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true }).catch(() => null);
+        const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true }).catch((e) => { mediaError = e.message; return null; });
         body = described ? `${described}${caption}` : `[תמונה${caption}]`;
-        mediaProcessed = !!described;
-        if (described) logger.info({ component: 'WhatsApp', ocrPreview: described.substring(0, 80) }, 'Image OCR result');
-      } else {
-        const extracted = await processMediaMessage(msg, groupRecord, chat.name).catch(() => null);
-        if (extracted) {
+        // A bare '[תמונה]' means vision + OCR both returned nothing — treat as
+        // unreadable so it gets flagged for retry (not silently "processed").
+        mediaProcessed = !!described && described !== '[תמונה]';
+        if (mediaProcessed) logger.info({ component: 'WhatsApp', ocrPreview: described.substring(0, 80) }, 'Image OCR result');
+        else mediaError = mediaError || 'vision/OCR returned no text';
+      } else if (msg.type === 'video') {
+        // Archived only; no text extraction expected — not a failure.
+        body = captionText || '[וידאו]';
+        mediaProcessed = true;
+      } else if (['document', 'audio', 'ptt'].includes(msg.type)) {
+        const extracted = await processMediaMessage(msg, groupRecord, chat.name).catch((e) => { mediaError = e.message; return null; });
+        // parseDocument returns '[... — לא הצלחתי לקרוא]' when a parser errors — that's a failure worth retrying.
+        const ok = extracted && !/לא הצלחתי לקרוא/.test(extracted);
+        if (ok) {
           body = extracted;
           mediaProcessed = true;
           logger.info({ component: 'WhatsApp', group: chat.name, preview: extracted.substring(0, 80) }, 'Media extracted');
         } else {
-          const mediaLabel = { video: '[וידאו]', audio: '[הקלטה קולית]', ptt: '[הקלטה קולית]', document: '[מסמך]', location: '[מיקום]' };
+          const mediaLabel = { audio: '[הקלטה קולית]', ptt: '[הקלטה קולית]', document: '[מסמך]' };
           body = mediaLabel[msg.type] || '[מדיה]';
+          mediaError = mediaError || 'extraction returned no content';
         }
+      } else {
+        // location / vcard — no content extraction, nothing to archive/retry.
+        const mediaLabel = { location: '[מיקום]', vcard: '[איש קשר]' };
+        body = mediaLabel[msg.type] || '[מדיה]';
       }
 
-      // Track media status in DB (after messageId is assigned below)
-      // We set a flag here and apply after save
-      msg._mediaTrack = {
-        type: msg.type,
-        path: archived ? archived.path : null,
-        status: mediaProcessed ? 'processed' : (archived ? 'failed' : 'failed'),
-        error: mediaProcessed ? null : 'processing failed or skipped'
-      };
+      // Track media status in DB (applied after messageId is assigned below).
+      // location/vcard aren't archivable attachments → don't track them.
+      const isArchivableType = ['image', 'sticker', 'document', 'audio', 'ptt', 'video'].includes(msg.type);
+      if (isArchivableType) {
+        msg._mediaTrack = {
+          type: msg.type,
+          path: archived ? archived.path : null,
+          status: mediaProcessed ? 'processed' : 'failed',
+          error: mediaProcessed ? null : mediaError,
+          failed: !mediaProcessed,
+          caption: captionText,
+        };
+      }
+    }
+
+    // Shared links — a Google Docs/Sheets/Slides/Drive URL arrives as a plain
+    // text message (not an attachment). Fetch and append the content so the
+    // agent classifies on the actual document, not just the bare link.
+    // Runs for text messages too (after the media block above).
+    const GOOGLE_URL_REGEX = /https?:\/\/(?:docs|drive)\.google\.com\/\S+/i;
+    const googleLinkMatch = body.match(GOOGLE_URL_REGEX);
+    if (googleLinkMatch) {
+      try {
+        const linkContent = await extractFromUrl(googleLinkMatch[0], chat.name);
+        if (linkContent) {
+          body = body.trim() ? `${body}\n${linkContent}` : linkContent;
+          logger.info({ component: 'WhatsApp', group: chat.name, preview: linkContent.substring(0, 80) }, 'Google link content extracted');
+        }
+      } catch (e) {
+        logger.warn({ component: 'WhatsApp', group: chat.name, err: e.message }, 'Google link extraction failed (non-blocking)');
+      }
     }
 
     // Save to DB (skip if caller already saved to avoid duplicates)
@@ -495,6 +534,30 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
       return;
     }
 
+    // Media extraction failed — surface a notice with what we know (caption,
+    // group, sender) and leave the message flagged for retry. We NEVER ask the
+    // family to open the attachment themselves; the /media/retry job will keep
+    // trying, and the archived file lets us answer "מה במכתב?" retroactively.
+    if (messageId && msg._mediaTrack && msg._mediaTrack.failed) {
+      try {
+        const t = msg._mediaTrack;
+        const typeLabelHe = { document: 'מסמך', audio: 'הקלטה', ptt: 'הקלטה קולית', image: 'תמונה', sticker: 'תמונה', video: 'סרטון' }[t.type] || 'קובץ';
+        const capPart = t.caption ? ` כיתוב: "${t.caption.substring(0, 120)}".` : '';
+        const noticeContent = `📎 הגיע ${typeLabelHe} מ-${sender} בקבוצה "${chat.name}" שעדיין לא הצלחתי לקרוא.${capPart} אנסה שוב אוטומטית בקרוב ואעדכן.`;
+        saveNotice({
+          group_name: chat.name,
+          content: noticeContent,
+          relevance_date: new Date(msg.timestamp * 1000).toLocaleDateString('en-CA', { timeZone: config.TIMEZONE || 'Asia/Jerusalem' }),
+          source_timestamp: msg.timestamp * 1000,
+          message_timestamp: msg.timestamp * 1000,
+          urgency_hint: 'routine',
+        });
+        logger.warn({ component: 'WhatsApp', group: chat.name, type: t.type, err: t.error }, 'Media unreadable — notice created, flagged for retry');
+      } catch (e) {
+        logger.error({ component: 'WhatsApp', err: e.message }, 'Failed to create media-failure notice');
+      }
+    }
+
     const agentResult = await handleGroupEvent(body, chat.name, sender, groupDescription, recentMessages, msg.timestamp * 1000, isImageMsg, msgIsBacklog, groupRecord?.primary_child || null, messageId);
 
     // If agent decided this image is worth reading, run vision now and upsert the notice
@@ -504,6 +567,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
         const described = await processMediaMessage(msg, groupRecord, chat.name, { forceVision: true });
         if (described) {
           logger.info({ component: 'WhatsApp', preview: described.substring(0, 100) }, 'Image described');
+          if (messageId && described !== '[תמונה]') setMediaStatus(messageId, 'processed', null);
           // Try UPDATE first (old path: agent also saved a notice)
           const updated = getDB().prepare(
             'UPDATE notices SET content = ? WHERE source_timestamp = ? AND group_name = ? AND dismissed = 0'
