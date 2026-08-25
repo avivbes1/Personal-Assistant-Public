@@ -300,8 +300,10 @@ function createServer() {
     }
 
     // GET /system-inbox?limit=10&since=<unix_ts>
-    // Returns the latest N captured inbound DMs from Aviv (see
-    // system-message-capture.js), filtered to timestamp >= since, sorted desc.
+    // Returns the latest N captured DMs in Aviv's chat — both inbound (Aviv →
+    // us) and outbound (system alerts sent to Aviv), each tagged with a
+    // `direction` field (see system-message-capture.js). Filtered to
+    // timestamp >= since, sorted by timestamp desc.
     if (req.method === 'GET' && req.url.startsWith('/system-inbox')) {
       try {
         const urlObj = new URL(req.url, 'http://localhost');

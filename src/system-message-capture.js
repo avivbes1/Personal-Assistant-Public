@@ -1,13 +1,17 @@
 'use strict';
 
 /**
- * system-message-capture.js — Event-driven capture of inbound DM messages
- * from Aviv (the operator) into a plain-file "system inbox".
+ * system-message-capture.js — Event-driven capture of DM messages to/from
+ * Aviv (the operator) into a plain-file "system inbox".
  *
- * Every messages.upsert, if a message is from Aviv's JID (and not fromMe),
- * it is written to data/system-inbox/ as a JSON file named
- * {timestamp}_{messageId}.json. This gives other tooling a simple, durable
- * drop folder of operator instructions without touching the main pipeline.
+ * Every messages.upsert, if a message belongs to Aviv's chat, it is written to
+ * data/system-inbox/ as a JSON file named {timestamp}_{messageId}.json. Two
+ * directions are captured:
+ *   - inbound:  fromMe=false, remoteJid is Aviv (Aviv → us)
+ *   - outbound: fromMe=true,  remoteJid is Aviv (us → Aviv). These are the
+ *               system alerts OpenClaw sends through a different linked device.
+ * This gives other tooling a simple, durable drop folder of operator
+ * instructions and system alerts without touching the main pipeline.
  */
 
 const fs = require('fs');
@@ -89,10 +93,13 @@ function captureSystemMessages(sock) {
       try {
         const key = rawMsg && rawMsg.key;
         if (!key) continue;
-        // Only inbound (not from us) messages from Aviv's JID.
-        if (key.fromMe) continue;
+        // Only messages in Aviv's chat (remoteJid is Aviv), regardless of
+        // direction. Inbound = Aviv → us (fromMe=false). Outbound = us → Aviv
+        // (fromMe=true), i.e. system alerts OpenClaw sends via a linked device.
         if (jidUser(key.remoteJid) !== AVIV_USER) continue;
         if (!rawMsg.message) continue;
+
+        const direction = key.fromMe ? 'outbound' : 'inbound';
 
         const id = key.id;
         const timestamp = rawMsg.messageTimestamp ? Number(rawMsg.messageTimestamp) : Math.floor(Date.now() / 1000);
@@ -102,6 +109,7 @@ function captureSystemMessages(sock) {
         const record = {
           id,
           timestamp,
+          direction,
           text,
           type,
           raw: rawMsg,
@@ -112,7 +120,7 @@ function captureSystemMessages(sock) {
         const filePath = path.join(SYSTEM_INBOX, `${timestamp}_${safeId}.json`);
         fs.writeFileSync(filePath, JSON.stringify(record, null, 2), 'utf8');
 
-        appLogger.info({ component: 'SystemMessageCapture', id, type }, 'Captured system message from Aviv');
+        appLogger.info({ component: 'SystemMessageCapture', id, type, direction }, `Captured ${direction} system message for Aviv`);
       } catch (err) {
         appLogger.error({ component: 'SystemMessageCapture', err: err.message }, 'Error capturing system message');
       }
