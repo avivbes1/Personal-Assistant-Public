@@ -1,13 +1,16 @@
 #!/bin/bash
-# Besinsky bot external watchdog — runs via systemd timer every 2 minutes.
+# Besinsky bot external watchdog — runs via systemd timer every 5 minutes.
 # Detection is out-of-band (not dependent on WhatsApp or LLM).
 # Writes results for Lipa's cron to read + sends ntfy.sh backup to Aviv.
+# DEBOUNCE: only alerts after 3 consecutive failures (~15 min of confirmed downtime).
 set -euo pipefail
 
 NTFY_TOPIC="${NTFY_TOPIC:-besinsky-watchdog-af40ab37}"
 ALERT_FILE="/tmp/watchdog-alert.json"
 STATE_FILE="/home/ubuntu/besinsky-bot/data/watchdog-state.json"
+CONSECUTIVE_FAIL_FILE="/tmp/watchdog-consecutive-fails"
 LOG="/var/log/besinsky-watchdog.log"
+ALERT_THRESHOLD=3  # consecutive failures before alerting
 
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -79,31 +82,49 @@ async function run() {
 
   fs.writeFileSync('$STATE_FILE', JSON.stringify(state, null, 2));
 
+  // ── Debounce: track consecutive failures ──
+  const CONSECUTIVE_FAIL_FILE = '$CONSECUTIVE_FAIL_FILE';
+  const ALERT_THRESHOLD = parseInt('$ALERT_THRESHOLD', 10);
+
   if (failures.length > 0) {
-    fs.appendFileSync('$LOG', ts + ' FAIL ' + failures.join(' ') + '\n');
+    // Increment consecutive failure count
+    let consecutiveFails = 1;
+    try {
+      const prev = parseInt(fs.readFileSync(CONSECUTIVE_FAIL_FILE, 'utf8').trim(), 10);
+      if (!isNaN(prev)) consecutiveFails = prev + 1;
+    } catch {} // file doesn't exist yet
+    fs.writeFileSync(CONSECUTIVE_FAIL_FILE, String(consecutiveFails));
 
-    // Write alert flag file for Lipa's cron
-    fs.writeFileSync('$ALERT_FILE', JSON.stringify({
-      ts: tsMs,
-      message: '⚠️ Watchdog alert: ' + failures.join(' '),
-      details: details.join(' '),
-      probeResult: probe
-    }, null, 2));
+    fs.appendFileSync('$LOG', ts + ' FAIL(' + consecutiveFails + '/' + ALERT_THRESHOLD + ') ' + failures.join(' ') + '\n');
 
-    // Send to ntfy.sh (Aviv's backup — best effort)
-    const msg = 'WATCHDOG: ' + failures.join(' ') + '\n' + details.join(' ');
-    const postData = msg;
-    const ntfyReq = https.request({
-      hostname: 'ntfy.sh',
-      path: '/$NTFY_TOPIC',
-      method: 'POST',
-      headers: { 'Title': 'Besinsky Bot Alert', 'Priority': 'high', 'Tags': 'warning' },
-      timeout: 5000
-    });
-    ntfyReq.on('error', () => {});
-    ntfyReq.write(postData);
-    ntfyReq.end();
+    if (consecutiveFails >= ALERT_THRESHOLD) {
+      // Write alert flag file for Lipa's cron
+      fs.writeFileSync('$ALERT_FILE', JSON.stringify({
+        ts: tsMs,
+        message: '⚠️ Watchdog alert (' + consecutiveFails + ' consecutive failures): ' + failures.join(' '),
+        details: details.join(' '),
+        consecutiveFails,
+        probeResult: probe
+      }, null, 2));
+
+      // Send to ntfy.sh (Aviv's backup — best effort)
+      const msg = 'WATCHDOG (' + consecutiveFails + 'x): ' + failures.join(' ') + '\n' + details.join(' ');
+      const ntfyReq = https.request({
+        hostname: 'ntfy.sh',
+        path: '/$NTFY_TOPIC',
+        method: 'POST',
+        headers: { 'Title': 'Besinsky Bot Alert', 'Priority': 'high', 'Tags': 'warning' },
+        timeout: 5000
+      });
+      ntfyReq.on('error', () => {});
+      ntfyReq.write(msg);
+      ntfyReq.end();
+    } else {
+      fs.appendFileSync('$LOG', ts + ' DEBOUNCE: ' + consecutiveFails + '/' + ALERT_THRESHOLD + ' — suppressing alert\n');
+    }
   } else {
+    // All clear — reset consecutive failure counter
+    try { fs.unlinkSync(CONSECUTIVE_FAIL_FILE); } catch {}
     fs.appendFileSync('$LOG', ts + ' OK probe=' + (probe.roundTripMs || 0) + 'ms\n');
     // Clear alert file
     try { fs.unlinkSync('$ALERT_FILE'); } catch {}

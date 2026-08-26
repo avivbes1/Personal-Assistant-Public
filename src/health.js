@@ -153,9 +153,9 @@ async function runChecks() {
         ).get();
         const lastMsgTs = lastMsg && lastMsg.ts ? lastMsg.ts : 0;
 
-        // Compute active (daytime) hours elapsed since last message — ignore 23:00–08:00
+        // Compute active (daytime) hours elapsed since last message — ignore 23:00–07:00
         const activeHours = (() => {
-          const DAY_START = 8, DAY_END = 23;
+          const DAY_START = 7, DAY_END = 23;
           let activeMs = 0;
           let t = lastMsgTs;
           while (t < nowMs) {
@@ -169,7 +169,7 @@ async function runChecks() {
               activeMs += step;
               t = dayEndMs;
             } else {
-              // Skip to next 08:00
+              // Skip to next 07:00
               const nextStart = new Date(t + israelOffset);
               nextStart.setUTCHours(h < DAY_START ? DAY_START : DAY_START + 24, 0, 0, 0);
               t = nextStart.getTime() - israelOffset;
@@ -178,7 +178,7 @@ async function runChecks() {
           return activeMs / 3600000;
         })();
 
-        const ACTIVE_GAP_THRESHOLD_H = 6; // 6 active daytime hours
+        const ACTIVE_GAP_THRESHOLD_H = 9; // 9 active daytime hours
 
         if (activeHours > ACTIVE_GAP_THRESHOLD_H) {
           // Don't alert if gap is explained by Shabbat
