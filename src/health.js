@@ -17,6 +17,10 @@ let _client = null;
 let _masterGroupId = null;
 let _lastAlertTime = 0;
 const ALERT_COOLDOWN_MS = 24 * 60 * 60 * 1000; // max 1 alert per day
+
+// WhatsApp state debounce — only alert after 3 consecutive non-CONNECTED readings (~15 min)
+let _waDisconnectCount = 0;
+const WA_DISCONNECT_THRESHOLD = 3;
 const ALERT_TARGET = process.env.AVIV_PHONE ? `${process.env.AVIV_PHONE}@c.us` : null; // send health alerts to primary parent DM
 
 // Calendar re-auth cooldown — persisted to disk so it survives restarts
@@ -127,13 +131,30 @@ async function runChecks() {
     }
   }
 
-  // 3. WhatsApp client connected + receiving messages
+  // 3. WhatsApp client connected + receiving messages (debounced — 3 consecutive failures)
   if (_client) {
     try {
       const state = await _client.getState();
-      if (state !== 'CONNECTED') failures.push(`WhatsApp state: ${state}`);
+      if (state !== 'CONNECTED') {
+        _waDisconnectCount++;
+        if (_waDisconnectCount >= WA_DISCONNECT_THRESHOLD) {
+          failures.push(`WhatsApp state: ${state} (${_waDisconnectCount} consecutive checks)`);
+        } else {
+          logger.warn({ component: 'Health', state, consecutive: _waDisconnectCount, threshold: WA_DISCONNECT_THRESHOLD }, 'WhatsApp not connected — debouncing');
+        }
+      } else {
+        if (_waDisconnectCount > 0) {
+          logger.info({ component: 'Health', recoveredAfter: _waDisconnectCount }, 'WhatsApp reconnected — resetting debounce counter');
+        }
+        _waDisconnectCount = 0;
+      }
     } catch (e) {
-      failures.push(`WhatsApp state check error: ${e.message}`);
+      _waDisconnectCount++;
+      if (_waDisconnectCount >= WA_DISCONNECT_THRESHOLD) {
+        failures.push(`WhatsApp state check error: ${e.message} (${_waDisconnectCount} consecutive)`);
+      } else {
+        logger.warn({ component: 'Health', err: e.message, consecutive: _waDisconnectCount }, 'WhatsApp state check failed — debouncing');
+      }
     }
 
     // OUTAGE DETECTION: if ALL groups are silent during working hours, check connection and alert.
