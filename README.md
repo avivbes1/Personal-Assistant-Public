@@ -2,7 +2,9 @@
 
 A WhatsApp-native family assistant that monitors group chats, extracts events and tasks, syncs to Google Calendar, and posts digests to a master coordination group.
 
-Built with Node.js + whatsapp-web.js + Claude (Anthropic). Runs as a single process on a small VPS.
+Built with Node.js + [Baileys](https://github.com/WhiskeySockets/Baileys) + Claude (Anthropic). Runs as a single process on a small VPS.
+
+> **Migration note:** this project originally ran on `whatsapp-web.js` (a Puppeteer/Chromium-based client) and was migrated to Baileys (a native WebSocket client — no browser). `src/baileys-client.js` is a thin compatibility shim that presents Baileys objects through a `whatsapp-web.js`-shaped interface, which is why some comments still mention the old library. Note that `src/whatsapp.js` is *this project's own message router*, not the removed npm package — don't confuse the two.
 
 ---
 
@@ -14,7 +16,8 @@ WhatsApp Groups (school, activities, community)
         │ messages
         ▼
   whatsapp.js  ─── client.on('message') ───►  agent.js
-  (WA client)                                  (Haiku LLM)
+  (router over                                 (Haiku LLM)
+   baileys-client)
         │                                           │
         │                                    action blocks
         │                                    (add_event, add_notice, ...)
@@ -35,7 +38,8 @@ WhatsApp Groups (school, activities, community)
 
 | Module | Role |
 |---|---|
-| `src/whatsapp.js` | WhatsApp client, message routing |
+| `src/baileys-client.js` | Baileys WebSocket client + `whatsapp-web.js`-compatible shim |
+| `src/whatsapp.js` | Message router (this project's own file, built on `baileys-client`) |
 | `src/agent.js` | LLM action extractor (Claude Haiku) |
 | `src/calendar.js` | Google Calendar read/write |
 | `src/calendarGate.js` | 4-stage dedup gate for calendar writes |
@@ -54,7 +58,8 @@ WhatsApp Groups (school, activities, community)
 - **Anthropic API key** — [console.anthropic.com](https://console.anthropic.com)
 - **Google Cloud project** with Calendar API enabled and an OAuth 2.0 Desktop credential
 - **Linux VPS** — 1 vCPU / 1–2 GB RAM is sufficient (tested on AWS t4g.small/medium)
-- **Chromium** — whatsapp-web.js requires a Chromium installation (see below)
+
+> No browser required. Baileys is a native WebSocket client — unlike `whatsapp-web.js`, it does **not** need Chromium/Puppeteer.
 
 ---
 
@@ -62,16 +67,7 @@ WhatsApp Groups (school, activities, community)
 
 ### 1. System dependencies (headless VPS)
 
-whatsapp-web.js runs a headless Chromium browser. On a fresh Ubuntu/Debian server:
-
-```bash
-sudo apt update && sudo apt install -y \
-  chromium-browser \
-  libgbm1 libxshmfence1 libnss3 libatk-bridge2.0-0 \
-  libdrm2 libxkbcommon0 libxdamage1
-```
-
-Then set `CHROMIUM_PATH=/usr/bin/chromium-browser` in your `.env`.
+Baileys is a native WebSocket client and needs **no browser** — there is nothing to install beyond Node.js itself. (For OCR of image notices, `tesseract.js` bundles its own WASM engine; no system Tesseract is required either.)
 
 ### 2. Clone and install
 
@@ -143,23 +139,26 @@ Token paths are set via `AVIV_TOKEN_PATH` and `LIAT_TOKEN_PATH` in `.env`.
 
 ### 7. Find your WhatsApp group JIDs
 
-After the bot connects once (step 8), list groups to find JIDs:
+After the bot connects once (step 8) it caches group metadata in the local
+WhatsApp auth store, so you can list every group's JID and name straight from
+the running client via the Baileys adapter:
 
 ```bash
 node -e "
-const {Client, LocalAuth} = require('whatsapp-web.js');
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: './whatsapp-session' }),
-  puppeteer: { executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium-browser', args: ['--no-sandbox'] }
-});
+const { BaileysClient } = require('./src/baileys-client');
+const client = new BaileysClient({ dataPath: './whatsapp-session' });
 client.on('ready', async () => {
   const chats = await client.getChats();
   chats.filter(c => c.isGroup).forEach(c => console.log(c.id._serialized, '\t', c.name));
   process.exit(0);
 });
 client.initialize();
-" 2>/dev/null
+"
 ```
+
+`getChats()` returns `whatsapp-web.js`-shaped objects (`c.id._serialized`,
+`c.name`, `c.isGroup`) courtesy of the shim in `src/baileys-client.js`, so JIDs
+still print in the familiar `xxxxxxxxxxx@g.us` form.
 
 Set `MASTER_GROUP_JID` in `.env` and group names in `config/groups.json`.
 
@@ -194,7 +193,6 @@ Once "Client ready" appears, the session is saved in `whatsapp-session/` (gitign
 | `AVIV_TOKEN_PATH` | ✅ | Path to OAuth token for parent 1 |
 | `LIAT_TOKEN_PATH` | ✅ | Path to OAuth token for parent 2 |
 | `TIMEZONE` | ✅ | IANA timezone (e.g. `Asia/Jerusalem`) |
-| `CHROMIUM_PATH` | ✅ | Path to Chromium binary |
 | `TOKEN_LIMIT_DAILY` | — | Daily LLM token budget (default: unlimited) |
 | `S3_BACKUP_BUCKET` | — | S3 bucket for DB backups (optional) |
 | `BOT_NAME` | — | Bot display name (default: `FamilyBot`) |
