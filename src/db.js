@@ -426,6 +426,36 @@ function initDB() {
 
   // New columns on sent_messages (safe migrations)
   try { db.exec('ALTER TABLE sent_messages ADD COLUMN group_name TEXT'); } catch (_) {}
+  // B2: index the daily-group-cap / cross-day-dedup lookups that key on
+  // (group_name, sent_at) now that group matching uses a real column instead of
+  // an 8-char message-text substring.
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_sent_group ON sent_messages(group_name, sent_at)'); } catch (_) {}
+  // B2: backfill group_name on historical rows from the notices referenced by
+  // source_notice_ids, so pre-migration sends still count toward the group cap.
+  // Bounded per-run and idempotent (only touches NULL group_name rows).
+  try {
+    const rows = db.prepare(
+      "SELECT id, source_notice_ids FROM sent_messages WHERE group_name IS NULL AND source_notice_ids IS NOT NULL LIMIT 2000"
+    ).all();
+    if (rows.length > 0) {
+      const noticeGroup = db.prepare('SELECT group_name FROM notices WHERE id = ?');
+      const upd = db.prepare('UPDATE sent_messages SET group_name = ? WHERE id = ?');
+      let filled = 0;
+      const tx = db.transaction((list) => {
+        for (const r of list) {
+          let ids;
+          try { ids = JSON.parse(r.source_notice_ids); } catch (_) { continue; }
+          if (!Array.isArray(ids)) continue;
+          for (const nid of ids) {
+            const n = noticeGroup.get(nid);
+            if (n && n.group_name) { upd.run(n.group_name, r.id); filled++; break; }
+          }
+        }
+      });
+      tx(rows);
+      if (filled > 0) console.log(`[DB] Backfilled group_name for ${filled} sent_messages row(s)`);
+    }
+  } catch (_) {}
 
   // Notice pipeline fix — Phase 0+1
   try { db.exec("ALTER TABLE notices ADD COLUMN message_sent_at INTEGER"); } catch (_) {}
