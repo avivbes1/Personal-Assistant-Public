@@ -10,6 +10,7 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const { getDB, clearExpiredPendingActions } = require('./db');
 const { verifyCalendarAuth, generateAuthUrl } = require('./calendar');
+const { runThroughputChecks } = require('./health-throughput');
 const config = require('./config');
 const logger = require('./logger');
 
@@ -28,6 +29,10 @@ const CALENDAR_AUTH_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 // Calendar auth is checked at most once per hour (it makes real API calls)
 const CALENDAR_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 let _lastCalendarCheckMs = 0;
+// Throughput/integrity checks run at most once per hour (they scan the DB and
+// do an O(n²) duplicate pass — no need every 5-min cycle).
+const THROUGHPUT_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+let _lastThroughputCheckMs = 0;
 // Rate-limit OpenClaw channel auto-reconnect to at most once per 30 min
 let lastChannelReconnectMs = 0;
 const HEALTH_STATE_PATH = path.join(__dirname, '../data/health-state.json');
@@ -296,6 +301,19 @@ async function runChecks() {
     const cleared = clearExpiredPendingActions();
     if (cleared > 0) logger.info({ component: 'Health', cleared }, 'Cleared expired pending action(s)');
   } catch (_) {}
+
+  // 6. Throughput & integrity checks (WORKPLAN-V4 A4) — catch silent failure.
+  //    Throttled to hourly since they scan the DB; other checks stay 5-min.
+  const nowThroughput = Date.now();
+  if (nowThroughput - _lastThroughputCheckMs >= THROUGHPUT_CHECK_INTERVAL_MS) {
+    _lastThroughputCheckMs = nowThroughput;
+    try {
+      const throughputFailures = runThroughputChecks();
+      for (const f of throughputFailures) failures.push(f);
+    } catch (e) {
+      logger.error({ component: 'Health', err: e.message }, 'Throughput checks error');
+    }
+  }
 
   return failures;
 }
