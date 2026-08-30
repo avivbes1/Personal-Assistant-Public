@@ -1,0 +1,38 @@
+{
+  "name": "reaction",
+  "description": "Emoji reaction to a bot message. Maps to type 'reaction_message', emoji becomes body, no quoted message.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5RCT001",
+      "participant": "972521234567@s.whatsapp.net"
+    },
+    "message": {
+      "reactionMessage": {
+        "key": {
+          "remoteJid": "972111222333-1600000000@g.us",
+          "fromMe": true,
+          "id": "BOTMSGID100"
+        },
+        "text": "👍",
+        "senderTimestampMs": "1704092400000"
+      }
+    },
+    "messageTimestamp": 1704092400,
+    "pushName": "אביב"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5RCT001_972521234567@c.us",
+    "id.fromMe": false,
+    "id.id": "BAE5RCT001",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "972521234567@c.us",
+    "type": "reaction_message",
+    "body": "👍",
+    "hasMedia": false,
+    "hasQuotedMsg": false
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "dm-text",
+  "description": "Direct-message text from a family member (no participant field).",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972521234567@s.whatsapp.net",
+      "fromMe": false,
+      "id": "BAE5DMTXT001"
+    },
+    "message": { "conversation": "היי, אפשר לקבל את הקישור לזום של ההורים?" },
+    "messageTimestamp": 1704070800,
+    "pushName": "ליאת"
+  },
+  "expect": {
+    "id._serialized": "false_972521234567@c.us_BAE5DMTXT001",
+    "id.fromMe": false,
+    "id.id": "BAE5DMTXT001",
+    "from": "972521234567@c.us",
+    "to": "972500000001@c.us",
+    "author": "972521234567@c.us",
+    "type": "chat",
+    "body": "היי, אפשר לקבל את הקישור לזום של ההורים?",
+    "hasMedia": false,
+    "hasQuotedMsg": false
+  }
+}

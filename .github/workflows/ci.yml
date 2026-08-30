@@ -45,6 +45,10 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci
+      # H5 / P-014: pins the whatsapp-web.js compatibility surface of
+      # src/baileys-client.js. Pure fixtures — no API calls, no secrets.
+      - name: Run Baileys shim fixture suite
+        run: node tests/shim/run.js
       - name: Run regression tests
         run: node tests/run-all.js
         env:

@@ -1,0 +1,36 @@
+{
+  "name": "group-image-caption",
+  "description": "Image with a caption posted to a group.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5IMG001",
+      "participant": "972539876543@s.whatsapp.net"
+    },
+    "message": {
+      "imageMessage": {
+        "caption": "לוח הזמנים המעודכן למחר",
+        "mimetype": "image/jpeg",
+        "url": "https://mmg.whatsapp.net/redacted",
+        "fileLength": "84213",
+        "mediaKey": "REDACTED_MEDIA_KEY"
+      }
+    },
+    "messageTimestamp": 1704074400,
+    "pushName": "ועד הורים"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5IMG001_972539876543@c.us",
+    "id.fromMe": false,
+    "id.id": "BAE5IMG001",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "972539876543@c.us",
+    "type": "image",
+    "body": "לוח הזמנים המעודכן למחר",
+    "hasMedia": true,
+    "hasQuotedMsg": false
+  }
+}

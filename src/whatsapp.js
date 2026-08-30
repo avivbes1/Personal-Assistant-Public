@@ -4,7 +4,7 @@
  */
 
 // Baileys adapter (replaces whatsapp-web.js)
-const { BaileysClient } = require('./baileys-client');
+const { BaileysClient, stanzaIdOf } = require('./baileys-client');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
@@ -18,7 +18,37 @@ function _ser(obj) {
   if (!obj) return undefined;
   return obj._serialized || obj['$1'] || (typeof obj.toString === 'function' ? obj.toString() : undefined);
 }
-const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus } = require('./db');
+// ── Group-context question templates (H3 / ISSUE-023) ──────────────────────────
+// The name is wrapped in a machine-readable delimiter ⟦name⟧ so the reply handler
+// can recover the *exact* group name from the quoted question body when the
+// msg-id / stanza-id lookup misses. Previously four divergent templates were
+// matched by two brittle regexes; only one of the four actually worked.
+const GROUP_NAME_DELIM = /⟦([^⟧]+)⟧/;
+function buildGroupQuestion(name) {
+  return `🆕 נוספתי לקבוצה חדשה: ⟦${name}⟧\nלמי הקבוצה קשורה? מעוניינים במעקב? (ענו בתגובה להודעה זו)`;
+}
+function buildGroupContextQuestion(name) {
+  return `❓ אני עוקב אחרי הקבוצה ⟦${name}⟧ אבל אין לי הקשר עליה.\nלמי מהמשפחה היא קשורה? לאיזה ילד/פעילות? (ענו בתגובה)`;
+}
+
+// H2: alert Aviv by DM when a master-group quoted reply matches no handler.
+// Rate-limited to once per hour (same pattern as agent.js alertCreditExhausted).
+let _unmatchedReplyAlertAt = 0;
+async function alertUnmatchedReply() {
+  const now = Date.now();
+  if (now - _unmatchedReplyAlertAt < 3600000) return;
+  _unmatchedReplyAlertAt = now;
+  try {
+    if (client && config.AVIV_PHONE) {
+      await client.sendMessage(`${config.AVIV_PHONE}@c.us`,
+        'לא הצלחתי להתאים את התגובה שלך לשאלה פתוחה — צריך טיפול.');
+    }
+  } catch (e) {
+    logger.error({ component: 'WhatsApp', err: e.message }, 'Failed to send unmatched-reply DM');
+  }
+}
+
+const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, getPendingGroupQuestionByStanza, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus } = require('./db');
 const { archiveMedia } = require('./media-archive');
 const { resolveMembersInText } = require('./family-profiles');
 const { validateOutgoing, repairMessage } = require('./validate-outgoing');
@@ -28,7 +58,7 @@ const { addEvent, addSharedEvent, searchCalendarEvents, updateCalendarEvent, del
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 const { answerQuery } = require('./query');
 const { handleMessage, handleGroupEvent } = require('./agent');
-const { getFollowUpByBotMsgId, updateFollowUpStatus, dismissThread, getMostRecentDeliveredThread } = require('./db');
+const { getFollowUpByBotMsgId, getFollowUpByStanzaId, updateFollowUpStatus, dismissThread, getMostRecentDeliveredThread } = require('./db');
 // Requiring voice-server starts the HTTP health/voice server immediately (on
 // module load), before WhatsApp connects — so /health is reachable during
 // startup. setClient() wires in the real client once ready.
@@ -1070,11 +1100,11 @@ function initWhatsApp() {
           setGroupRelatedTo(chatId, isMonitored ? 'monitored' : 'master');
         } else if (masterGroupId) {
           // Unknown group â€" ask master group who it belongs to
-          const question = `🆕 נוספתי לקבוצה חדשה: "${chat.name}"\nלמי הקבוצה קשורה? מעוניינים במעקב? (ענו בתגובה להודעה זו)`;
+          const question = buildGroupQuestion(chat.name);
           try {
             const sentMsg = await client.sendMessage(masterGroupId, question);
             pendingGroupQuestions.set(_ser(sentMsg.id), chatId);
-            savePendingGroupQuestion(_ser(sentMsg.id), chatId);
+            savePendingGroupQuestion(_ser(sentMsg.id), chatId, stanzaIdOf(sentMsg.id));
             addToHistory('assistant', question);
             logger.info({ component: 'WhatsApp', groupName: chat.name }, 'Asked master group about new group');
           } catch (err) {
@@ -1088,11 +1118,11 @@ function initWhatsApp() {
     if (masterGroupId) {
       const noDesc = getMonitoredGroupsWithoutDescription();
       for (const grp of noDesc) {
-        const question = `❓ אני עוקב אחרי הקבוצה *${grp.name}* אבל אין לי הקשר עליה.\nלמי מהמשפחה היא קשורה? לאיזה ילד/פעילות? (ענו בתגובה)`;
+        const question = buildGroupContextQuestion(grp.name);
         try {
           const sentMsg = await client.sendMessage(masterGroupId, question);
           pendingGroupQuestions.set(_ser(sentMsg.id), grp.id);
-          savePendingGroupQuestion(_ser(sentMsg.id), grp.id);
+          savePendingGroupQuestion(_ser(sentMsg.id), grp.id, stanzaIdOf(sentMsg.id));
           addToHistory('assistant', question);
           logger.info({ component: 'WhatsApp', groupName: grp.name }, 'Asked about group context');
         } catch (err) {
@@ -1193,11 +1223,11 @@ function initWhatsApp() {
         saveGroup(groupId, groupName);
         console.log(`[WhatsApp] Added to new group: "${groupName}" (${groupId})`);
         if (masterGroupId) {
-          const question = `🆕 נוספתי לקבוצה חדשה: *${groupName}*\nלמי הקבוצה קשורה? מעוניינים במעקב? (ענו בתגובה להודעה זו)`;
+          const question = buildGroupQuestion(groupName);
           const sentMsg = await client.sendMessage(masterGroupId, question);
           if (sentMsg) {
             pendingGroupQuestions.set(_ser(sentMsg.id), groupId);
-            savePendingGroupQuestion(_ser(sentMsg.id), groupId);
+            savePendingGroupQuestion(_ser(sentMsg.id), groupId, stanzaIdOf(sentMsg.id));
             addToHistory('assistant', question);
           }
         }
@@ -1305,11 +1335,16 @@ function initWhatsApp() {
         try {
           const quotedMsg = await msg.getQuotedMessage();
           const quotedId = _ser(quotedMsg.id);
+          // H1: stanzaId is stable in both directions; fall back to it when the
+          // serialized id doesn't match (JID-format differences bit ISSUE-023).
+          const quotedStanza = stanzaIdOf(quotedMsg.id);
 
           // -- Pending group question reply --
-          // Check both in-memory map AND persistent DB (survives restarts)
+          // Check in-memory map, then persistent DB by msg_id, then by stanza_id.
           const groupIdFromMap = pendingGroupQuestions.get(quotedId);
-          const groupIdFromDB = !groupIdFromMap ? getPendingGroupQuestion(quotedId) : null;
+          const groupIdFromDB = !groupIdFromMap
+            ? (getPendingGroupQuestion(quotedId) || getPendingGroupQuestionByStanza(quotedStanza))
+            : null;
           const pendingGroupId = groupIdFromMap || groupIdFromDB;
           if (pendingGroupId) {
             const relatedTo = msg.body.trim();
@@ -1331,24 +1366,22 @@ function initWhatsApp() {
             return;
           }
 
-          // -- Fallback: reply to bot's group question, msg_id not in map/DB --
-          // Detect by pattern matching the quoted message body
+          // -- Fallback: reply to bot's group question, msg_id/stanza not in map/DB --
+          // Recover the exact group name from the ⟦name⟧ delimiter in the quoted
+          // question body (H3). Exact-name match only — never guess (ISSUE-023).
           if (quotedMsg.fromMe) {
             const quotedBody = quotedMsg.body || '';
-            // Matches "אני עוקב אחרי הקבוצה *<name>*" or "נוספתי לקבוצה "<name>""
-            const groupMatch = quotedBody.match(/הקבוצה \*?["]?([^*"\n]+?)[*"]?\s*(?:אבל|$)/) ||
-                               quotedBody.match(/לקבוצה[^"]*[*"]([^*"\n]+)[*"]/);
+            const groupMatch = quotedBody.match(GROUP_NAME_DELIM);
             if (groupMatch) {
               const groupName = groupMatch[1].trim();
-              // Find group in DB by name
               const allGroups = getDB().prepare('SELECT * FROM groups').all();
-              const matchedGroup = allGroups.find(g => g.name && g.name.includes(groupName.substring(0, 8)));
+              const matchedGroup = allGroups.find(g => g.name === groupName);
               if (matchedGroup) {
                 const relatedTo = msg.body.trim();
                 if (relatedTo) {
                   setGroupRelatedTo(matchedGroup.id, 'monitored');
                   setGroupDescription(matchedGroup.id, relatedTo);
-                  logger.info({ component: 'WhatsApp', groupName: matchedGroup.name, context: relatedTo }, 'Group context saved (pattern match)');
+                  logger.info({ component: 'WhatsApp', groupName: matchedGroup.name, context: relatedTo }, 'Group context saved (delimiter match)');
                   await client.sendMessage(masterGroupId, `✅ עודכן: "${matchedGroup.name}" — ${relatedTo}`);
                   // Scan history for the newly-confirmed monitored group
                   try {
@@ -1357,12 +1390,14 @@ function initWhatsApp() {
                   } catch (_) {}
                   return;
                 }
+              } else {
+                logger.warn({ component: 'WhatsApp', groupName }, 'Quoted group question names an unknown group — not guessing');
               }
             }
           }
 
           // -- Follow-up reply --
-          const followUp = getFollowUpByBotMsgId(quotedId);
+          const followUp = getFollowUpByBotMsgId(quotedId) || getFollowUpByStanzaId(quotedStanza);
           if (followUp && followUp.status === 'asked') {
             const reply = msg.body.trim();
             const isYes = /^(\u2705|כן|כ|yes|done|ביצעתי|עשיתי|בוצע)$/i.test(reply);
@@ -1395,6 +1430,21 @@ function initWhatsApp() {
             }
             return;
           }
+
+          // P-011: no silent fall-through. A quoted reply reaching here matched no
+          // handler (pending group question, delimiter fallback, or follow-up).
+          const quotedFromMe = !!quotedMsg.fromMe;
+          logger.warn({
+            component: 'WhatsApp',
+            quotedId,
+            stanzaId: quotedStanza,
+            quotedFromMe,
+            quotedBodyPrefix: (quotedMsg.body || '').slice(0, 40),
+            pendingCount: getAllPendingGroupQuestions().length,
+          }, 'Quoted reply matched no handler');
+          // DM Aviv only when the reply quoted a *bot* message — a reply to a human
+          // message matching nothing is normal chatter, not a lost command.
+          if (quotedFromMe) await alertUnmatchedReply();
         } catch (err) {
           logger.error({ component: 'WhatsApp', err: err.message || String(err), code: err.code }, 'Error handling master group reply');
         }
@@ -1559,10 +1609,10 @@ function initWhatsApp() {
             const existing = getGroup(_ser(chat.id));
             if (!existing && masterGroupId) {
               saveGroup(_ser(chat.id), chat.name);
-              const question = `🆕 נוספתי לקבוצה: *${chat.name}*\nלמי הקבוצה קשורה? מעוניינת במעקב? (ענו בתגובה להודעה זו)`;
+              const question = buildGroupQuestion(chat.name);
               const sentMsg = await client.sendMessage(masterGroupId, question);
               pendingGroupQuestions.set(_ser(sentMsg.id), _ser(chat.id));
-              savePendingGroupQuestion(_ser(sentMsg.id), _ser(chat.id));
+              savePendingGroupQuestion(_ser(sentMsg.id), _ser(chat.id), stanzaIdOf(sentMsg.id));
               logger.info({ component: 'WhatsApp', groupName: chat.name }, 'New group detected live');
             }
           }

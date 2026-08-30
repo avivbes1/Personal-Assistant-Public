@@ -1,0 +1,27 @@
+{
+  "name": "dm-text-lid",
+  "description": "LID-form variant of a DM: the remoteJid itself is a @lid JID.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "222000222000@lid",
+      "fromMe": false,
+      "id": "BAE5DMTXTL01"
+    },
+    "message": { "conversation": "תזכורת: לשלם על החוג עד סוף השבוע" },
+    "messageTimestamp": 1704099600,
+    "pushName": "מזכירות"
+  },
+  "expect": {
+    "id._serialized": "false_222000222000@lid_BAE5DMTXTL01",
+    "id.fromMe": false,
+    "id.id": "BAE5DMTXTL01",
+    "from": "222000222000@lid",
+    "to": "972500000001@c.us",
+    "author": "222000222000@lid",
+    "type": "chat",
+    "body": "תזכורת: לשלם על החוג עד סוף השבוע",
+    "hasMedia": false,
+    "hasQuotedMsg": false
+  }
+}

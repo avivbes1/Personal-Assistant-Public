@@ -1,0 +1,37 @@
+{
+  "name": "voice-note",
+  "description": "Push-to-talk voice note in a group. Maps to type 'ptt', empty body, hasMedia=true.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5PTT001",
+      "participant": "972521234567@s.whatsapp.net"
+    },
+    "message": {
+      "audioMessage": {
+        "ptt": true,
+        "mimetype": "audio/ogg; codecs=opus",
+        "seconds": 8,
+        "url": "https://mmg.whatsapp.net/redacted",
+        "fileLength": "12048",
+        "mediaKey": "REDACTED_MEDIA_KEY"
+      }
+    },
+    "messageTimestamp": 1704085200,
+    "pushName": "הורה כיתה"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5PTT001_972521234567@c.us",
+    "id.fromMe": false,
+    "id.id": "BAE5PTT001",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "972521234567@c.us",
+    "type": "ptt",
+    "body": "",
+    "hasMedia": true,
+    "hasQuotedMsg": false
+  }
+}

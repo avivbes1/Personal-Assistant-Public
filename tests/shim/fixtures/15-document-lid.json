@@ -1,0 +1,36 @@
+{
+  "name": "document-lid",
+  "description": "LID-form participant variant of a document (no caption → empty body).",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5DOCL01",
+      "participant": "333000333000@lid"
+    },
+    "message": {
+      "documentMessage": {
+        "fileName": "רשימת-ציוד.pdf",
+        "mimetype": "application/pdf",
+        "url": "https://mmg.whatsapp.net/redacted",
+        "fileLength": "134890",
+        "mediaKey": "REDACTED_MEDIA_KEY"
+      }
+    },
+    "messageTimestamp": 1704117600,
+    "pushName": "ועד הורים"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5DOCL01_333000333000@lid",
+    "id.fromMe": false,
+    "id.id": "BAE5DOCL01",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "333000333000@lid",
+    "type": "document",
+    "body": "",
+    "hasMedia": true,
+    "hasQuotedMsg": false
+  }
+}

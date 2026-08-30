@@ -1,0 +1,37 @@
+{
+  "name": "voice-note-lid",
+  "description": "LID-form participant variant of a voice note.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5PTTL01",
+      "participant": "222000222000@lid"
+    },
+    "message": {
+      "audioMessage": {
+        "ptt": true,
+        "mimetype": "audio/ogg; codecs=opus",
+        "seconds": 12,
+        "url": "https://mmg.whatsapp.net/redacted",
+        "fileLength": "18220",
+        "mediaKey": "REDACTED_MEDIA_KEY"
+      }
+    },
+    "messageTimestamp": 1704114000,
+    "pushName": "הורה כיתה"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5PTTL01_222000222000@lid",
+    "id.fromMe": false,
+    "id.id": "BAE5PTTL01",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "222000222000@lid",
+    "type": "ptt",
+    "body": "",
+    "hasMedia": true,
+    "hasQuotedMsg": false
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "reaction-lid",
+  "description": "LID-form participant variant of an emoji reaction.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5RCTL01",
+      "participant": "222000222000@lid"
+    },
+    "message": {
+      "reactionMessage": {
+        "key": {
+          "remoteJid": "972111222333-1600000000@g.us",
+          "fromMe": true,
+          "id": "BOTMSGID100L"
+        },
+        "text": "❤️",
+        "senderTimestampMs": "1704121200000"
+      }
+    },
+    "messageTimestamp": 1704121200,
+    "pushName": "ליאת"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5RCTL01_222000222000@lid",
+    "id.fromMe": false,
+    "id.id": "BAE5RCTL01",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "222000222000@lid",
+    "type": "reaction_message",
+    "body": "❤️",
+    "hasMedia": false,
+    "hasQuotedMsg": false
+  }
+}

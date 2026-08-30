@@ -57,20 +57,41 @@ function normalizeJid(jid) {
 
 /**
  * Convert @s.whatsapp.net JID to @c.us format (for compatibility with existing code).
+ * Normalizes first, so a device suffix (<phone>:0@…) never leaks into the
+ * whatsapp-web.js surface and identity comparisons stay stable (H5). `@lid` JIDs
+ * keep their server — they are resolved to a phone number elsewhere, not rewritten.
  */
 function toWWebJid(jid) {
   if (!jid) return jid;
   if (jid.endsWith('@g.us')) return jid;
+  jid = normalizeJid(jid);
   return jid.replace('@s.whatsapp.net', '@c.us');
 }
 
 /**
+ * Extract the stanzaId (the stable WhatsApp message id) from either a serialized
+ * id string (`fromMe_remoteJid_stanzaId[_participant]`) or an id object.
+ * The stanzaId is the only identifier that is stable in both the sent-message
+ * direction and the quoted-reply direction, so lookups fall back to it (H1).
+ */
+function stanzaIdOf(id) {
+  if (!id) return null;
+  if (typeof id === 'object') return id.id || null;
+  const parts = String(id).split('_');
+  return parts.length >= 3 ? parts[2] : null;
+}
+
+/**
  * Convert @c.us JID to @s.whatsapp.net (Baileys format).
+ * Normalizes first (strips device suffix). `@lid` JIDs pass through with their
+ * server intact — they are not phone numbers and must be resolved, not rewritten.
  */
 function toBaileysJid(jid) {
   if (!jid) return jid;
   if (jid.endsWith('@g.us')) return jid;
+  jid = normalizeJid(jid);
   if (jid.endsWith('@s.whatsapp.net')) return jid;
+  if (jid.endsWith('@lid')) return jid;
   return jid.replace('@c.us', '@s.whatsapp.net');
 }
 
@@ -158,31 +179,45 @@ class BaileysMessage {
 
   /**
    * Get the quoted message (compatible with whatsapp-web.js msg.getQuotedMessage()).
+   *
+   * ISSUE-023 (H1): fromMe must be determined BEFORE constructing BaileysMessage,
+   * because the constructor computes id._serialized once from key.fromMe/participant
+   * and never recomputes it. When the quoted message was sent by the bot, we omit
+   * the participant from the key so the reconstructed _serialized matches exactly
+   * what sendMessage() returned for that message (bot sends carry no participant).
    */
   async getQuotedMessage() {
     if (!this.hasQuotedMsg || !this._contextInfo) {
       throw new Error('No quoted message');
     }
     const ci = this._contextInfo;
-    // Build a pseudo-message from the quoted context
+    // Determine fromMe up front by comparing the quoted participant to the bot JID.
+    // H5: a LID-form participant (<n>@lid) never equals the phone-form bot JID, so
+    // resolve it to a phone JID first — otherwise every quoted reply to the bot in a
+    // privacy-mode group looks like it came from a human (a silent ISSUE-023 repeat).
+    const myJid = normalizeJid(this._client._myJid);
+    let quotedParticipant = ci.participant ? normalizeJid(ci.participant) : null;
+    if (quotedParticipant && quotedParticipant.endsWith('@lid') &&
+        typeof this._client._resolveLidToPhone === 'function') {
+      const resolved = await this._client._resolveLidToPhone(quotedParticipant);
+      if (resolved) quotedParticipant = normalizeJid(resolved);
+    }
+    const fromMe = quotedParticipant ? (quotedParticipant === myJid) : false;
+
+    // Build a pseudo-message from the quoted context. When fromMe, omit participant
+    // so _serialized mirrors sendMessage()'s return (true_<group>_<stanzaId>).
     const quotedKey = {
-      fromMe: ci.participant ? false : true, // approximate
+      fromMe,
       remoteJid: this._raw.key.remoteJid,
       id: ci.stanzaId,
-      participant: ci.participant,
+      participant: fromMe ? undefined : ci.participant,
     };
     const quotedRaw = {
       key: quotedKey,
       message: ci.quotedMessage,
       messageTimestamp: 0,
     };
-    const quotedMsg = new BaileysMessage(this._client, quotedRaw);
-    // Determine if the quoted message was from the bot
-    const myJid = normalizeJid(this._client._myJid);
-    const quotedParticipant = ci.participant ? normalizeJid(ci.participant) : null;
-    quotedMsg.fromMe = quotedParticipant ? (quotedParticipant === myJid) : false;
-    quotedMsg.id.fromMe = quotedMsg.fromMe;
-    return quotedMsg;
+    return new BaileysMessage(this._client, quotedRaw);
   }
 
   /**
@@ -741,6 +776,54 @@ class BaileysClient extends EventEmitter {
   }
 
   /**
+   * Resolve a LID-form JID (<n>@lid) to a phone-number JID (<phone>@s.whatsapp.net).
+   *
+   * H5: Baileys hands out LID participants in privacy-mode groups. Those strings
+   * never match phone-based identity lookups (FAMILY_PHONES, the myJid quoted-reply
+   * check ISSUE-023 depended on). We resolve once via the signal repository and
+   * cache the mapping in the `lid_map` table so it survives restarts. Resolution
+   * failures are logged loudly rather than silently passing the raw LID downstream.
+   *
+   * @param {string} lidJid — a JID; non-LID input is returned unchanged.
+   * @returns {Promise<string|null>} the resolved phone JID, or null if unresolved.
+   */
+  async _resolveLidToPhone(lidJid) {
+    if (!lidJid) return null;
+    const lid = normalizeJid(lidJid);
+    if (!lid.endsWith('@lid')) return lid; // already a phone/other JID
+
+    // 1) Cache (survives restarts).
+    try {
+      const { getLidMapping } = require('./db');
+      const cached = getLidMapping(lid);
+      if (cached) return cached;
+    } catch (_) { /* DB not initialized (e.g. a unit test) — fall through */ }
+
+    // 2) Live resolution via the signal repository's LID mapping store.
+    const repo = this.signalRepository;
+    if (!repo || !repo.lidMapping || typeof repo.lidMapping.getPNForLID !== 'function') {
+      appLogger.warn({ component: 'Baileys', lid },
+        'LID resolution unavailable (no signalRepository) — passing raw LID downstream');
+      return null;
+    }
+    try {
+      const pnRaw = await repo.lidMapping.getPNForLID(lid);
+      if (!pnRaw) {
+        appLogger.warn({ component: 'Baileys', lid },
+          'LID → phone resolution returned nothing — identity comparison will fail');
+        return null;
+      }
+      const pn = normalizeJid(pnRaw);
+      try { require('./db').saveLidMapping(lid, pn); } catch (_) {}
+      return pn;
+    } catch (err) {
+      appLogger.error({ component: 'Baileys', lid, err: err.message },
+        'LID → phone resolution threw — passing raw LID downstream');
+      return null;
+    }
+  }
+
+  /**
    * Get connection state. Compatible with whatsapp-web.js client.getState().
    * Checks actual socket state, not just the _ready flag.
    */
@@ -758,4 +841,5 @@ module.exports = {
   toBaileysJid,
   toWWebJid,
   normalizeJid,
+  stanzaIdOf,
 };

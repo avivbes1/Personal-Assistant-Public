@@ -178,7 +178,9 @@ function isTopicDismissed(dismissals, topicKey, groupName) {
       if (topicKey === d.scope_value || topicKey.includes(d.scope_value) || d.scope_value.includes(topicKey.split('-')[0])) return true;
     }
     if (d.scope_type === 'source_group' && groupName && d.scope_value) {
-      if (groupName.includes(d.scope_value) || d.scope_value.includes(groupName.substring(0, 8))) return true;
+      // B2: full-name containment, not an 8-char prefix slice — Hebrew group names
+      // share long prefixes, so prefix-slice matching hit unrelated groups.
+      if (groupName.includes(d.scope_value) || d.scope_value.includes(groupName)) return true;
     }
   }
   return false;

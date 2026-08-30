@@ -1,0 +1,53 @@
+{
+  "name": "group-quoted-reply-to-bot-lid",
+  "description": "LID variant of the ISSUE-023 path: a human quotes a bot message, but the quoted participant is the bot's @lid JID. Without LID→phone resolution, fromMe stays false (silent ISSUE-023 repeat). With step-4 resolution, fromMe becomes true and the id round-trips to what sendMessage() returned.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "lidMap": {
+    "111000111000@lid": "972500000001@s.whatsapp.net",
+    "222000222000@lid": "972521234567@s.whatsapp.net"
+  },
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5QRBL01",
+      "participant": "222000222000@lid"
+    },
+    "message": {
+      "extendedTextMessage": {
+        "text": "מאשרת, תודה",
+        "contextInfo": {
+          "stanzaId": "BOTMSGID100L",
+          "participant": "111000111000@lid",
+          "quotedMessage": { "conversation": "שלחו בבקשה אישור להשתתפות בטיול עד יום חמישי" }
+        }
+      }
+    },
+    "messageTimestamp": 1704106800,
+    "pushName": "ליאת"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5QRBL01_222000222000@lid",
+    "id.fromMe": false,
+    "id.id": "BAE5QRBL01",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "222000222000@lid",
+    "type": "chat",
+    "body": "מאשרת, תודה",
+    "hasMedia": false,
+    "hasQuotedMsg": true
+  },
+  "quoted": {
+    "fromMe": true,
+    "id._serialized": "true_972111222333-1600000000@g.us_BOTMSGID100L",
+    "id.id": "BOTMSGID100L",
+    "type": "chat",
+    "body": "שלחו בבקשה אישור להשתתפות בטיול עד יום חמישי",
+    "sentKey": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": true,
+      "id": "BOTMSGID100L"
+    }
+  }
+}

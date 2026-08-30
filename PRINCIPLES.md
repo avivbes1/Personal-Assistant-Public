@@ -222,3 +222,55 @@ When a production incident, architect consultation, or expert review concludes w
 - `openclaw.json`: `channels.whatsapp.groups["120363426994367917@g.us"].requireMention === false`
 - `openclaw.json`: `messages.groupChat.historyLimit >= 20`
 - `whatsapp.js`: `appendDMHistory` called on master group inbound messages and `sendToMasterGroup` outbound
+
+---
+
+## P-011 — No Silent Fall-Through in Master-Group Handlers
+
+**Principle:** Every master-group message reaching a handler must exit through a logged branch. Silent fall-through is a P-011 violation.
+
+**Source incident:** ISSUE-023, 2026-08-30 — a quoted reply in the master group failed to match any pending group question because `getQuotedMessage()` reconstructed the lookup id incorrectly. The reply then fell out of the quoted-reply block with no log line and no alert. Three layers failed silently in sequence and nine hours passed before anyone noticed the group was never configured.
+
+**Root cause:** the quoted-reply block returned only on a positive match (pending question, delimiter fallback, or follow-up). The no-match path just ran off the end of the `try` into the next block, producing no signal. Invisible failures cannot be noticed, so they persist.
+
+**Rule:**
+- A quoted reply in the master group that matches no handler must emit `logger.warn(..., 'Quoted reply matched no handler')` before falling through.
+- When the quoted message was sent by the bot (`quotedMsg.fromMe`), DM Aviv (rate-limited hourly) so a lost command becomes noisy, not invisible.
+- Any new branch added to the master-group reply/command handling must end in an explicit logged outcome — never an implicit fall-through.
+
+**Verification:**
+```bash
+# Check: the no-match warn exists in the master-group quoted-reply block
+grep -n "Quoted reply matched no handler" src/whatsapp.js
+# Expected: one matching line
+
+# Check: the unmatched-reply DM alert exists and is rate-limited
+grep -n "alertUnmatchedReply\|_unmatchedReplyAlertAt" src/whatsapp.js
+# Expected: definition + rate-limit guard + call site
+```
+
+---
+
+## P-014 — Every Shim Field Has a Fixture Test
+
+**Principle:** Every field of the whatsapp-web.js compatibility surface in `src/baileys-client.js` has a fixture test. No shim field may be added or changed without one.
+
+**Source incident:** ISSUE-023, 2026-08-30 — `baileys-client.js` is a translation layer that makes Baileys objects impersonate whatsapp-web.js objects (`BaileysMessage`, `BaileysChat`, `normalizeJid`/`toWWebJid`/`toBaileysJid`), built on a release-candidate dependency (`7.0.0-rc14`) with **zero tests**. ISSUE-023 (a wrong `getQuotedMessage()` id) lived here. A second latent defect was found while mapping it: `@lid` participants passed through the JID converters untouched and never matched phone-based identity lookups — a silent ISSUE-023 repeat waiting to happen.
+
+**Root cause:** the riskiest file in the repo — another library's conventions reproduced on top of an RC — had no net. Nothing pinned the shape it emits, so a shape change (or a missed JID form) could not be caught.
+
+**Rule:**
+- Every whatsapp-web.js-shaped field the shim emits (`id._serialized`, `id.fromMe`, `from`, `to`, `author`, `type`, `body`, `hasMedia`, `hasQuotedMsg`, `getQuotedMessage()` round-trip) is pinned by a hand-authored fixture in `tests/shim/fixtures/`.
+- Fixture expectations are written **by hand**, never generated from the shim's own output — a self-labelled fixture only proves the shim agrees with itself.
+- Adding or changing a shim field requires adding/updating a fixture in the same change. LID-form participant variants are mandatory: any new message shape gets a `@lid` fixture too.
+- The suite runs in `npm test` and CI (pure fixtures, no API calls).
+
+**Verification:**
+```bash
+# Check: the shim suite exists, passes, and covers LID cases
+node tests/shim/run.js
+grep -rl "@lid" tests/shim/fixtures/ | wc -l   # Expected: > 0
+
+# Check: the suite is wired into npm test
+test -f tests/regression/2026-08-30-baileys-shim.js && echo "bridged into npm test"
+```

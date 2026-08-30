@@ -1,0 +1,44 @@
+{
+  "name": "group-quoted-reply-to-human",
+  "description": "Human quotes another human's message. getQuotedMessage() must report fromMe=false and keep the original author's participant in the reconstructed id.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5QRH001",
+      "participant": "972521234567@s.whatsapp.net"
+    },
+    "message": {
+      "extendedTextMessage": {
+        "text": "אני מביאה עוגה",
+        "contextInfo": {
+          "stanzaId": "HUMMSGID200",
+          "participant": "972539876543@s.whatsapp.net",
+          "quotedMessage": { "conversation": "מישהו יכול להביא כיבוד למסיבת הסיום?" }
+        }
+      }
+    },
+    "messageTimestamp": 1704081600,
+    "pushName": "ליאת"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5QRH001_972521234567@c.us",
+    "id.fromMe": false,
+    "id.id": "BAE5QRH001",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "972521234567@c.us",
+    "type": "chat",
+    "body": "אני מביאה עוגה",
+    "hasMedia": false,
+    "hasQuotedMsg": true
+  },
+  "quoted": {
+    "fromMe": false,
+    "id._serialized": "false_972111222333-1600000000@g.us_HUMMSGID200_972539876543@c.us",
+    "id.id": "HUMMSGID200",
+    "type": "chat",
+    "body": "מישהו יכול להביא כיבוד למסיבת הסיום?"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "group-text-lid",
+  "description": "LID-form participant variant of group text. Documents that the raw @lid flows into author/id today (the identity gap); resolution happens at comparison sites, not in the surface fields.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5GRPTXTL01",
+      "participant": "222000222000@lid"
+    },
+    "message": { "conversation": "מזכירים: מחר יום ספורט, להגיע בלבוש ספורטיבי" },
+    "messageTimestamp": 1704096000,
+    "pushName": "הורה כיתה"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5GRPTXTL01_222000222000@lid",
+    "id.fromMe": false,
+    "id.id": "BAE5GRPTXTL01",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "222000222000@lid",
+    "type": "chat",
+    "body": "מזכירים: מחר יום ספורט, להגיע בלבוש ספורטיבי",
+    "hasMedia": false,
+    "hasQuotedMsg": false
+  }
+}

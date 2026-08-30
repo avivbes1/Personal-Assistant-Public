@@ -1,0 +1,48 @@
+{
+  "name": "group-quoted-reply-to-human-lid",
+  "description": "LID variant: a human quotes another human, both in @lid form. Even after resolution the quoted participant is not the bot, so fromMe stays false. The reconstructed id keeps the raw @lid participant.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "lidMap": {
+    "222000222000@lid": "972521234567@s.whatsapp.net",
+    "333000333000@lid": "972539876543@s.whatsapp.net"
+  },
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5QRHL01",
+      "participant": "222000222000@lid"
+    },
+    "message": {
+      "extendedTextMessage": {
+        "text": "גם אני מצטרפת",
+        "contextInfo": {
+          "stanzaId": "HUMMSGID200L",
+          "participant": "333000333000@lid",
+          "quotedMessage": { "conversation": "מי מגיע לפגישת ההורים ביום שני?" }
+        }
+      }
+    },
+    "messageTimestamp": 1704110400,
+    "pushName": "ליאת"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5QRHL01_222000222000@lid",
+    "id.fromMe": false,
+    "id.id": "BAE5QRHL01",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "222000222000@lid",
+    "type": "chat",
+    "body": "גם אני מצטרפת",
+    "hasMedia": false,
+    "hasQuotedMsg": true
+  },
+  "quoted": {
+    "fromMe": false,
+    "id._serialized": "false_972111222333-1600000000@g.us_HUMMSGID200L_333000333000@lid",
+    "id.id": "HUMMSGID200L",
+    "type": "chat",
+    "body": "מי מגיע לפגישת ההורים ביום שני?"
+  }
+}

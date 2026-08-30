@@ -1,0 +1,36 @@
+{
+  "name": "group-image-caption-lid",
+  "description": "LID-form participant variant of a group image with caption.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5IMGL01",
+      "participant": "333000333000@lid"
+    },
+    "message": {
+      "imageMessage": {
+        "caption": "צילום של המכתב מהמורה",
+        "mimetype": "image/jpeg",
+        "url": "https://mmg.whatsapp.net/redacted",
+        "fileLength": "91002",
+        "mediaKey": "REDACTED_MEDIA_KEY"
+      }
+    },
+    "messageTimestamp": 1704103200,
+    "pushName": "ועד הורים"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5IMGL01_333000333000@lid",
+    "id.fromMe": false,
+    "id.id": "BAE5IMGL01",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "333000333000@lid",
+    "type": "image",
+    "body": "צילום של המכתב מהמורה",
+    "hasMedia": true,
+    "hasQuotedMsg": false
+  }
+}

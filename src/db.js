@@ -2,7 +2,8 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const { normalizeText } = require('./notice-dedup');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'family.db');
+// FAMILYBOT_DB_PATH lets tests point at an isolated DB instead of the live one.
+const DB_PATH = process.env.FAMILYBOT_DB_PATH || path.join(__dirname, '..', 'data', 'family.db');
 
 let db;
 
@@ -95,6 +96,7 @@ function initDB() {
       owner TEXT NOT NULL,
       ask_at TEXT NOT NULL,
       bot_msg_id TEXT,
+      stanza_id TEXT,
       status TEXT DEFAULT 'pending',
       created_at INTEGER NOT NULL
     );
@@ -144,9 +146,18 @@ function initDB() {
     CREATE TABLE IF NOT EXISTS pending_group_questions (
       msg_id TEXT PRIMARY KEY,
       group_id TEXT NOT NULL,
+      stanza_id TEXT,
       created_at INTEGER NOT NULL
     );
   `);
+
+  // ── Migration 006 (ISSUE-023 / H1): stanza_id for reply-based lookups ──────
+  // The serialized msg_id depends on JID-format details that differ between the
+  // sent-message and quoted-reply directions; stanza_id is stable in both.
+  try { db.exec('ALTER TABLE pending_group_questions ADD COLUMN stanza_id TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE follow_ups ADD COLUMN stanza_id TEXT'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_pgq_stanza ON pending_group_questions(stanza_id)'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_followups_stanza ON follow_ups(stanza_id)'); } catch (_) {}
 
   // Notices — family-relevant info extracted from monitored groups, with resolved relevance dates
   db.exec(`
@@ -521,6 +532,22 @@ function initDB() {
   } catch (_) {}
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_notice_feedback_notice ON notice_feedback(notice_id)"); } catch (_) {}
 
+  // ── LID → phone-number mapping cache (H5) ───────────────────────────────────
+  // Baileys hands us "@lid" participant JIDs for privacy-mode groups. These never
+  // match phone-based identity lookups (FAMILY_PHONES, the myJid quoted-reply
+  // check that ISSUE-023 depended on). baileys-client.js resolves LID→PN via the
+  // signal repository once and caches the result here so resolution survives
+  // restarts and avoids repeated lookups.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS lid_map (
+        lid        TEXT PRIMARY KEY,
+        pn         TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+  } catch (_) {}
+
   console.log('[DB] Initialized at', DB_PATH);
   return db;
 }
@@ -528,6 +555,28 @@ function initDB() {
 function getDB() {
   if (!db) throw new Error('DB not initialized. Call initDB() first.');
   return db;
+}
+
+// ── LID → phone-number mapping cache (H5) ─────────────────────────────────────
+
+/**
+ * Look up a cached phone JID for a LID JID. Returns the PN string or null.
+ */
+function getLidMapping(lid) {
+  if (!lid) return null;
+  const row = getDB().prepare('SELECT pn FROM lid_map WHERE lid = ?').get(lid);
+  return row ? row.pn : null;
+}
+
+/**
+ * Persist a LID → phone JID mapping so resolution survives restarts.
+ */
+function saveLidMapping(lid, pn) {
+  if (!lid || !pn) return;
+  getDB().prepare(
+    'INSERT INTO lid_map (lid, pn, updated_at) VALUES (?, ?, ?) ' +
+    'ON CONFLICT(lid) DO UPDATE SET pn = excluded.pn, updated_at = excluded.updated_at'
+  ).run(lid, pn, Date.now());
 }
 
 function saveMessage({ group_id, sender, body, timestamp }) {
@@ -841,12 +890,19 @@ function setGroupDescription(id, description) {
 }
 
 // ── Persistent pending group questions ────────────────────────────────────────
-function savePendingGroupQuestion(msgId, groupId) {
-  getDB().prepare('INSERT OR REPLACE INTO pending_group_questions (msg_id, group_id, created_at) VALUES (?, ?, ?)').run(msgId, groupId, Date.now());
+function savePendingGroupQuestion(msgId, groupId, stanzaId = null) {
+  getDB().prepare('INSERT OR REPLACE INTO pending_group_questions (msg_id, group_id, stanza_id, created_at) VALUES (?, ?, ?, ?)').run(msgId, groupId, stanzaId, Date.now());
 }
 
 function getPendingGroupQuestion(msgId) {
   const row = getDB().prepare('SELECT group_id FROM pending_group_questions WHERE msg_id = ?').get(msgId);
+  return row ? row.group_id : null;
+}
+
+// H1: fall back to stanza_id when the serialized msg_id doesn't match.
+function getPendingGroupQuestionByStanza(stanzaId) {
+  if (!stanzaId) return null;
+  const row = getDB().prepare('SELECT group_id FROM pending_group_questions WHERE stanza_id = ?').get(stanzaId);
   return row ? row.group_id : null;
 }
 
@@ -945,12 +1001,18 @@ function claimFollowUp(id) {
   return result.changes > 0;
 }
 
-function setFollowUpBotMsgId(id, botMsgId) {
-  getDB().prepare('UPDATE follow_ups SET bot_msg_id = ? WHERE id = ?').run(botMsgId, id);
+function setFollowUpBotMsgId(id, botMsgId, stanzaId = null) {
+  getDB().prepare('UPDATE follow_ups SET bot_msg_id = ?, stanza_id = ? WHERE id = ?').run(botMsgId, stanzaId, id);
 }
 
 function getFollowUpByBotMsgId(botMsgId) {
   return getDB().prepare('SELECT * FROM follow_ups WHERE bot_msg_id = ?').get(botMsgId);
+}
+
+// H1: fall back to stanza_id when the serialized bot_msg_id doesn't match.
+function getFollowUpByStanzaId(stanzaId) {
+  if (!stanzaId) return null;
+  return getDB().prepare('SELECT * FROM follow_ups WHERE stanza_id = ?').get(stanzaId);
 }
 
 // ── Bot Tasks ─────────────────────────────────────────────────────────────────
@@ -1487,6 +1549,7 @@ module.exports = {
   getUnconfiguredGroups,
   savePendingGroupQuestion,
   getPendingGroupQuestion,
+  getPendingGroupQuestionByStanza,
   deletePendingGroupQuestion,
   getAllPendingGroupQuestions,
   saveReminder,
@@ -1504,6 +1567,7 @@ module.exports = {
   claimFollowUp,
   setFollowUpBotMsgId,
   getFollowUpByBotMsgId,
+  getFollowUpByStanzaId,
   saveCapabilityRequest,
   getPendingCapabilityRequests,
   saveBotTask,
@@ -1566,4 +1630,7 @@ module.exports = {
   // Config management
   getConfigValue,
   setConfigValue,
+  // LID → phone mapping cache (H5)
+  getLidMapping,
+  saveLidMapping,
 };

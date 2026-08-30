@@ -1,0 +1,28 @@
+{
+  "name": "group-text",
+  "description": "Plain text message in a monitored group (phone-form participant).",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5GRPTXT001",
+      "participant": "972521234567@s.whatsapp.net"
+    },
+    "message": { "conversation": "מחר יש טיול לכיתה ב׳, אנא שלחו אישור עד הערב" },
+    "messageTimestamp": 1704067200,
+    "pushName": "הורה כיתה"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5GRPTXT001_972521234567@c.us",
+    "id.fromMe": false,
+    "id.id": "BAE5GRPTXT001",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "972521234567@c.us",
+    "type": "chat",
+    "body": "מחר יש טיול לכיתה ב׳, אנא שלחו אישור עד הערב",
+    "hasMedia": false,
+    "hasQuotedMsg": false
+  }
+}

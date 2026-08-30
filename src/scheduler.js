@@ -13,6 +13,7 @@ const cron = require('node-cron');
 const config = require('./config');
 const { getPendingActionItems, saveReminder, reserveReminder, releaseReminder, confirmReminderSent, claimDigestToday, saveFollowUp, getPendingFollowUps, claimFollowUp, setFollowUpBotMsgId, getDB, getPendingBotTasks, claimBotTask, saveBotTask } = require('./db');
 const { getTodayEvents, getUpcomingEvents } = require('./calendar');
+const { stanzaIdOf } = require('./baileys-client');
 
 let sendToMasterGroup = null;
 let sendWithMentions  = null;
@@ -289,7 +290,7 @@ async function fireFollowUp(followUp) {
   try {
     // No @mentions — same reason as reminders (avoids DM duplication via OpenClaw)
     const botMsgId = await sendFollowUpFn(msg);
-    if (botMsgId) setFollowUpBotMsgId(followUp.id, botMsgId);
+    if (botMsgId) setFollowUpBotMsgId(followUp.id, botMsgId, stanzaIdOf(botMsgId));
     console.log(`[Scheduler] Follow-up sent for: "${followUp.event_title}"`);
   } catch (err) {
     console.error('[Scheduler] fireFollowUp error:', err.message);

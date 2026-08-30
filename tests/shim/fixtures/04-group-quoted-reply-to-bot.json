@@ -1,0 +1,49 @@
+{
+  "name": "group-quoted-reply-to-bot",
+  "description": "Human quotes a message the BOT sent to the group (the ISSUE-023 path). getQuotedMessage() must round-trip to the id sendMessage() returned, and report fromMe=true.",
+  "myJid": "972500000001@s.whatsapp.net",
+  "raw": {
+    "key": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": false,
+      "id": "BAE5QRB001",
+      "participant": "972521234567@s.whatsapp.net"
+    },
+    "message": {
+      "extendedTextMessage": {
+        "text": "כן, מאשר את ההשתתפות",
+        "contextInfo": {
+          "stanzaId": "BOTMSGID100",
+          "participant": "972500000001@s.whatsapp.net",
+          "quotedMessage": { "conversation": "שלחו בבקשה אישור להשתתפות בטיול עד יום חמישי" }
+        }
+      }
+    },
+    "messageTimestamp": 1704078000,
+    "pushName": "אביב"
+  },
+  "expect": {
+    "id._serialized": "false_972111222333-1600000000@g.us_BAE5QRB001_972521234567@c.us",
+    "id.fromMe": false,
+    "id.id": "BAE5QRB001",
+    "from": "972111222333-1600000000@g.us",
+    "to": "972500000001@c.us",
+    "author": "972521234567@c.us",
+    "type": "chat",
+    "body": "כן, מאשר את ההשתתפות",
+    "hasMedia": false,
+    "hasQuotedMsg": true
+  },
+  "quoted": {
+    "fromMe": true,
+    "id._serialized": "true_972111222333-1600000000@g.us_BOTMSGID100",
+    "id.id": "BOTMSGID100",
+    "type": "chat",
+    "body": "שלחו בבקשה אישור להשתתפות בטיול עד יום חמישי",
+    "sentKey": {
+      "remoteJid": "972111222333-1600000000@g.us",
+      "fromMe": true,
+      "id": "BOTMSGID100"
+    }
+  }
+}

@@ -21,8 +21,11 @@ console.log(`\n🧪 Running ${testFiles.length} regression tests...\n`);
 
 (async () => {
   for (const file of testFiles) {
-    const mod = require(path.join(testDir, file));
     try {
+      // require() inside the try so a single test file that fails to load
+      // (e.g. a missing dependency in an unrelated module) is reported as one
+      // ERROR instead of crashing the entire suite.
+      const mod = require(path.join(testDir, file));
       const result = typeof mod.run === 'function'
         ? await mod.run()
         : { pass: false, message: 'No run() export' };

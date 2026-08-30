@@ -205,7 +205,7 @@ function getSentRecent(db) {
   // the same real-world event discussed across multiple days.
   const cutoff = Date.now() - 72 * 3600000;
   return db.prepare(`
-    SELECT topic_key, sent_at, message_text, source_notice_ids
+    SELECT topic_key, sent_at, message_text, source_notice_ids, group_name
     FROM sent_messages
     WHERE sent_at >= ?
     ORDER BY sent_at ASC
@@ -223,11 +223,11 @@ function markNoticesTriaged(db, decisions) {
   }
 }
 
-function saveSentMessage(db, topicKey, text, noticeIds) {
+function saveSentMessage(db, topicKey, text, noticeIds, groupName = null) {
   db.prepare(`
-    INSERT INTO sent_messages (topic_key, sent_at, message_text, source_notice_ids)
-    VALUES (?, ?, ?, ?)
-  `).run(topicKey, Date.now(), text, JSON.stringify(noticeIds));
+    INSERT INTO sent_messages (topic_key, sent_at, message_text, source_notice_ids, group_name)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(topicKey, Date.now(), text, JSON.stringify(noticeIds), groupName);
 }
 
 function markNoticesSent(db, noticeIds) {
@@ -699,7 +699,7 @@ async function runTriage() {
     const immediateContentDismissed = activeDismissals.some(d => {
       if (d.scope_type === 'all') return true;
       if (d.scope_type === 'source_group' && n.group_name && d.scope_value) {
-        return n.group_name.includes(d.scope_value) || d.scope_value.includes(n.group_name.substring(0, 8));
+        return n.group_name.includes(d.scope_value) || d.scope_value.includes(n.group_name);
       }
       if (d.scope_type === 'topic_key' && d.scope_value && n.content) {
         // Check if any word from the topic_key slug appears in the notice content
@@ -715,10 +715,13 @@ async function runTriage() {
         .run(Date.now(), n.id);
       continue;
     }
-    // Cross-day dedup: if this group was already sent recently, demote to normal triage
-    const alreadySentForGroup = sentToday.find(s =>
-      s.message_text && s.message_text.includes(n.group_name.substring(0, 8))
-    );
+    // Cross-day dedup: if this group was already sent recently, demote to normal triage.
+    // B2: match on the dedicated group_name column, not an 8-char message-text
+    // substring — Hebrew class-group names share long prefixes, so substring
+    // matching cross-suppressed unrelated groups.
+    const alreadySentForGroup = n.group_name
+      ? sentToday.find(s => s.group_name && s.group_name === n.group_name)
+      : null;
     if (alreadySentForGroup && n.urgency_hint !== 'critical') {
       // Demote to normal triage so it gets proper dedup with sentToday context
       normal.push(n);
@@ -733,7 +736,7 @@ async function runTriage() {
       try {
         await voiceSend(GROUP_JID, text);
         markNoticesSent(db, [n.id]);
-        saveSentMessage(db, `immediate-${n.id}`, text, [n.id]);
+        saveSentMessage(db, `immediate-${n.id}`, text, [n.id], n.group_name);
         console.log(`[Triage] Sent immediate #${n.id}`);
       } catch (e) {
         console.error(`[Triage] Failed immediate #${n.id}:`, e.message);
@@ -849,9 +852,13 @@ async function runTriage() {
       continue;
     }
 
-    // Daily group cap: max 3 distinct messages per source group per day
+    // Daily group cap: max 3 distinct messages per source group per day.
+    // B2: count via the group_name column (exact match), not an 8-char message-text
+    // substring. Substring matching both over-fired (Hebrew groups sharing a long
+    // prefix suppressed each other) and under-fired (synthesized messages that omit
+    // the group name matched nothing).
     const groupSentCount = (groupSentToday[sourceGroup] || 0) +
-      sentToday.filter(s => s.sent_at >= israelMidnight && s.message_text && s.message_text.includes(sourceGroup.substring(0, 8))).length;
+      sentToday.filter(s => s.sent_at >= israelMidnight && s.group_name && s.group_name === sourceGroup).length;
     if (groupSentCount >= GROUP_DAILY_CAP) {
       console.log(`[Triage] Daily cap reached for "${sourceGroup}" (${groupSentCount}/${GROUP_DAILY_CAP}) — deferring [${topicKey}]`);
       // Mark as deferred so they appear in morning digest instead
@@ -882,7 +889,7 @@ async function runTriage() {
           await voiceSend(GROUP_JID, message);
           const noticeIds = groupNotices.map(n => n.id);
           markNoticesSent(db, noticeIds);
-          saveSentMessage(db, topicKey, message, noticeIds);
+          saveSentMessage(db, topicKey, message, noticeIds, sourceGroup);
           console.log(`[Triage] Sent [${topicKey}]: "${message.substring(0, 60)}"`);
           // Update thread last_delivered_at for topic continuity
           for (const n of groupNotices) {
@@ -893,7 +900,7 @@ async function runTriage() {
             }
           }
           // Add to sentToday for subsequent buckets in same run
-          sentToday.push({ topic_key: topicKey, sent_at: Date.now(), message_text: message });
+          sentToday.push({ topic_key: topicKey, sent_at: Date.now(), message_text: message, group_name: sourceGroup });
           // Track daily group cap
           groupSentToday[sourceGroup] = (groupSentToday[sourceGroup] || 0) + 1;
         } catch (e) {
