@@ -251,6 +251,35 @@ grep -n "alertUnmatchedReply\|_unmatchedReplyAlertAt" src/whatsapp.js
 
 ---
 
+## P-012 — Exactly One Sender for the Master Group
+
+**Principle:** Exactly one process reads the notices queue and calls `voiceSend` for the master group. `deliver-batch.js` and `deliver-immediate.js` are formatters invoked by triage, never independent readers.
+
+**Source incident:** WORKPLAN-V4 B1, 2026-08-31 — two independent readers of the notices queue ran with divergent policy. `triage-engine.js` (`*/15`) claimed via `send_attempted_at`, applied the 72h `sent_messages` window, `GROUP_DAILY_CAP=3`, topic dismissals, quiet hours, and thread-continuity downgrade. `noticeDelivery.js` via `deliver-batch.js` (07/12/16/20) selected `delivery_status='pending' AND (triage_decision IS NULL OR triage_decision NOT IN ('skip','defer'))` and sent with **no `send_attempted_at` check, no 72h context, no daily cap, no dismissal check**. The overlap (`triage_decision IS NULL`) included notices triage had claimed seconds earlier and was mid-LLM-call on — every Phase 2.3 guardrail was bypassed four times a day. Same structural bug as P-001 and ISSUE-023, in the delivery layer.
+
+**Root cause:** two components each partially owned delivery, so neither owned it and the guardrails leaked. A second reader cannot be made safe by adding flag checks to its query (see P-001) — only having one reader fixes it.
+
+**Rule:**
+- `triage-engine.js` is the sole process that reads the notices queue and calls `voiceSend` for the master group. It owns the `*/15` triage run, the `TRIAGE_MODE=digest` drain (07/12/16/20), and the `TRIAGE_MODE=immediate` drain (every 5 min).
+- The digest drains `triage_decision='defer'` notices — it does **not** re-read `delivery_status='pending'`. Deferred notices are triage-approved for the morning/daytime digest; the digest is their only delivery path.
+- `deliver-batch.js` and `deliver-immediate.js` are thin launchers that invoke triage (`TRIAGE_MODE=digest` / `TRIAGE_MODE=immediate`). They must not read the notices queue and must not call `voiceSend`/`sendToMasterGroup` themselves.
+- `noticeDelivery.js` provides pure formatters (`deliverBatch(notices)` builds the digest text; `deliverImmediate(notice)` builds the immediate text). A formatter takes an explicit notice list, returns text, reads nothing, and sends nothing.
+- Any new script that needs to deliver to the master group must delegate to triage, never open a second send path.
+
+**Verification:**
+```bash
+# Check: exactly one queue reader that sends (files in src/ that read the queue AND send)
+grep -rln "posted_to_master\|delivery_status = 'pending'" --include=*.js src/ \
+  | xargs grep -ln "voiceSend\|sendToMasterGroup"
+# Expected: src/triage-engine.js only
+
+# Check: the delivery launchers delegate to triage and never send directly
+grep -c "TRIAGE_MODE" deliver-batch.js deliver-immediate.js   # Expected: >=1 each
+grep -c "voiceSend\|/send-message" deliver-batch.js deliver-immediate.js  # Expected: 0 each
+```
+
+---
+
 ## P-014 — Every Shim Field Has a Fixture Test
 
 **Principle:** Every field of the whatsapp-web.js compatibility surface in `src/baileys-client.js` has a fixture test. No shim field may be added or changed without one.

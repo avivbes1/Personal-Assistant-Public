@@ -1,19 +1,21 @@
 /**
- * noticeDelivery.js
- * Two-tier notice delivery system:
+ * noticeDelivery.js — PURE FORMATTERS for master-group notice delivery.
  *
- * IMMEDIATE: every 5 min — picks up urgent/time_sensitive notices that are
- *   genuinely actionable now. Sends one per message, immediately.
+ * B1 / P-012: This module NO LONGER reads the notices queue and NO LONGER sends.
+ * It exposes formatters that turn an explicit list of notices into WhatsApp text:
  *
- * BATCH: 07:00, 12:30, 16:00, 20:00 Israel time (via cron) — collects all
- *   pending routine notices, clusters by group+time, LLM-summarizes clusters
- *   with 2+ items, sends as ONE message. Never sends between 22:00-06:30.
+ *   deliverBatch(notices, opts)  → { body, ids, clusterCount } | null   (digest)
+ *   deliverImmediate(notice)     → string                               (one urgent notice)
+ *   selectImmediate(notices)     → notices that qualify for immediate send
  *
- * Safeguards:
- *   - delivery_status flips to delivered_* ONLY after WhatsApp send confirmed
- *   - LLM summary preserves all action items (payment links, contacts, deadlines)
- *   - time_sensitive notices re-evaluated at delivery: if relevant_datetime
- *     is within 3h → treat as immediate
+ * triage-engine.js is the SINGLE process that reads the queue, applies the
+ * guardrails (claim / 72h context / daily cap / dismissals / quiet hours), and
+ * calls voiceSend. It invokes these formatters via TRIAGE_MODE=digest (07/12/16/20)
+ * and TRIAGE_MODE=immediate (every 5 min). See PRINCIPLES.md P-012.
+ *
+ * Retained for reference / P-009: getPendingNotices (with its triage_decision
+ * filter), the cluster gate inside deliverBatch, clusterNotices, getStuckNotices,
+ * and the delivery-bookkeeping helpers.
  */
 
 const { getDB } = require('./db');
@@ -45,6 +47,8 @@ const MAX_DELIVERY_ATTEMPTS = 5;
 function getPendingNotices(urgencyFilter = null) {
   // P-009: Exclude notices that triage already decided to skip or defer.
   // triage_decision IS NULL means not yet triaged — still eligible for batch delivery.
+  // NOTE (P-012): this reader is retained for reference and for the P-009 check;
+  // the live delivery path no longer calls it — triage-engine.js owns the queue read.
   let q = `SELECT * FROM notices WHERE delivery_status = 'pending' AND dismissed = 0
     AND (delivery_attempts IS NULL OR delivery_attempts < ${MAX_DELIVERY_ATTEMPTS})
     AND (triage_decision IS NULL OR triage_decision NOT IN ('skip', 'defer'))`;
@@ -118,19 +122,32 @@ ${lines}
   }
 }
 
-// ── Immediate delivery ─────────────────────────────────────────────────────
+// ── Immediate delivery (formatter) ───────────────────────────────────────────
 
 /**
- * Called every 5 minutes by the cron job.
- * Picks up: urgency_hint='immediate' notices
- *           + time_sensitive notices where relevant_datetime is within 3h
+ * deliverImmediate(notice) — PURE FORMATTER (B1 / P-012).
+ *
+ * Builds the single-notice immediate text for the master group. Reads nothing
+ * and sends nothing: triage-engine.js (TRIAGE_MODE=immediate) owns the queue
+ * read, the guardrails (dismissal / dedup / claim), and the voiceSend.
+ *
+ * Returns the WhatsApp-formatted message string.
  */
-async function deliverImmediate(sendFn) {
-  const all = getPendingNotices();
-  const now = Date.now();
-  const THREE_HOURS = 3 * 3600000;
+function deliverImmediate(notice) {
+  const timeStr = notice.relevance_time ? ` (${notice.relevance_time})` : '';
+  return `‏⚡ *${notice.group_name}:*\n${getDeliveryContent(notice)}${timeStr}`;
+}
 
-  const urgent = all.filter(n => {
+/**
+ * selectImmediate(notices) — pure selector shared with triage's immediate drain.
+ * Given a list of pending notices, returns those that qualify for immediate send:
+ *   - urgency_hint='immediate', or
+ *   - urgency_hint='time_sensitive' with relevant_datetime within 3h.
+ * Reads nothing (the caller passes the notices).
+ */
+function selectImmediate(notices, now = Date.now()) {
+  const THREE_HOURS = 3 * 3600000;
+  return (notices || []).filter(n => {
     if (n.urgency_hint === 'immediate') return true;
     if (n.urgency_hint === 'time_sensitive' && n.relevant_datetime) {
       const diff = n.relevant_datetime - now;
@@ -138,44 +155,30 @@ async function deliverImmediate(sendFn) {
     }
     return false;
   });
-
-  if (urgent.length === 0) return;
-
-  console.log(`[NoticeDelivery] ${urgent.length} urgent notice(s) to send immediately`);
-
-  for (const notice of urgent) {
-    const timeStr = notice.relevance_time ? ` (${notice.relevance_time})` : '';
-    const text = `\u200f⚡ *${notice.group_name}:*\n${getDeliveryContent(notice)}${timeStr}`;
-    try {
-      await sendFn(text);
-      markDelivered([notice.id], 'delivered_immediate');
-      console.log(`[NoticeDelivery] Immediate: "${notice.content.substring(0, 50)}"`);
-      afterDeliveryHook([notice.id]).catch(() => {});
-    } catch (err) {
-      console.error(`[NoticeDelivery] Failed to send immediate notice ${notice.id}:`, err.message);
-      incrementAttempts(notice.id);
-    }
-  }
 }
 
-// ── Batch delivery ─────────────────────────────────────────────────────────
+// ── Batch delivery (formatter) ───────────────────────────────────────────────
 
 /**
- * Called at batch windows: 07:00, 12:30, 16:00, 20:00 Israel time.
- * Collects all pending routine + time_sensitive (not yet urgent) notices,
- * clusters by group, LLM-summarizes clusters, sends as one message.
+ * deliverBatch(notices, opts) — PURE FORMATTER (B1 / P-012).
+ *
+ * Builds the batched digest text from an EXPLICIT list of notices. Reads nothing
+ * and sends nothing — triage-engine.js owns the queue read and the voiceSend.
+ * Returns { body, ids, clusterCount } or null when there is nothing to send.
+ *
+ * opts.requireActionable (default false): apply the P-009 cluster gate that
+ * rejects an all-FYI/undated batch. triage's digest drains already-triaged
+ * 'defer' notices (noise was filtered upstream), so the gate is OFF by default;
+ * it remains available to any caller that formats the raw untriaged queue.
  */
-async function deliverBatch(sendFn) {
-  if (isQuietHours()) {
-    console.log('[NoticeDelivery] Quiet hours — skipping batch');
-    return;
-  }
+async function deliverBatch(notices, opts = {}) {
+  const { requireActionable = false } = opts;
+  if (!Array.isArray(notices) || notices.length === 0) return null;
 
-  const all = getPendingNotices();
-  // Exclude anything that qualifies as immediate (handled by the other cron)
+  // Exclude anything that qualifies as immediate (handled by the immediate path).
   const now = Date.now();
   const THREE_HOURS = 3 * 3600000;
-  const batchable = all.filter(n => {
+  const batchable = notices.filter(n => {
     if (n.urgency_hint === 'immediate') return false;
     if (n.urgency_hint === 'time_sensitive' && n.relevant_datetime) {
       const diff = n.relevant_datetime - now;
@@ -183,28 +186,24 @@ async function deliverBatch(sendFn) {
     }
     return true;
   });
+  if (batchable.length === 0) return null;
 
-  if (batchable.length === 0) {
-    console.log('[NoticeDelivery] No pending notices for batch');
-    return;
-  }
-
-  // P-009 Cluster gate: require at least one actionable notice before sending.
-  // A notice is actionable if it has a known urgency or a relevance date attached.
+  // P-009 Cluster gate (opt-in): require at least one actionable notice before
+  // sending. A notice is actionable if it has a known urgency or a relevance date.
   // Pure FYI chatter (no dates, no urgency) is not worth a batch send.
-  const hasActionable = batchable.some(n =>
-    n.urgency_hint === 'immediate' ||
-    n.urgency_hint === 'time_sensitive' ||
-    n.relevance_date != null
-  );
-  if (!hasActionable) {
-    console.log('[NoticeDelivery] Cluster gate: 0 actionable notices \u2014 skipping batch (all FYI/undated)');
-    return;
+  if (requireActionable) {
+    const hasActionable = batchable.some(n =>
+      n.urgency_hint === 'immediate' ||
+      n.urgency_hint === 'time_sensitive' ||
+      n.relevance_date != null
+    );
+    if (!hasActionable) {
+      console.log('[NoticeDelivery] Cluster gate: 0 actionable notices — skipping batch (all FYI/undated)');
+      return null;
+    }
   }
 
-  console.log(`[NoticeDelivery] Batch: ${batchable.length} notices to process`);
-
-  // Cluster by group_name + notices within 2h of each other
+  // Cluster by group_name + notices within 2h of each other.
   const clusters = clusterNotices(batchable);
 
   const lines = [];
@@ -221,21 +220,12 @@ async function deliverBatch(sendFn) {
     }
   }
 
-  if (lines.length === 0) return;
+  if (lines.length === 0) return null;
 
-  const header = `\u200f💡 *עדכונים — ${new Date().toLocaleDateString('he-IL', { timeZone: ISRAEL_TZ, weekday: 'short', day: 'numeric', month: 'numeric' })}*`;
+  const header = `‏💡 *עדכונים — ${new Date().toLocaleDateString('he-IL', { timeZone: ISRAEL_TZ, weekday: 'short', day: 'numeric', month: 'numeric' })}*`;
   const body = header + '\n\n' + lines.join('\n');
 
-  try {
-    await sendFn(body);
-    const batchId = saveBatch(now, batchable.length, body);
-    markDelivered(batchable.map(n => n.id), 'delivered_batch', batchId);
-    console.log(`[NoticeDelivery] Batch delivered: ${batchable.length} notices, ${clusters.length} clusters`);
-    afterDeliveryHook(batchable.map(n => n.id)).catch(() => {});
-  } catch (err) {
-    console.error('[NoticeDelivery] Batch send failed:', err.message);
-    for (const n of batchable) incrementAttempts(n.id);
-  }
+  return { body, ids: batchable.map(n => n.id), clusterCount: clusters.length };
 }
 
 // ── Clustering ─────────────────────────────────────────────────────────────
@@ -285,7 +275,7 @@ function getStuckNotices(maxAgeMs = 8 * 3600000) {
 // ── After-delivery calendar hook ─────────────────────────────────────────────
 // Runs asynchronously after each delivery pass to create calendar entries
 // for any dated event notices. Fire-and-forget: failures are logged and
-// will be retried by the heartbeat sweeper.
+// will be retried by the heartbeat sweeper. Invoked by triage after a send.
 async function afterDeliveryHook(noticeIds) {
   if (!noticeIds || noticeIds.length === 0) return;
   try {
@@ -310,4 +300,18 @@ async function afterDeliveryHook(noticeIds) {
   }
 }
 
-module.exports = { deliverImmediate, deliverBatch, getStuckNotices, afterDeliveryHook };
+module.exports = {
+  // Formatters (B1 / P-012) — triage invokes these; they never read or send.
+  deliverImmediate,
+  deliverBatch,
+  selectImmediate,
+  // Helpers retained for triage bookkeeping / watchdog / P-009 reference.
+  getPendingNotices,
+  markDelivered,
+  incrementAttempts,
+  saveBatch,
+  clusterNotices,
+  getStuckNotices,
+  afterDeliveryHook,
+  isQuietHours,
+};

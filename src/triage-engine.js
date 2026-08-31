@@ -17,7 +17,40 @@ const { initDB, getDB } = require('./db');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const { sendMessage: voiceSend } = require('../lib/voice-client');
+// P-012: triage is the SINGLE master-group sender. Prefer the production
+// voice-client (lib/voice-client, ships on the prod box); fall back to a direct
+// HTTP POST to the local voice-server (:3001) — the exact contract the delivery
+// launchers used — when that artifact is absent, so the sole sender is never
+// dark just because the client wrapper is missing.
+function _httpVoiceSend(jid, text) {
+  return new Promise((resolve, reject) => {
+    const http = require('http');
+    const body = JSON.stringify({ to: jid, text });
+    const req = http.request({
+      hostname: 'localhost', port: 3001, path: '/send-message',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 15000,
+    }, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        if (res.statusCode === 200) resolve(JSON.parse(data || '{}'));
+        else reject(new Error(`send-message returned ${res.statusCode}: ${data}`));
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('send-message timeout')); });
+    req.end(body);
+  });
+}
+let voiceSend;
+try {
+  voiceSend = require('../lib/voice-client').sendMessage;
+} catch (_) {
+  console.warn('[Triage] lib/voice-client not found — using direct voice-server HTTP fallback');
+  voiceSend = _httpVoiceSend;
+}
 const { traceCall } = require('./llm-trace');
 const { findDuplicates } = require('./notice-dedup');
 
@@ -27,6 +60,19 @@ const SHADOW_MODE = process.env.TRIAGE_SHADOW !== 'false'; // default: shadow on
 const SHADOW_LOG = path.join(__dirname, '..', 'data', 'triage-shadow-log.jsonl');
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ISRAEL_TZ = 'Asia/Jerusalem';
+
+// Health metrics for staleness counter (B3)
+const healthFs = require('fs');
+const HEALTH_METRICS_PATH = path.join(__dirname, '..', 'data', 'health-metrics.jsonl');
+let _staleAtSendCount = 0;
+function emitStaleMetric(noticeId, deadline, now) {
+  _staleAtSendCount++;
+  const row = { ts: now, check: 'stale_at_send', ok: false, notice_id: noticeId, deadline: deadline.toISOString(), stale_at_send_total: _staleAtSendCount };
+  try {
+    healthFs.mkdirSync(path.dirname(HEALTH_METRICS_PATH), { recursive: true });
+    healthFs.appendFileSync(HEALTH_METRICS_PATH, JSON.stringify(row) + '\n');
+  } catch (_) {}
+}
 
 // ── Schema validation (P-007) ─────────────────────────────────────────────────
 const Ajv = require('ajv');
@@ -179,11 +225,12 @@ function getPendingNotices(db) {
   // LIMIT 50 bounds worst-case runtime.
   // send_attempted_at guard: prevents two concurrent triage runs from double-processing.
   //   A notice claimed <5 min ago is considered in-flight by another instance.
-  // relevance_date guard: skip stale past-event notices.
-  //   Uses '-1 day' (not 'now') to buffer for UTC→Israel (+3h) timezone offset.
-  //   NULL relevance_date = undated/evergreen notice, always included.
+  // B3: Staleness filtering moved to JS with proper Israel TZ conversion.
+  //   The old SQL `date('now','-1 day')` fudge kept all of yesterday eligible
+  //   regardless of actual time in Israel. Now we compute today's date in
+  //   Asia/Jerusalem and filter in JS after the query.
   // P-001: triage is the SOLE actor on this queue.
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT id, group_name, content, urgency_hint,
            relevance_date, relevance_time, relevant_datetime, created_at
     FROM notices
@@ -191,13 +238,88 @@ function getPendingNotices(db) {
       AND posted_to_master = 0
       AND triage_decision IS NULL
       AND (send_attempted_at IS NULL OR send_attempted_at < datetime('now', '-5 minutes'))
-      AND (relevance_date IS NULL OR relevance_date >= date('now', '-1 day'))
       AND (thread_key IS NULL OR thread_key NOT IN (
         SELECT thread_key FROM notice_threads WHERE dismissed = 1
       ))
     ORDER BY created_at ASC
     LIMIT 50
   `).all();
+
+  // B3: Filter stale notices using Israel timezone, not UTC.
+  // A notice is stale if its deadline (computed from relevance fields) has passed.
+  // NULL relevance_date = undated/evergreen notice, always included.
+  const now = new Date();
+  return rows.filter(n => {
+    if (!n.relevance_date) return true; // undated/evergreen
+    const deadline = computeDeadline(n, now);
+    return deadline > now;
+  });
+}
+
+/**
+ * B3: Compute the absolute deadline (Date) for a notice, after which it's stale.
+ *
+ * Priority:
+ *   1. relevant_datetime (epoch ms or ISO string) — use directly
+ *   2. relevance_date + relevance_time — combine in Israel TZ
+ *   3. relevance_date only — end-of-day (23:59:59) in Israel TZ
+ *   4. No date fields — returns far-future (never stale)
+ */
+function computeDeadline(notice, now = new Date()) {
+  // 1. relevant_datetime — most precise
+  if (notice.relevant_datetime) {
+    const dt = typeof notice.relevant_datetime === 'number'
+      ? new Date(notice.relevant_datetime)
+      : new Date(notice.relevant_datetime);
+    if (!isNaN(dt.getTime())) return dt;
+  }
+
+  // 2 & 3. relevance_date (YYYY-MM-DD string)
+  if (notice.relevance_date) {
+    const dateStr = notice.relevance_date; // e.g. '2026-08-31'
+    let timeStr = '23:59:59'; // default: end-of-day
+    if (notice.relevance_time) {
+      // relevance_time is 'HH:MM' or 'HH:MM:SS'
+      timeStr = notice.relevance_time.length <= 5
+        ? notice.relevance_time + ':00'
+        : notice.relevance_time;
+    }
+    // Build a date string that we interpret in Israel timezone.
+    // Intl trick: format now in Israel to get the UTC offset, then parse.
+    const isoInIsrael = `${dateStr}T${timeStr}`;
+    const deadline = israelDateToUTC(isoInIsrael);
+    if (deadline && !isNaN(deadline.getTime())) return deadline;
+  }
+
+  // 4. No date → never stale
+  return new Date(now.getTime() + 365 * 24 * 3600000);
+}
+
+/**
+ * Convert a 'YYYY-MM-DDTHH:MM:SS' string (interpreted in Asia/Jerusalem) to a UTC Date.
+ */
+function israelDateToUTC(isoLocal) {
+  // Use a two-pass approach: parse as UTC, then adjust by the Israel offset at that time.
+  // This handles DST correctly.
+  const naive = new Date(isoLocal + 'Z'); // treat as UTC first
+  if (isNaN(naive.getTime())) return null;
+
+  // Get the Israel offset at this approximate time
+  // Format the naive UTC time in Israel TZ and compare
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: ISRAEL_TZ,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(naive);
+  const get = (type) => parts.find(p => p.type === type)?.value || '00';
+  const israelStr = `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}Z`;
+  const israelAsUTC = new Date(israelStr);
+  // offset = israelAsUTC - naive = how far ahead Israel is from UTC
+  const offsetMs = israelAsUTC.getTime() - naive.getTime();
+  // The actual UTC time = naive - offset (we want earlier if Israel is ahead)
+  return new Date(naive.getTime() - offsetMs);
 }
 
 function getSentRecent(db) {
@@ -872,6 +994,36 @@ async function runTriage() {
 
     const alreadySent = sentToday.find(s => s.topic_key === topicKey) || null;
 
+    // ── B3: Send-time staleness gate ──────────────────────────────────────────
+    // The query→send gap can be up to 80s of LLM latency. Re-check each notice
+    // in this merge group right before sending. If ALL notices are stale, skip
+    // the entire group. If only some are stale, remove them but still send.
+    {
+      const sendTimeNow = new Date();
+      const staleIds = [];
+      const freshNotices = [];
+      for (const n of groupNotices) {
+        const deadline = computeDeadline(n, sendTimeNow);
+        if (deadline <= sendTimeNow) {
+          staleIds.push(n.id);
+          console.log(`[Triage] B3 stale at send time: #${n.id} (deadline ${deadline.toISOString()}, now ${sendTimeNow.toISOString()})`);
+          emitStaleMetric(n.id, deadline, sendTimeNow.getTime());
+          db.prepare(`UPDATE notices SET triage_decision='skip', triage_reason='stale at send time', delivery_status='skipped', posted_to_master=1 WHERE id=?`).run(n.id);
+        } else {
+          freshNotices.push(n);
+        }
+      }
+      if (freshNotices.length === 0) {
+        console.log(`[Triage] All notices in [${topicKey}] stale at send time — skipping`);
+        continue;
+      }
+      if (staleIds.length > 0) {
+        // Replace groupNotices with only the fresh ones for synthesis
+        groupNotices.length = 0;
+        groupNotices.push(...freshNotices);
+      }
+    }
+
     let message;
     try {
       message = await synthesizeMessage(groupNotices, alreadySent);
@@ -921,13 +1073,225 @@ async function runTriage() {
   console.log('[Triage] Done.');
 }
 
-// Export for test runner
-module.exports = { callHaiku, callSonnet, preTriageRules, escalateLowConfidence, classifyBucket, buildClassificationPrompt, isQuietHours, CLASSIFICATION_SYSTEM, getClassificationSystem, FEW_SHOT_EXAMPLES };
+// ── B1 / P-012: Digest drain (07/12/16/20 Israel) ─────────────────────────────
+// The daytime digest. triage is the SINGLE process that reads the queue and calls
+// voiceSend (P-012). It drains notices triage previously classified as 'defer' —
+// it does NOT re-read the 'pending' queue (that second independent reader was the
+// B1 bug). deliver-batch.js invokes this via TRIAGE_MODE=digest. The pure
+// formatter lives in noticeDelivery.deliverBatch(notices).
 
-// Run if called directly
+function getDeferredNotices(db) {
+  // Deferred-but-undelivered notices only. B3: staleness filtering moved to JS
+  // with proper Israel TZ conversion (same as getPendingNotices). LIMIT 50.
+  const rows = db.prepare(`
+    SELECT * FROM notices
+    WHERE triage_decision = 'defer'
+      AND dismissed = 0
+      AND posted_to_master = 0
+      AND (delivery_status IS NULL OR delivery_status NOT IN ('delivered_batch','delivered_immediate','skipped','dead_letter'))
+    ORDER BY created_at ASC
+    LIMIT 50
+  `).all();
+
+  // B3: Filter stale notices using Israel timezone
+  const now = new Date();
+  return rows.filter(n => {
+    if (!n.relevance_date) return true;
+    const deadline = computeDeadline(n, now);
+    return deadline > now;
+  });
+}
+
+async function runDigest() {
+  initDB();
+  const db = getDB();
+  console.log(`[Triage:digest] Starting${SHADOW_MODE ? ' (SHADOW MODE)' : ''}`);
+
+  // Quiet-hours guard (07/12/16/20 are daytime, but be safe against off-schedule runs).
+  if (isQuietHours()) {
+    console.log('[Triage:digest] Quiet hours — skipping digest');
+    return;
+  }
+
+  const deferred = getDeferredNotices(db);
+  if (deferred.length === 0) {
+    console.log('[Triage:digest] No deferred notices to drain. Done.');
+    return;
+  }
+  console.log(`[Triage:digest] ${deferred.length} deferred notice(s)`);
+
+  // Respect active dismissals at digest time (P-005).
+  const { getActiveDismissals } = require('./dismissal');
+  const activeDismissals = getActiveDismissals();
+  const drainable = deferred.filter(n => !activeDismissals.some(d => {
+    if (d.scope_type === 'all') return true;
+    if (d.scope_type === 'source_group' && n.group_name && d.scope_value) {
+      return n.group_name.includes(d.scope_value) || d.scope_value.includes(n.group_name);
+    }
+    return false;
+  }));
+
+  // Suppressed-by-dismissal notices become skip/skipped so they don't loop back.
+  const dismissedIds = deferred.filter(n => !drainable.includes(n)).map(n => n.id);
+  if (dismissedIds.length > 0) {
+    const ph = dismissedIds.map(() => '?').join(',');
+    db.prepare(`UPDATE notices SET triage_decision='skip', triage_reason='dismissed by user', delivery_status='skipped', posted_to_master=1 WHERE id IN (${ph})`).run(...dismissedIds);
+    console.log(`[Triage:digest] ${dismissedIds.length} deferred notice(s) suppressed by active dismissal`);
+  }
+
+  if (drainable.length === 0) {
+    console.log('[Triage:digest] Nothing to drain after dismissals. Done.');
+    return;
+  }
+
+  // Build the digest via the pure formatter (P-012: deliver-batch is a formatter
+  // invoked by triage). Cluster gate OFF — these notices were already triaged to
+  // 'defer', so upstream noise filtering already happened.
+  const { deliverBatch, afterDeliveryHook } = require('./noticeDelivery');
+  const digest = await deliverBatch(drainable, { requireActionable: false });
+  if (!digest || !digest.body) {
+    console.log('[Triage:digest] Formatter produced nothing — leaving notices deferred');
+    return;
+  }
+
+  if (SHADOW_MODE) {
+    console.log(`[Triage:digest] SHADOW would send digest (${digest.ids.length} notices):\n${digest.body}\n`);
+    shadowLog({ type: 'digest', notice_ids: digest.ids, message: digest.body });
+    return;
+  }
+
+  try {
+    await voiceSend(GROUP_JID, digest.body);
+    const batchId = `digest-${Date.now()}`;
+    const ph = digest.ids.map(() => '?').join(',');
+    db.prepare(`UPDATE notices SET posted_to_master=1, sent_to_master=1, delivery_status='delivered_batch', delivered_at=?, batch_id=? WHERE id IN (${ph})`)
+      .run(Date.now(), batchId, ...digest.ids);
+    saveSentMessage(db, batchId, digest.body, digest.ids, null);
+    // 'Batch delivered' — kept in this exact form so the OpenClaw launcher's
+    // output check (which greps for it) keeps working.
+    console.log(`[Triage:digest] Batch delivered: ${digest.ids.length} notices, ${digest.clusterCount} clusters`);
+    afterDeliveryHook(digest.ids).catch(() => {});
+  } catch (e) {
+    console.error('[Triage:digest] Send failed:', e.message);
+  }
+  console.log('[Triage:digest] Done.');
+}
+
+// ── B1 / P-012: Immediate drain (every 5 min) ─────────────────────────────────
+// Sends genuinely-urgent notices without waiting for the */15 triage cycle. Same
+// single-sender ownership (P-012). deliver-immediate.js invokes this via
+// TRIAGE_MODE=immediate. Applies the same claim (P-001) + dismissal + recent-
+// context guardrails as the main run's immediate handling.
+
+function getImmediatePending(db) {
+  // B3: staleness filtering moved to JS with proper Israel TZ conversion
+  const rows = db.prepare(`
+    SELECT id, group_name, content, urgency_hint, relevance_date, relevance_time,
+           relevant_datetime, created_at
+    FROM notices
+    WHERE dismissed = 0
+      AND posted_to_master = 0
+      AND triage_decision IS NULL
+      AND urgency_hint IN ('immediate','time_sensitive')
+      AND (send_attempted_at IS NULL OR send_attempted_at < datetime('now', '-5 minutes'))
+    ORDER BY created_at ASC
+    LIMIT 50
+  `).all();
+
+  const now = new Date();
+  return rows.filter(n => {
+    if (!n.relevance_date) return true;
+    const deadline = computeDeadline(n, now);
+    return deadline > now;
+  });
+}
+
+async function runImmediate() {
+  initDB();
+  const db = getDB();
+  console.log(`[Triage:immediate] Starting${SHADOW_MODE ? ' (SHADOW MODE)' : ''}`);
+
+  const candidates = getImmediatePending(db);
+  const { selectImmediate, deliverImmediate, afterDeliveryHook } = require('./noticeDelivery');
+  const urgent = selectImmediate(candidates);
+  if (urgent.length === 0) {
+    console.log('[Triage:immediate] Nothing urgent. Done.');
+    return;
+  }
+
+  // Claim upfront (P-001) so the */15 run and a concurrent immediate run can't double-send.
+  {
+    const ph = urgent.map(() => '?').join(',');
+    db.prepare(`UPDATE notices SET send_attempted_at = datetime('now') WHERE id IN (${ph})`).run(...urgent.map(n => n.id));
+  }
+
+  const { getActiveDismissals } = require('./dismissal');
+  const activeDismissals = getActiveDismissals();
+  const sentRecent = getSentRecent(db);
+
+  for (const n of urgent) {
+    // Dismissal check (content-based, mirrors the main-run immediate path).
+    const dismissed = activeDismissals.some(d => {
+      if (d.scope_type === 'all') return true;
+      if (d.scope_type === 'source_group' && n.group_name && d.scope_value) {
+        return n.group_name.includes(d.scope_value) || d.scope_value.includes(n.group_name);
+      }
+      if (d.scope_type === 'topic_key' && d.scope_value && n.content) {
+        const keywords = d.scope_value.toLowerCase().split('-').filter(w => w.length > 3);
+        const contentLower = n.content.toLowerCase();
+        return keywords.some(kw => contentLower.includes(kw));
+      }
+      return false;
+    });
+    if (dismissed) {
+      console.log(`[Triage:immediate] #${n.id} suppressed by active dismissal`);
+      db.prepare(`UPDATE notices SET triage_decision='skip', triage_reason='dismissed by user', triaged_at=?, delivery_status='skipped', posted_to_master=1 WHERE id=?`).run(Date.now(), n.id);
+      continue;
+    }
+
+    // Cross-day dedup: if this group was sent recently and it isn't 'critical',
+    // release the claim and leave it for the */15 triage (which has full context).
+    const alreadySentForGroup = n.group_name
+      ? sentRecent.find(s => s.group_name && s.group_name === n.group_name)
+      : null;
+    if (alreadySentForGroup && n.urgency_hint !== 'critical') {
+      db.prepare(`UPDATE notices SET send_attempted_at=NULL WHERE id=?`).run(n.id);
+      console.log(`[Triage:immediate] #${n.id} released to */15 triage (group recently sent)`);
+      continue;
+    }
+
+    const text = deliverImmediate(n);
+    if (SHADOW_MODE) {
+      console.log(`[Triage:immediate] SHADOW would send #${n.id}: "${text.substring(0, 80)}"`);
+      shadowLog({ type: 'immediate', notice_id: n.id, text });
+      continue;
+    }
+    try {
+      await voiceSend(GROUP_JID, text);
+      markNoticesSent(db, [n.id]);
+      saveSentMessage(db, `immediate-${n.id}`, text, [n.id], n.group_name);
+      console.log(`[Triage:immediate] Immediate: #${n.id} "${text.substring(0, 50)}"`);
+      afterDeliveryHook([n.id]).catch(() => {});
+    } catch (e) {
+      console.error(`[Triage:immediate] Failed #${n.id}:`, e.message);
+      db.prepare(`UPDATE notices SET send_attempted_at=NULL WHERE id=?`).run(n.id);
+    }
+  }
+  console.log('[Triage:immediate] Done.');
+}
+
+// Export for test runner
+module.exports = { runTriage, runDigest, runImmediate, callHaiku, callSonnet, preTriageRules, escalateLowConfidence, classifyBucket, buildClassificationPrompt, isQuietHours, getDeferredNotices, getImmediatePending, computeDeadline, israelDateToUTC, CLASSIFICATION_SYSTEM, getClassificationSystem, FEW_SHOT_EXAMPLES };
+
+// Run if called directly. TRIAGE_MODE selects which drain to run (P-012: all
+// three modes are the same single sender). Default = the */15 full triage.
 if (require.main === module) {
-  runTriage().catch(e => {
-    console.error('[Triage] Fatal:', e.message);
+  const mode = process.env.TRIAGE_MODE;
+  const runner = mode === 'digest' ? runDigest
+    : mode === 'immediate' ? runImmediate
+    : runTriage;
+  runner().catch(e => {
+    console.error(`[Triage${mode ? ':' + mode : ''}] Fatal:`, e.message);
     process.exit(1);
   });
 }

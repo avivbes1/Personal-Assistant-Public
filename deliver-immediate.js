@@ -1,40 +1,27 @@
+#!/usr/bin/env node
+'use strict';
 /**
- * deliver-immediate.js
+ * deliver-immediate.js — Thin launcher for the immediate drain (B1 / P-012).
+ *
  * Invoked by OpenClaw cron every 5 minutes.
- * Sends urgent/time_sensitive notices to the master group immediately.
+ * Sets TRIAGE_MODE=immediate and spawns triage-engine.js — the single process
+ * that reads the notices queue and calls voiceSend (P-012). This file must
+ * NOT read the notices queue and must NOT call voiceSend or POST /send-message.
  */
 
-const http = require('http');
-const _log = console.log; console.log = () => {};
-const { initDB } = require('./src/db');
-initDB();
-console.log = _log;
+const { execFileSync } = require('child_process');
+const path = require('path');
 
-const { deliverImmediate } = require('./src/noticeDelivery');
+const triageScript = path.join(__dirname, 'src', 'triage-engine.js');
 
-const MASTER_GROUP_JID = process.env.MASTER_GROUP_JID || '120363426994367917@g.us';
-
-function sendToMasterGroup(text) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ to: MASTER_GROUP_JID, text });
-    const req = http.request({
-      hostname: 'localhost', port: 3001, path: '/send-message',
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 15000
-    }, res => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        if (res.statusCode === 200) resolve(JSON.parse(data));
-        else reject(new Error(`send-message returned ${res.statusCode}: ${data}`));
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('send-message timeout')); });
-    req.end(body);
+try {
+  execFileSync(process.execPath, [triageScript], {
+    env: { ...process.env, TRIAGE_MODE: 'immediate' },
+    stdio: 'inherit',
+    timeout: 60_000,
   });
+  console.log('[deliver-immediate] Done');
+} catch (err) {
+  console.error('[deliver-immediate] Error:', err.message);
+  process.exit(1);
 }
-
-deliverImmediate(sendToMasterGroup)
-  .then(() => { console.log('[deliver-immediate] Done'); process.exit(0); })
-  .catch(err => { console.error('[deliver-immediate] Error:', err.message); process.exit(1); });
