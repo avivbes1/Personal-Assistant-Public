@@ -48,7 +48,7 @@ async function alertUnmatchedReply() {
   }
 }
 
-const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, getPendingGroupQuestionByStanza, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus } = require('./db');
+const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, setGroupMonitoring, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, getPendingGroupQuestionByStanza, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus } = require('./db');
 const { archiveMedia } = require('./media-archive');
 const { resolveMembersInText } = require('./family-profiles');
 const { validateOutgoing, repairMessage } = require('./validate-outgoing');
@@ -397,9 +397,9 @@ async function isMonitoredGroup(msg) {
   const groupId = msg.from;
   if (!groupId || !groupId.endsWith('@g.us')) return false;
 
-  // Check DB: any group with related_to='monitored' is monitored
+  // B7: check dedicated monitored column — one condition, no heuristics
   const groupRecord = getGroup(groupId);
-  if (groupRecord && groupRecord.related_to === 'monitored') return true;
+  if (groupRecord && groupRecord.monitored === 1) return true;
 
   // Fallback: check static groups.json by name (requires getChat, wrap safely)
   try {
@@ -694,19 +694,22 @@ async function handleMasterGroupCommand(_msg) {
   if (!monitorMatch && !ignoreMatch) return;
 
   const groupName = (monitorMatch ? monitorMatch[1] : ignoreMatch[1]).trim();
-  const relatedTo = monitorMatch ? 'monitored' : 'ignored';
   try {
     const rows = getDB().prepare('SELECT id, name FROM groups WHERE name LIKE ?').all(`%${groupName}%`);
     if (rows.length === 0) {
       await sendToMasterGroup(`❓ לא מצאתי קבוצה בשם: ${groupName}`);
       return;
     }
-    for (const r of rows) setGroupRelatedTo(r.id, relatedTo);
+    if (monitorMatch) {
+      for (const r of rows) setGroupMonitoring(r.id, { monitored: true });
+    } else {
+      for (const r of rows) setGroupMonitoring(r.id, { monitored: false, relatedTo: 'ignored' });
+    }
     const header = monitorMatch
       ? `✅ מתחיל לנטר קבוצות שמכילות: ${groupName}`
       : `✅ מתעלם מקבוצות שמכילות: ${groupName}`;
     await sendToMasterGroup(`${header}\n${rows.map(r => `• ${r.name}`).join('\n')}`);
-    logger.info({ component: 'WhatsApp', groupName, relatedTo, matched: rows.length }, 'monitor/ignore command applied');
+    logger.info({ component: 'WhatsApp', groupName, monitored: !!monitorMatch, matched: rows.length }, 'monitor/ignore command applied');
   } catch (e) {
     logger.error({ component: 'WhatsApp', err: e.message }, 'monitor/ignore command error');
   }
@@ -1136,7 +1139,7 @@ function initWhatsApp() {
     // Use DB-monitored groups (not just static groups.json list)
     const monitoredChats = groupChats.filter(c => {
       const rec = getGroup(_ser(c.id));
-      return (rec && rec.related_to === 'monitored') || monitoredNames.includes(c.name);
+      return (rec && rec.monitored === 1) || monitoredNames.includes(c.name);
     });
     for (const chat of monitoredChats) {
       await scanGroupHistory(chat);
@@ -1231,7 +1234,7 @@ function initWhatsApp() {
             addToHistory('assistant', question);
           }
         }
-      } else if (existing.related_to !== 'monitored') {
+      } else if (existing.monitored !== 1) {
         console.log(`[WhatsApp] Re-added to known group: "${groupName}"`);
       }
     } catch (err) {
@@ -1555,10 +1558,13 @@ function initWhatsApp() {
         if (_monitorCmd) {
           const _gNameM = _monitorCmd[1].trim();
           try {
-            const _r = getDB().prepare("UPDATE groups SET configured = 1, related_to = 'monitored' WHERE name LIKE ?").run(`%${_gNameM}%`);
-            await client.sendMessage(masterGroupId, _r.changes > 0
-              ? `✅ מתחיל לנטר קבוצות שמכילות: ${_gNameM}`
-              : `❓ לא מצאתי קבוצה בשם: ${_gNameM}`);
+            const rows = getDB().prepare('SELECT id, name FROM groups WHERE name LIKE ?').all(`%${_gNameM}%`);
+            if (rows.length === 0) {
+              await client.sendMessage(masterGroupId, `❓ לא מצאתי קבוצה בשם: ${_gNameM}`);
+            } else {
+              for (const r of rows) setGroupMonitoring(r.id, { monitored: true });
+              await client.sendMessage(masterGroupId, `✅ מתחיל לנטר קבוצות שמכילות: ${_gNameM}\n${rows.map(r => `• ${r.name}`).join('\n')}`);
+            }
           } catch (_e) { logger.error({ component: 'WhatsApp', err: _e.message }, 'נטר command error'); }
           return;
         }
@@ -1566,10 +1572,13 @@ function initWhatsApp() {
         if (_ignoreCmd) {
           const _gNameI = _ignoreCmd[1].trim();
           try {
-            const _r2 = getDB().prepare("UPDATE groups SET configured = 1, related_to = 'ignored' WHERE name LIKE ?").run(`%${_gNameI}%`);
-            await client.sendMessage(masterGroupId, _r2.changes > 0
-              ? `✅ מתעלם מקבוצות שמכילות: ${_gNameI}`
-              : `❓ לא מצאתי קבוצה בשם: ${_gNameI}`);
+            const rows = getDB().prepare('SELECT id, name FROM groups WHERE name LIKE ?').all(`%${_gNameI}%`);
+            if (rows.length === 0) {
+              await client.sendMessage(masterGroupId, `❓ לא מצאתי קבוצה בשם: ${_gNameI}`);
+            } else {
+              for (const r of rows) setGroupMonitoring(r.id, { monitored: false, relatedTo: 'ignored' });
+              await client.sendMessage(masterGroupId, `✅ מתעלם מקבוצות שמכילות: ${_gNameI}\n${rows.map(r => `• ${r.name}`).join('\n')}`);
+            }
           } catch (_e2) { logger.error({ component: 'WhatsApp', err: _e2.message }, 'התעלם command error'); }
           return;
         }

@@ -191,6 +191,33 @@ grep -n "Cluster gate" src/noticeDelivery.js
 
 ---
 
+## P-013 — No Direct Agent Writes to SQLite
+
+**Principle:** OpenClaw and any agent write to SQLite only through sanctioned functions exported by `db.js` or endpoints on `voice-server.js` (port 3001). Direct SQL from an agent session is forbidden.
+
+**Source incident:** ISSUE-023, 2026-08-30 — an LLM agent performed a direct DB write (`UPDATE groups SET related_to='<child-name>'`) with a plausible-but-wrong column convention. The write passed silently because nothing validated the value. The group stopped being monitored for nine hours.
+
+**Root cause:** the agent wrote a child name into a column that the reader (`isMonitoredGroup`) checked for the exact string `'monitored'`. No validation layer existed between the agent's SQL and the DB because the agent bypassed every sanctioned function. Any schema with enum-like columns is vulnerable to the same pattern.
+
+**Rule:**
+- All writes to the `groups` table go through `setGroupMonitoring()` or the `POST /api/groups/monitoring` endpoint.
+- All writes to other tables with enum columns (`notices.delivery_status`, `notices.triage_decision`, `messages.pipeline_state`) go through the corresponding sanctioned functions in `db.js`.
+- OpenClaw config must not include raw `sqlite3` or `UPDATE`/`INSERT`/`DELETE` commands targeting `family.db`.
+- A nightly integrity check (`checkEnumIntegrity()` / `GET /api/integrity/enums`) asserts no out-of-vocabulary values exist.
+
+**Verification:**
+```bash
+# Check: no direct UPDATE/INSERT to groups outside db.js
+grep -rn "UPDATE groups" --include=*.js . | grep -v node_modules | grep -v "src/db.js"
+# Expected: no output
+
+# Check: integrity endpoint exists
+curl -s http://localhost:3001/api/integrity/enums | jq .ok
+# Expected: true
+```
+
+---
+
 ## Adding New Principles
 
 When a production incident, architect consultation, or expert review concludes with a design rule:

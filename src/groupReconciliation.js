@@ -63,7 +63,7 @@ function getSilentActiveGroups() {
       COUNT(m.id) as total_msgs
     FROM groups g
     JOIN messages m ON m.group_id = g.id
-    WHERE g.related_to = 'monitored'
+    WHERE g.monitored = 1
     GROUP BY g.id
     HAVING last_msg_ts >= ? AND last_msg_ts < ?
     ORDER BY last_msg_ts ASC
@@ -151,7 +151,7 @@ async function reconcileGroups() {
     const activeGroups = getDB().prepare(`
       SELECT g.id FROM groups g
       JOIN messages m ON m.group_id = g.id
-      WHERE g.related_to = 'monitored'
+      WHERE g.monitored = 1
       GROUP BY g.id
       HAVING MAX(m.timestamp) >= ?
     `).all(Date.now() - silentThreshold);

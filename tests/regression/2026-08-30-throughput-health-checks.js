@@ -58,7 +58,8 @@ function freshDB() {
       name TEXT NOT NULL,
       related_to TEXT,
       added_at INTEGER NOT NULL DEFAULT 0,
-      configured INTEGER DEFAULT 0
+      configured INTEGER DEFAULT 0,
+      monitored INTEGER NOT NULL DEFAULT 0
     );
   `);
   return db;
@@ -180,13 +181,13 @@ module.exports = {
     // --- 6. Monitored-group silence ---
     {
       const db = freshDB();
-      db.prepare('INSERT INTO groups (id, name, related_to, configured) VALUES (?,?,?,1)').run('g-silent@g.us', 'קבוצה שקטה', 'monitored');
+      db.prepare('INSERT INTO groups (id, name, monitored, configured) VALUES (?,?,?,1)').run('g-silent@g.us', 'קבוצה שקטה', 1);
       insMsg(db, { group_id: 'g-silent@g.us', timestamp: now - 10 * DAY }); // last msg 10 days ago
       if (!checkMonitoredGroupSilence(db, now)) errors.push('silence: expected alert for 7+ day silent monitored group');
 
       // monitored group with recent traffic → no alert
       const db2 = freshDB();
-      db2.prepare('INSERT INTO groups (id, name, related_to, configured) VALUES (?,?,?,1)').run('g-live@g.us', 'קבוצה פעילה', 'monitored');
+      db2.prepare('INSERT INTO groups (id, name, monitored, configured) VALUES (?,?,?,1)').run('g-live@g.us', 'קבוצה פעילה', 1);
       insMsg(db2, { group_id: 'g-live@g.us', timestamp: now - 2 * DAY });
       if (checkMonitoredGroupSilence(db2, now)) errors.push('silence: false positive on active monitored group');
     }

@@ -186,6 +186,55 @@ check('P-012', 'noticeDelivery formatters do not send', () => {
   }
 });
 
+// ── P-013 — No Direct Agent Writes to SQLite ───────────────────────────────
+check('P-013', 'no direct UPDATE groups outside db.js', () => {
+  const srcDir = path.join(ROOT, 'src');
+  if (!fs.existsSync(srcDir)) return { skip: 'src/ not present' };
+  const files = fs.readdirSync(srcDir).filter(f => f.endsWith('.js') && f !== 'db.js');
+  const violators = [];
+  for (const f of files) {
+    const content = fs.readFileSync(path.join(srcDir, f), 'utf8');
+    // Look for raw UPDATE/INSERT/DELETE on groups table
+    if (/(?:UPDATE|INSERT INTO|DELETE FROM)\s+groups/i.test(content)) {
+      violators.push(f);
+    }
+  }
+  if (violators.length > 0) {
+    return `Direct SQL writes to groups table found in: ${violators.join(', ')}. Use setGroupMonitoring() or POST /api/groups/monitoring instead (P-013).`;
+  }
+});
+
+check('P-013', 'setGroupMonitoring rejects related_to="monitored"', () => {
+  const src = readSrc('src/db.js');
+  if (src === null) return { skip: 'src/db.js not present' };
+  if (!src.includes("relatedTo='monitored' is no longer valid")) {
+    return 'setGroupMonitoring must reject relatedTo="monitored" — use {monitored: true} instead.';
+  }
+});
+
+check('P-013', 'isMonitoredGroup uses dedicated monitored column, not related_to', () => {
+  const src = readSrc('src/whatsapp.js');
+  if (src === null) return { skip: 'src/whatsapp.js not present' };
+  // Find isMonitoredGroup and grab the next ~800 chars (enough for the full fn)
+  const fnStart = src.indexOf('function isMonitoredGroup');
+  if (fnStart < 0) return 'isMonitoredGroup function not found.';
+  const fnBody = src.substring(fnStart, fnStart + 800);
+  if (fnBody.includes("related_to === 'monitored'")) {
+    return 'isMonitoredGroup still checks related_to==="monitored". It must check groupRecord.monitored === 1 only (B7).';
+  }
+  if (!fnBody.includes('monitored === 1')) {
+    return 'isMonitoredGroup must check groupRecord.monitored === 1.';
+  }
+});
+
+check('P-013', 'integrity check function exists in db.js', () => {
+  const src = readSrc('src/db.js');
+  if (src === null) return { skip: 'src/db.js not present' };
+  if (!src.includes('function checkEnumIntegrity')) {
+    return 'db.js must export checkEnumIntegrity() for nightly enum-column sanity checking (B8).';
+  }
+});
+
 // ── P-014 — Every Shim Field Has a Fixture Test ──────────────────────────────
 check('P-014', 'baileys shim fixture suite is present', () => {
   const runner = path.join(ROOT, 'tests/shim/run.js');

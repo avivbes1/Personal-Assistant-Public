@@ -4,7 +4,7 @@
  */
 
 const config = require('./config');
-const { initDB } = require('./db');
+const { initDB, assertGroupMonitoringIntegrity } = require('./db');
 const { loadProfile } = require('./family-context');
 const { initWhatsApp, sendToMasterGroup, sendToMasterGroupWithId, sendToMasterGroupWithMentions } = require('./whatsapp');
 const { initScheduler } = require('./scheduler');
@@ -17,6 +17,9 @@ console.log('');
 
 // 1. Initialize database
 initDB();
+
+// B7: Assert group monitoring state integrity at startup
+assertGroupMonitoringIntegrity();
 
 // 2. Load family context profile (fail fast if missing/invalid)
 try {

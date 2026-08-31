@@ -445,6 +445,57 @@ function createServer() {
       return;
     }
 
+    // B7: Group monitoring state endpoint — for OpenClaw/agents to use instead of raw DB writes
+    if (req.method === 'POST' && req.url === '/api/groups/monitoring') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { id, monitored, relatedTo, primaryChild, description } = JSON.parse(body || '{}');
+          if (!id) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ ok: false, error: 'Missing required field: id (group JID)' }));
+          }
+          const { setGroupMonitoring, getGroup } = require('./db');
+          const existing = getGroup(id);
+          if (!existing) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ ok: false, error: `Group ${id} not found in DB` }));
+          }
+          const opts = {};
+          if (monitored !== undefined) opts.monitored = !!monitored;
+          if (relatedTo !== undefined) opts.relatedTo = relatedTo;
+          if (primaryChild !== undefined) opts.primaryChild = primaryChild;
+          if (description !== undefined) opts.description = description;
+          setGroupMonitoring(id, opts);
+          const updated = getGroup(id);
+          console.log(`[VoiceServer] Group monitoring updated: ${id} → monitored=${updated.monitored}, related_to=${updated.related_to}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, group: updated }));
+        } catch (e) {
+          console.error('[VoiceServer] /api/groups/monitoring error:', e.message);
+          res.writeHead(e.message.includes('not found') ? 404 : 400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: e.message }));
+        }
+      });
+      return;
+    }
+
+    // B8: Enum integrity check endpoint — for nightly cron or on-demand checks
+    if (req.method === 'GET' && req.url === '/api/integrity/enums') {
+      try {
+        const { checkEnumIntegrity } = require('./db');
+        const violations = checkEnumIntegrity();
+        const status = violations.length === 0 ? 'healthy' : 'violations_found';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: violations.length === 0, status, count: violations.length, violations }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/send-message') {
       let body = '';
       req.on('data', chunk => { body += chunk; });

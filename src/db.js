@@ -260,6 +260,17 @@ function initDB() {
   try { db.exec('ALTER TABLE homework ADD COLUMN updated_at INTEGER'); } catch (_) {}
   try { db.exec('ALTER TABLE groups ADD COLUMN primary_child TEXT'); } catch (_) {}
 
+  // ── Migration 007 (B7): Dedicated monitored column for groups ──────────────
+  // related_to was overloaded as both type enum and free-text child name.
+  // Now: `monitored` INTEGER (0/1) is the sole flag; `related_to` holds the
+  // relationship context (child name, 'master', 'ignored', or NULL).
+  try { db.exec('ALTER TABLE groups ADD COLUMN monitored INTEGER NOT NULL DEFAULT 0'); } catch (_) {}
+  // Backfill: groups that were related_to='monitored' → set monitored=1, clear related_to
+  try { db.exec("UPDATE groups SET monitored = 1 WHERE related_to = 'monitored'"); } catch (_) {}
+  try { db.exec("UPDATE groups SET related_to = NULL WHERE related_to = 'monitored'"); } catch (_) {}
+  // 'unmonitored' was ad-hoc opt-out → monitored=0, clear related_to
+  try { db.exec("UPDATE groups SET monitored = 0, related_to = NULL WHERE related_to = 'unmonitored'"); } catch (_) {}
+
   // Create UNIQUE dedup index on homework (idempotent)
   try {
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_hw_unique ON homework(child_name, COALESCE(due_date,\'\'), COALESCE(subject,\'\'), SUBSTR(description,1,80))');
@@ -609,6 +620,84 @@ function saveLidMapping(lid, pn) {
   ).run(lid, pn, Date.now());
 }
 
+// ── B7: Startup assertion for group monitoring state ────────────────────────
+/**
+ * Assert that no group has an unexpected `monitored` value.
+ * Call at startup to catch schema drift early.
+ */
+function assertGroupMonitoringIntegrity() {
+  const db = getDB();
+  // Check for monitored values outside {0, 1}
+  const bad = db.prepare(
+    'SELECT id, name, monitored FROM groups WHERE monitored NOT IN (0, 1)'
+  ).all();
+  if (bad.length > 0) {
+    const msg = `[DB] INTEGRITY: ${bad.length} group(s) with unknown monitored value: ` +
+      bad.map(g => `${g.name}(${g.monitored})`).join(', ');
+    console.error(msg);
+    // Don't throw — log loudly so the health system catches it
+  }
+  return bad;
+}
+
+// ── B8: Nightly integrity check for enum-column sanity ──────────────────────
+/**
+ * Check all enum-like columns across key tables for out-of-vocabulary values.
+ * Returns an array of violation descriptions. Empty = healthy.
+ */
+function checkEnumIntegrity() {
+  const db = getDB();
+  const violations = [];
+
+  // 1. groups.monitored must be 0 or 1
+  const badMonitored = db.prepare(
+    'SELECT id, name, monitored FROM groups WHERE monitored NOT IN (0, 1)'
+  ).all();
+  for (const g of badMonitored) {
+    violations.push(`groups: ${g.name} (${g.id}) has monitored=${g.monitored}`);
+  }
+
+  // 2. notices.delivery_status vocabulary
+  const VALID_DELIVERY_STATUS = ['pending', 'skipped', 'delivered_immediate', 'delivered_batch', 'dead_letter', 'dismissed', 'superseded'];
+  try {
+    const badDelivery = db.prepare(
+      `SELECT id, delivery_status, group_name FROM notices WHERE delivery_status IS NOT NULL AND delivery_status NOT IN (${VALID_DELIVERY_STATUS.map(() => '?').join(',')})` 
+    ).all(...VALID_DELIVERY_STATUS);
+    for (const n of badDelivery) {
+      violations.push(`notices: id=${n.id} group=${n.group_name} has delivery_status='${n.delivery_status}'`);
+    }
+  } catch (_) {} // Column may not exist in test DBs
+
+  // 3. notices.triage_decision vocabulary
+  const VALID_TRIAGE = ['send_now', 'send_update', 'defer', 'skip', 'archive'];
+  try {
+    const badTriage = db.prepare(
+      `SELECT id, triage_decision, group_name FROM notices WHERE triage_decision IS NOT NULL AND triage_decision NOT IN (${VALID_TRIAGE.map(() => '?').join(',')})` 
+    ).all(...VALID_TRIAGE);
+    for (const n of badTriage) {
+      violations.push(`notices: id=${n.id} group=${n.group_name} has triage_decision='${n.triage_decision}'`);
+    }
+  } catch (_) {}
+
+  // 4. messages.pipeline_state vocabulary
+  const VALID_PIPELINE = ['RECEIVED', 'PROCESSING', 'NOT_ACTIONABLE', 'NOTICE_CREATED', 'FAILED'];
+  try {
+    const badPipeline = db.prepare(
+      `SELECT id, pipeline_state, group_id FROM messages WHERE pipeline_state IS NOT NULL AND pipeline_state NOT IN (${VALID_PIPELINE.map(() => '?').join(',')})` 
+    ).all(...VALID_PIPELINE);
+    for (const m of badPipeline) {
+      violations.push(`messages: id=${m.id} group=${m.group_id} has pipeline_state='${m.pipeline_state}'`);
+    }
+  } catch (_) {}
+
+  if (violations.length > 0) {
+    console.error(`[DB] ENUM INTEGRITY: ${violations.length} violation(s):`);
+    for (const v of violations) console.error(`  - ${v}`);
+  }
+
+  return violations;
+}
+
 function saveMessage({ group_id, sender, body, timestamp }) {
   const ts = timestamp || Date.now();
   const stmt = getDB().prepare(
@@ -907,16 +996,71 @@ function saveGroup(id, name) {
     .run(id, name, Date.now());
 }
 
+/**
+ * setGroupMonitoring — single sanctioned writer for group monitoring state (B7).
+ *
+ * @param {string} id — group JID
+ * @param {object} opts
+ * @param {boolean} [opts.monitored] — true to monitor, false to stop
+ * @param {string|null} [opts.relatedTo] — relationship type ('master','ignored', or null)
+ * @param {string|null} [opts.primaryChild] — child name this group is associated with
+ * @param {string|null} [opts.description] — free-text description / context
+ */
+function setGroupMonitoring(id, opts = {}) {
+  const db = getDB();
+  const existing = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+  if (!existing) throw new Error(`setGroupMonitoring: group ${id} not found in DB`);
+
+  const updates = [];
+  const params = [];
+
+  if ('monitored' in opts) {
+    const val = opts.monitored ? 1 : 0;
+    updates.push('monitored = ?');
+    params.push(val);
+  }
+  if ('relatedTo' in opts) {
+    // Validate: must be null, 'master', or 'ignored' (or any non-'monitored' string for legacy compat)
+    const rt = opts.relatedTo;
+    if (rt === 'monitored') {
+      throw new Error("setGroupMonitoring: relatedTo='monitored' is no longer valid. Use {monitored: true} instead.");
+    }
+    updates.push('related_to = ?');
+    params.push(rt);
+  }
+  if ('primaryChild' in opts) {
+    updates.push('primary_child = ?');
+    params.push(opts.primaryChild);
+  }
+  if ('description' in opts) {
+    updates.push('description = ?');
+    params.push(opts.description);
+  }
+
+  // Always mark as configured when monitoring state is set
+  updates.push('configured = 1');
+
+  if (updates.length === 1) return; // only 'configured = 1', nothing else to do
+
+  params.push(id);
+  db.prepare(`UPDATE groups SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+}
+
+/**
+ * @deprecated Use setGroupMonitoring() instead. Kept for backward compat.
+ * Now routes through setGroupMonitoring internally.
+ */
 function setGroupRelatedTo(id, relatedTo) {
-  getDB()
-    .prepare('UPDATE groups SET related_to = ?, configured = 1 WHERE id = ?')
-    .run(relatedTo, id);
+  if (relatedTo === 'monitored') {
+    // Old callers that wrote related_to='monitored' now set the dedicated flag
+    setGroupMonitoring(id, { monitored: true });
+  } else {
+    setGroupMonitoring(id, { relatedTo });
+  }
 }
 
 function setGroupDescription(id, description) {
-  getDB()
-    .prepare('UPDATE groups SET description = ? WHERE id = ?')
-    .run(description, id);
+  setGroupMonitoring(id, { description });
 }
 
 // ── Persistent pending group questions ────────────────────────────────────────
@@ -956,7 +1100,7 @@ function getMonitoredGroupsWithoutDescription() {
   // Only ask about groups added in the last 7 days — avoid spamming about long-known groups
   const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
   return getDB().prepare(
-    "SELECT * FROM groups WHERE related_to = 'monitored' AND (description IS NULL OR description = '') AND added_at > ?"
+    "SELECT * FROM groups WHERE monitored = 1 AND (description IS NULL OR description = '') AND added_at > ?"
   ).all(sevenDaysAgo);
 }
 
@@ -1574,6 +1718,9 @@ module.exports = {
   saveGroup,
   setGroupRelatedTo,
   setGroupDescription,
+  setGroupMonitoring,
+  assertGroupMonitoringIntegrity,
+  checkEnumIntegrity,
   getGroup,
   getMonitoredGroupsWithoutDescription,
   getUnconfiguredGroups,

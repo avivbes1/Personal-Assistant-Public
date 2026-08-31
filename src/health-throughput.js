@@ -227,7 +227,7 @@ function checkConfigStateIntegrity(db, nowMs) {
 function checkMonitoredGroupSilence(db, nowMs) {
   const sevenDaysAgo = nowMs - 7 * DAY_MS;
   const monitored = db.prepare(
-    "SELECT id, name FROM groups WHERE related_to = 'monitored'"
+    "SELECT id, name FROM groups WHERE monitored = 1"
   ).all();
   const silent = [];
   for (const g of monitored) {
