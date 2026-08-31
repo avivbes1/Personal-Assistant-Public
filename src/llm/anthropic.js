@@ -54,6 +54,9 @@ async function complete({ system, messages, model = 'claude-haiku-4-5', maxToken
             stopReason: r.stop_reason ?? null,
             inputTokens:  r.usage?.input_tokens  ?? 0,
             outputTokens: r.usage?.output_tokens ?? 0,
+            // C1: Prompt caching metrics
+            cacheReadTokens:     r.usage?.cache_read_input_tokens ?? 0,
+            cacheCreationTokens: r.usage?.cache_creation_input_tokens ?? 0,
           });
         } catch (e) {
           reject(new Error(`[LLM/anthropic] Parse error: ${data.slice(0, 200)}`));

@@ -40,6 +40,8 @@ function makeCorrelationId() {
  * @param {string} opts.callSite        Where the call originated (e.g. 'agent.classify', 'media.vision')
  * @param {number} [opts.inputTokens]
  * @param {number} [opts.outputTokens]
+ * @param {number} [opts.cacheReadTokens]     Tokens read from Anthropic prompt cache
+ * @param {number} [opts.cacheCreationTokens] Tokens written to Anthropic prompt cache
  * @param {number} [opts.durationMs]    Wall-clock duration of the call
  * @param {Array}  [opts.toolCalls]     Tool names called (for tool_choice calls)
  * @param {boolean}[opts.success]       Whether the call succeeded
@@ -57,6 +59,8 @@ function traceCall(opts = {}) {
     callSite:      opts.callSite || 'unknown',
     inputTokens:   (typeof opts.inputTokens  === 'number') ? opts.inputTokens  : null,
     outputTokens:  (typeof opts.outputTokens === 'number') ? opts.outputTokens : null,
+    cacheReadTokens:     (typeof opts.cacheReadTokens  === 'number') ? opts.cacheReadTokens  : null,
+    cacheCreationTokens: (typeof opts.cacheCreationTokens === 'number') ? opts.cacheCreationTokens : null,
     durationMs:    (typeof opts.durationMs    === 'number') ? opts.durationMs   : null,
     toolCalls:     Array.isArray(opts.toolCalls) ? opts.toolCalls : [],
     success:       (typeof opts.success === 'boolean') ? opts.success : null,
@@ -97,6 +101,8 @@ async function tracedComplete(opts, callSite, context = {}) {
       callSite,
       inputTokens:  res.inputTokens,
       outputTokens: res.outputTokens,
+      cacheReadTokens:     res.cacheReadTokens || 0,
+      cacheCreationTokens: res.cacheCreationTokens || 0,
       durationMs:   Date.now() - startMs,
       toolCalls,
       success:      true,

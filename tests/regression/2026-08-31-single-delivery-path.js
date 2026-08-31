@@ -40,7 +40,9 @@ function test(name, fn) {
   }
 }
 
-console.log('\n🔍 B1 / P-012: Single delivery path regression tests\n');
+function run() {
+  passed = 0; failed = 0;
+  console.log('\n🔍 B1 / P-012: Single delivery path regression tests\n');
 
 // ── 1. deliver-batch.js delegates via TRIAGE_MODE, never sends directly ──────
 test('deliver-batch.js sets TRIAGE_MODE=digest', () => {
@@ -168,9 +170,18 @@ test('P-012 exists in PRINCIPLES.md', () => {
     'P-012 must describe the single-sender rule');
 });
 
-// ── Summary ─────────────────────────────────────────────────────────────────
-console.log(`\n─────────────────`);
-console.log(`  ${passed} passed, ${failed} failed`);
-console.log(`─────────────────\n`);
+  // ── Summary ────────────────────────────────────────────────────────────────
+  console.log(`\n─────────────────`);
+  console.log(`  ${passed} passed, ${failed} failed`);
+  console.log(`─────────────────\n`);
+  return { pass: failed === 0, message: `${passed} passed, ${failed} failed` };
+}
 
-if (failed > 0) process.exit(1);
+// Conform to tests/run-all.js (which calls mod.run()) while staying runnable
+// as a standalone script.
+module.exports = { run };
+
+if (require.main === module) {
+  const r = run();
+  if (!r.pass) process.exit(1);
+}

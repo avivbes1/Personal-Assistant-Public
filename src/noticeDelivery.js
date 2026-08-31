@@ -10,7 +10,7 @@
  *
  * triage-engine.js is the SINGLE process that reads the queue, applies the
  * guardrails (claim / 72h context / daily cap / dismissals / quiet hours), and
- * calls voiceSend. It invokes these formatters via TRIAGE_MODE=digest (07/12/16/20)
+ * is the only sender. It invokes these formatters via TRIAGE_MODE=digest (07/12/16/20)
  * and TRIAGE_MODE=immediate (every 5 min). See PRINCIPLES.md P-012.
  *
  * Retained for reference / P-009: getPendingNotices (with its triage_decision
@@ -129,7 +129,7 @@ ${lines}
  *
  * Builds the single-notice immediate text for the master group. Reads nothing
  * and sends nothing: triage-engine.js (TRIAGE_MODE=immediate) owns the queue
- * read, the guardrails (dismissal / dedup / claim), and the voiceSend.
+ * read, the guardrails (dismissal / dedup / claim), and the actual send.
  *
  * Returns the WhatsApp-formatted message string.
  */
@@ -163,7 +163,7 @@ function selectImmediate(notices, now = Date.now()) {
  * deliverBatch(notices, opts) — PURE FORMATTER (B1 / P-012).
  *
  * Builds the batched digest text from an EXPLICIT list of notices. Reads nothing
- * and sends nothing — triage-engine.js owns the queue read and the voiceSend.
+ * and sends nothing — triage-engine.js owns the queue read and the actual send.
  * Returns { body, ids, clusterCount } or null when there is nothing to send.
  *
  * opts.requireActionable (default false): apply the P-009 cluster gate that

@@ -83,7 +83,7 @@ const FAMILY_PHONES = {
 /** Look up the master group ID from DB (group with related_to='master'). */
 function getMasterGroupId() {
   try {
-    const row = getDB().prepare("SELECT id FROM groups WHERE related_to='master' LIMIT 1").get();
+    const row = getDB().prepare("SELECT id FROM groups WHERE related_to = 'master' LIMIT 1").get();
     return row ? row.id : 'agent_tasks';
   } catch (_) {
     return 'agent_tasks';
@@ -975,18 +975,20 @@ const GROUP_TOOLS = [
         source_quote: { type: 'string', description: 'The exact text that triggered this' }
       },
       required: ['observation']
-    }
+    },
+    // C1: Prompt caching — cache_control on the last tool caches the entire tools array
+    cache_control: { type: 'ephemeral' }
   }
 ];
 
 /**
- * Build the tool-oriented system prompt used to classify messages from
- * monitored (non-master) groups.
+ * Build group system prompt as two parts for prompt caching (C1).
  *
- * Extracted from handleGroupEvent so the eval runner can reproduce the EXACT
- * production prompt without duplicating it (which would drift over time).
- * All prompt-shaping context (dates, recent chat, family slice) is derived
- * here from the timestamp + optional inputs.
+ * staticPrefix: changes only daily (bot identity, family context, dates,
+ *   all instructions). Identical across all monitored-group messages on the
+ *   same day → cached via Anthropic cache_control.
+ * dynamicSuffix: changes per group/message (group name, sender, family
+ *   profile slice, group description, child context, recent messages, image flag).
  *
  * @param {object} opts
  * @param {string}  opts.groupName
@@ -996,9 +998,9 @@ const GROUP_TOOLS = [
  * @param {Array}   [opts.recentMessages]  - [{sender, body, timestamp}]
  * @param {string}  [opts.primaryChild]
  * @param {boolean} [opts.isImageMsg]
- * @returns {string}
+ * @returns {{staticPrefix: string, dynamicSuffix: string}}
  */
-function buildGroupSystemPrompt({ groupName, sender, ts = Date.now(), groupDescription = null, recentMessages = [], primaryChild = null, isImageMsg = false }) {
+function buildGroupSystemPromptParts({ groupName, sender, ts = Date.now(), groupDescription = null, recentMessages = [], primaryChild = null, isImageMsg = false }) {
   const today = new Date(ts).toLocaleDateString('he-IL', {
     timeZone: config.TIMEZONE || 'Asia/Jerusalem',
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -1006,48 +1008,15 @@ function buildGroupSystemPrompt({ groupName, sender, ts = Date.now(), groupDescr
   const todayIso = new Date(ts).toLocaleDateString('en-CA', { timeZone: config.TIMEZONE || 'Asia/Jerusalem' }); // YYYY-MM-DD
   const tomorrowIso = new Date(ts + 86400000).toLocaleDateString('en-CA', { timeZone: config.TIMEZONE || 'Asia/Jerusalem' });
 
-  const groupCtx = groupDescription ? `תיאור הקבוצה: ${groupDescription}` : '';
-  const childCtx = primaryChild ? `
-הילד הקשור לקבוצה זו: *${primaryChild}*. בכל add_homework השתמש child:"${primaryChild}".` : "";
+  // ── Static prefix: same for all messages on a given day ──
+  // Bot identity, family context, dates, and all instructions.
+  // Cached via Anthropic prompt caching (cache_control breakpoint after this block).
+  const staticPrefix = `אתה ${config.BOT_NAME}, עוזר משפחתי אוטומטי שמנטר קבוצות WhatsApp.
 
-  // Build recent chat context (last N messages before the current one)
-  let recentCtx = '';
-  if (recentMessages && recentMessages.length > 0) {
-    const lines = recentMessages.map(m => {
-      const timeStr = new Date(m.timestamp).toLocaleString('he-IL', {
-        timeZone: config.TIMEZONE || 'Asia/Jerusalem',
-        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-      });
-      const snippet = (m.body || '').substring(0, 200).replace(/\n/g, ' ');
-      return `[${timeStr}] ${m.sender}: ${snippet}`;
-    });
-    recentCtx = `\n## הודעות אחרונות בקבוצה (הקשר):\n${lines.join('\n')}\n`;
-  }
+בני המשפחה: ${getFamilyContext()}
 
-  // ISSUE-020: Build family context slice for this group
-  let profileSliceCtx = '';
-  try {
-    const slice = buildProfileSlice(groupName);
-    if (slice) {
-      profileSliceCtx = `
-<FAMILY_CONTEXT>
-${JSON.stringify(slice, null, 2)}
-</FAMILY_CONTEXT>`;
-    }
-  } catch (e) {
-    console.warn('[Agent] Family context slice failed:', e.message);
-  }
-
-  // ISSUE-019: System prompt is now tool-oriented - no prose, no JSON blocks in text.
-  // The model MUST call add_notice or no_action. Other tools are optional.
-  return `אתה ${config.BOT_NAME}, עוזר משפחתי אוטומטי שמנטר קבוצות WhatsApp.
-
-קבוצה: "${groupName}"
-שולח: ${sender}
 היום: ${today} (${todayIso})
 מחר: ${tomorrowIso}
-${profileSliceCtx}${groupCtx}${childCtx}${recentCtx}
-בני המשפחה: ${getFamilyContext()}
 
 ## הוראות
 
@@ -1088,10 +1057,65 @@ add_notice: content="שני 29.6 אימון, שלישי 30.6 הפנינג סיו
 הודעה: "תוכנית השבוע: ראשון ניקיון, שני יום רטוב, שלישי טקס"
 add_notice: content="ראשון 30.6 ניקיון, שני 1.7 יום רטוב, שלישי 2.7 טקס", events=[{date:"2026-06-30",title:"ניקיון"},{date:"2026-07-01",title:"יום רטוב"},{date:"2026-07-02",title:"טקס בית ספרי"}]
 
-${isImageMsg ? `**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, קרא ל-download_image מכל שולח (הורה, מורה, מנהל) אם יש סיכוי שהתמונה מכילה הזמנה לאירוע, לוח זמנים, אישור נוכחות, או מידע לוגיסטי. אחרת no_action.` : ''}
-
 **אין לכתוב טקסט חופשי** - רק tool calls.`;
+
+  // ── Dynamic suffix: changes per group/message ──
+  const groupCtx = groupDescription ? `\nתיאור הקבוצה: ${groupDescription}` : '';
+  const childCtx = primaryChild ? `\nהילד הקשור לקבוצה זו: *${primaryChild}*. בכל add_homework השתמש child:"${primaryChild}".` : '';
+
+  let recentCtx = '';
+  if (recentMessages && recentMessages.length > 0) {
+    const lines = recentMessages.map(m => {
+      const timeStr = new Date(m.timestamp).toLocaleString('he-IL', {
+        timeZone: config.TIMEZONE || 'Asia/Jerusalem',
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+      });
+      const snippet = (m.body || '').substring(0, 200).replace(/\n/g, ' ');
+      return `[${timeStr}] ${m.sender}: ${snippet}`;
+    });
+    recentCtx = `\n## הודעות אחרונות בקבוצה (הקשר):\n${lines.join('\n')}\n`;
+  }
+
+  // ISSUE-020: Build family context slice for this group
+  let profileSliceCtx = '';
+  try {
+    const slice = buildProfileSlice(groupName);
+    if (slice) {
+      profileSliceCtx = `
+<FAMILY_CONTEXT>
+${JSON.stringify(slice, null, 2)}
+</FAMILY_CONTEXT>`;
+    }
+  } catch (e) {
+    console.warn('[Agent] Family context slice failed:', e.message);
+  }
+
+  const imageCtx = isImageMsg ? `\n**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, קרא ל-download_image מכל שולח (הורה, מורה, מנהל) אם יש סיכוי שהתמונה מכילה הזמנה לאירוע, לוח זמנים, אישור נוכחות, או מידע לוגיסטי. אחרת no_action.` : '';
+
+  const dynamicSuffix = `
+## הקשר נוכחי
+קבוצה: "${groupName}"
+שולח: ${sender}${profileSliceCtx}${groupCtx}${childCtx}${recentCtx}${imageCtx}`;
+
+  return { staticPrefix, dynamicSuffix };
 }
+
+/**
+ * Build the tool-oriented system prompt used to classify messages from
+ * monitored (non-master) groups.
+ *
+ * Backward-compatible wrapper that returns the full prompt as a single string.
+ * Production callers (handleGroupEvent, classifyGroupMessage) use
+ * buildGroupSystemPromptParts() directly for prompt caching.
+ *
+ * @param {object} opts  - Same as buildGroupSystemPromptParts
+ * @returns {string}
+ */
+function buildGroupSystemPrompt(opts) {
+  const { staticPrefix, dynamicSuffix } = buildGroupSystemPromptParts(opts);
+  return staticPrefix + '\n' + dynamicSuffix;
+}
+
 
 /**
  * Classify a monitored-group message the way production does — same system
@@ -1116,7 +1140,12 @@ ${isImageMsg ? `**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, 
  */
 async function classifyGroupMessage({ body, groupName, sender, ts = Date.now(), groupDescription = null, recentMessages = [], primaryChild = null, isImageMsg = false, model = GROUP_MODEL, maxTokens = 2048 }) {
   const anthropic = require('./llm/anthropic');
-  const system = buildGroupSystemPrompt({ groupName, sender, ts, groupDescription, recentMessages, primaryChild, isImageMsg });
+  // C1: Use prompt parts for cache_control breakpoints
+  const { staticPrefix, dynamicSuffix } = buildGroupSystemPromptParts({ groupName, sender, ts, groupDescription, recentMessages, primaryChild, isImageMsg });
+  const system = [
+    { type: 'text', text: staticPrefix, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: dynamicSuffix },
+  ];
 
   const res = await anthropic.complete({
     model,
@@ -1136,6 +1165,8 @@ async function classifyGroupMessage({ body, groupName, sender, ts = Date.now(), 
     stopReason: res.stopReason,
     inputTokens: res.inputTokens,
     outputTokens: res.outputTokens,
+    cacheReadTokens: res.cacheReadTokens || 0,
+    cacheCreationTokens: res.cacheCreationTokens || 0,
   };
 }
 
@@ -1149,7 +1180,8 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
 
   // ISSUE-019: System prompt is tool-oriented — built by the shared helper so
   // the eval runner (classifyGroupMessage) scores the exact same prompt.
-  const systemPrompt = buildGroupSystemPrompt({
+  // C1: Use prompt parts for cache_control breakpoints
+  const { staticPrefix, dynamicSuffix } = buildGroupSystemPromptParts({
     groupName, sender, ts, groupDescription, recentMessages, primaryChild, isImageMsg,
   });
 
@@ -1181,7 +1213,10 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
   const reqBody = {
     model: GROUP_MODEL,
     max_tokens: maxTokens,
-    system: systemPrompt,
+    system: [
+      { type: 'text', text: staticPrefix, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: dynamicSuffix },
+    ],
     tools: GROUP_TOOLS,
     tool_choice: { type: 'any' }, // force at least one tool call - eliminates empty/prose responses
     messages: [{ role: 'user', content: body.trim() }],
@@ -1233,6 +1268,8 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
             callSite: 'agent.classify',
             inputTokens:  parsed.usage?.input_tokens  ?? 0,
             outputTokens: parsed.usage?.output_tokens ?? 0,
+            cacheReadTokens:     parsed.usage?.cache_read_input_tokens ?? 0,
+            cacheCreationTokens: parsed.usage?.cache_creation_input_tokens ?? 0,
             durationMs: Date.now() - startMs,
             toolCalls: toolUseBlocks.map(t => t.name),
             success: true,
@@ -1378,6 +1415,7 @@ module.exports = {
   // exact production classifier: same prompt, tools, and model.
   classifyGroupMessage,
   buildGroupSystemPrompt,
+  buildGroupSystemPromptParts,
   GROUP_TOOLS,
   GROUP_MODEL,
 };
