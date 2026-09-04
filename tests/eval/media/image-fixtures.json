@@ -1,0 +1,463 @@
+{
+  "generated_at": "2026-09-04T16:44:35.238Z",
+  "source_db": "/home/ubuntu/besinsky-bot/data/family.db",
+  "note": "Anchors seeded from stored production extractions (biased to distinctive/low-frequency tokens). Regenerate with --build.",
+  "count": 30,
+  "by_category": {
+    "notice": 11,
+    "flyer": 12,
+    "photo": 7
+  },
+  "fixtures": [
+    {
+      "id": 21496,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363157012148587_g.us/1787910034000_4A2B84C6ABCEC34E2DC3.jpg",
+      "group_id": "120363157012148587@g.us",
+      "category": "notice",
+      "anchors": [
+        "והמועדים",
+        "התאריכים",
+        "וחופשות",
+        "החופשות",
+        "החשובים",
+        "החינוך"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21509,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363044434449780_g.us/1788069087000_AC7D849D08AC89340070813DE98B5F97.jpg",
+      "group_id": "120363044434449780@g.us",
+      "category": "flyer",
+      "anchors": [
+        "ותלמידותינו",
+        "תלמידינו",
+        "והסתגלות",
+        "בהצלחתכם",
+        "מהמורים",
+        "לתלמידי"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21528,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363422263905556_g.us/1788084660000_3A19EFD00FA50A00317D.jpg",
+      "group_id": "120363422263905556@g.us",
+      "category": "notice",
+      "anchors": [
+        "מזמינים",
+        "התוכנית",
+        "שבפתחנו",
+        "לאסיפת",
+        "השנתית",
+        "ציפיות"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21533,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363430133310473_g.us/1788085738000_3AC8133B73F45327403A.jpg",
+      "group_id": "120363430133310473@g.us",
+      "category": "flyer",
+      "anchors": [
+        "ספטמבר-אוקטובר",
+        "והחופשות",
+        "העצמאות",
+        "המפרטת",
+        "ספטמבר",
+        "שבועות"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21535,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363412496281110_g.us/1788090697000_AC929B50C68094D1C1AF098F6B5C80EF.jpg",
+      "group_id": "120363412496281110@g.us",
+      "category": "notice",
+      "anchors": [
+        "אוטובוסים",
+        "ויישובים",
+        "אוטובוס",
+        "מיניבוס",
+        "להסעות",
+        "טבלאות"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21537,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/972547860979-1599304865_g.us/1788090883000_3A76C78A4937C0B3540A.jpg",
+      "group_id": "972547860979-1599304865@g.us",
+      "category": "notice",
+      "anchors": [
+        "מישובים",
+        "הסעות",
+        "טורים",
+        "חמדיה",
+        "בוקר",
+        "לבית"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21547,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363412496281110_g.us/1788096975000_AC066BF6A086A961177E746DB95253B7.jpg",
+      "group_id": "120363412496281110@g.us",
+      "category": "flyer",
+      "anchors": [
+        "קלסרים",
+        "תיקיות",
+        "לארגון",
+        "בשורה",
+        "וצהוב",
+        "לימוד"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21561,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363422263905556_g.us/1788154962000_3A26A022FCECA2C69CA9.jpg",
+      "group_id": "120363422263905556@g.us",
+      "category": "notice",
+      "anchors": [
+        "באוטובוס",
+        "קטגוריות",
+        "המשויכים",
+        "מדריכות",
+        "מדריגות",
+        "למקומות"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21572,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363168238198071_g.us/1788167093000_AC5DD6390DE1AA25F2309B57B20A9B47.jpg",
+      "group_id": "120363168238198071@g.us",
+      "category": "flyer",
+      "anchors": [
+        "בספטמבר-4",
+        "באוקטובר",
+        "שישי-שבת",
+        "ומועדים",
+        "2026-27",
+        "בספטמבר"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21579,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363422263905556_g.us/1788183261000_3ACE20D1F7ABADAD99D6.jpg",
+      "group_id": "120363422263905556@g.us",
+      "category": "notice",
+      "anchors": [
+        "המרכזון",
+        "ומגדלור",
+        "בתאריך",
+        "צהריים",
+        "וסיכום",
+        "קיבוץ"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21588,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/972547860456-1396447584_g.us/1788200301000_AC2CA710BAEF0F0967E00876E5E14482.jpg",
+      "group_id": "972547860456-1396447584@g.us",
+      "category": "flyer",
+      "anchors": [
+        "70כםבלביי",
+        "השןיןי",
+        "להתחיל",
+        "ההורים",
+        "המדהים",
+        "שלנו❤️"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21594,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/972547860979-1599304865_g.us/1788240985000_AC74FA2D43BE4D116FCDC6244104F1A8.jpg",
+      "group_id": "972547860979-1599304865@g.us",
+      "category": "flyer",
+      "anchors": [
+        "לבושות",
+        "סלפי",
+        "בגיל",
+        "מיום",
+        "רגיל",
+        "לימודים"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21599,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/972547860979-1599304865_g.us/1788243786000_ACD6582686292BAA8A47B27770936DDB.jpg",
+      "group_id": "972547860979-1599304865@g.us",
+      "category": "flyer",
+      "anchors": [
+        "ומאחוריהם",
+        "בשורות",
+        "נואמים",
+        "תפאורה",
+        "מאולם",
+        "ספורט"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21606,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363410948422177_g.us/1788250035000_3A5BB51FCD7F8C3D525B.jpg",
+      "group_id": "120363410948422177@g.us",
+      "category": "flyer",
+      "anchors": [
+        "ומאובזרת",
+        "תלויות",
+        "מרווחת",
+        "בפינות",
+        "ומדפים",
+        "ופלטת"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21617,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363412496281110_g.us/1788264413000_AC9A45811A586BBDA423A4BFD03641A8.jpg",
+      "group_id": "120363412496281110@g.us",
+      "category": "notice",
+      "anchors": [
+        "היסטוריה",
+        "שיעורים",
+        "מקצועות",
+        "מתמטיקה",
+        "שבועית",
+        "בקליטה"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21619,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363410948422177_g.us/1788264875000_3A67D77DD628AB145489.jpg",
+      "group_id": "120363410948422177@g.us",
+      "category": "flyer",
+      "anchors": [
+        "משתתפים",
+        "ריקודים",
+        "רוקדים",
+        "ונהנים",
+        "וריהוט",
+        "טיפוסי"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21622,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363282818641802_g.us/1788266198000_AC324B85D26DDC1AD52D2C3FA92373F2.jpg",
+      "group_id": "120363282818641802@g.us",
+      "category": "flyer",
+      "anchors": [
+        "באריחים",
+        "ואזורי",
+        "צמחייה",
+        "הבנייה",
+        "קורות",
+        "ריצוף"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21626,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363282818641802_g.us/1788266512000_ACFE8A3C504CF294D653C637B482F34E.jpg",
+      "group_id": "120363282818641802@g.us",
+      "category": "flyer",
+      "anchors": [
+        "מרגישה",
+        "פנימי",
+        "תקרות",
+        "ופתחי",
+        "דלתות",
+        "קשורה"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21627,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363422263905556_g.us/1788267554000_ACB336778B32EA5C4D610359EC0834CE.jpg",
+      "group_id": "120363422263905556@g.us",
+      "category": "flyer",
+      "anchors": [
+        "בינוני",
+        "כניסה",
+        "בגודל",
+        "תאים",
+        "ספסל",
+        "מונח"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21630,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363282818641802_g.us/1788271263000_AC9F52ADED84C96483B569B47BE76608.jpg",
+      "group_id": "120363282818641802@g.us",
+      "category": "notice",
+      "anchors": [
+        "אדריכלית",
+        "בפרוזדור",
+        "מדויקות",
+        "והקירות",
+        "מקצועית",
+        "והפרטים"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21637,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363422263905556_g.us/1788272644000_AC4C68FFF624E3CC15606256F57BF173.jpg",
+      "group_id": "120363422263905556@g.us",
+      "category": "photo",
+      "anchors": [
+        "במסדרון",
+        "ומחזיקה",
+        "מחויכת",
+        "בוורוד",
+        "במעיל",
+        "שבוע"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21640,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363412521517701_g.us/1788276786000_3A1BF076870086AB5440.jpg",
+      "group_id": "120363412521517701@g.us",
+      "category": "photo",
+      "anchors": [
+        "ומדבקה",
+        "מחצר",
+        "ובניין",
+        "מתקני",
+        "עצים",
+        "לבנות"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21643,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363412521517701_g.us/1788276788000_3ACFAA868686BFBD62F1.jpg",
+      "group_id": "120363412521517701@g.us",
+      "category": "photo",
+      "anchors": [
+        "ומטפסים",
+        "גבוהים",
+        "ילדי",
+        "במגרש",
+        "מתקני",
+        "טיפוס"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21645,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363412521517701_g.us/1788276789000_3A2807BA9AB41EE9BD1A.jpg",
+      "group_id": "120363412521517701@g.us",
+      "category": "photo",
+      "anchors": [
+        "ומכנסיים",
+        "מחייכת",
+        "קצרים",
+        "בלבוש",
+        "באזור",
+        "לבנה"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21646,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363412521517701_g.us/1788276790000_3A0880C160F6E3B4A3C8.jpg",
+      "group_id": "120363412521517701@g.us",
+      "category": "photo",
+      "anchors": [
+        "ומתקני",
+        "במגרש",
+        "קורת",
+        "לבנות",
+        "נראים",
+        "בחולצות"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21709,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363410948422177_g.us/1788348252000_3AFAEFFC25695301F37D.jpg",
+      "group_id": "120363410948422177@g.us",
+      "category": "photo",
+      "anchors": [
+        "מתעניינים",
+        "ומסתכלים",
+        "ביגל",
+        "לשמש",
+        "מאוד",
+        "בכלב"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21739,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363168238198071_g.us/1788443207000_ACA9422C1B500B42A637E983ABE9EF2D.jpg",
+      "group_id": "120363168238198071@g.us",
+      "category": "notice",
+      "anchors": [
+        "בהתרגשות",
+        "וחברתיות",
+        "התלמידי",
+        "התקיימו",
+        "החינוכי",
+        "ותכניות"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21740,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363412521517701_g.us/1788445973000_3ADF6191520066684A41.jpg",
+      "group_id": "120363412521517701@g.us",
+      "category": "notice",
+      "anchors": [
+        "והשתתפות",
+        "בחוויות",
+        "מהנופשה",
+        "ההודעות",
+        "החשובות",
+        "לימודי"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21746,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/972547860456-1396447584_g.us/1788457125000_ACC23B6E30E5EAB150A807A6849E8F65.jpg",
+      "group_id": "972547860456-1396447584@g.us",
+      "category": "notice",
+      "anchors": [
+        "אירועים",
+        "ובגינוש",
+        "תקומונה",
+        "ממוסגר",
+        "המכריז",
+        "נעורים"
+      ],
+      "min_anchors": 2
+    },
+    {
+      "id": 21768,
+      "path": "/home/ubuntu/besinsky-bot/data/media-archive/120363410948422177_g.us/1788519375000_ACCF2DA9410DB69D4F736A2EEE7E2221.jpg",
+      "group_id": "120363410948422177@g.us",
+      "category": "photo",
+      "anchors": [
+        "מטפלות",
+        "חובשים",
+        "ונראים",
+        "באמצע",
+        "טיול",
+        "שמשי"
+      ],
+      "min_anchors": 2
+    }
+  ]
+}
