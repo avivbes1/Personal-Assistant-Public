@@ -399,6 +399,8 @@ async function _executeAction(action, senderName) {
             message_sent_at:   action.source_timestamp || null,
             weekday_mismatch:  dvResult.mismatch ? 1 : 0,
             validation_notes:  dvResult.notes,
+            calendar_worthy:   action.calendar_worthy ? 1 : 0,
+            event_type:        action.event_type || null,
           });
           // Save per-event rows if provided
           if (noticeId && action.events && Array.isArray(action.events) && action.events.length > 0) {
@@ -928,6 +930,8 @@ const GROUP_TOOLS = [
         relevance_time:    { type: ['string', 'null'], description: 'HH:MM רק אם שעה מפורשת בטקסט. אחרת null.' },
         urgency_signal:    { type: 'string',  enum: ['immediate', 'time_sensitive', 'routine'], description: 'סימון רמת דחיפות מייעצת בלבד — ייבדק ויוחלף על ידי מערכת חוקים. immediate: האירוע היום / שינוי ברגע האחרון. time_sensitive: ימים קרובים. routine: ברירת מחדל.' },
         relevant_datetime: { type: ['string', 'null'], description: 'ISO datetime של מתי האירוע קורה, או null.' },
+        calendar_worthy:   { type: 'boolean', description: 'האם ההודעה מכילה אירוע שראוי להיכנס ליומן? true עבור: אסיפות הורים, טקסים, ימי הולדת, טיולים, חוגים, אימונים, מבחנים, חיסונים, חופשות, מועדי הרשמה. false לעדכונים שוטפים.' },
+        event_type:        { type: ['string', 'null'], enum: ['birthday', 'ceremony', 'trip', 'school_event', 'meeting', 'class', 'holiday', 'exam', 'health', 'deadline', 'appointment', null], description: 'סוג האירוע אם calendar_worthy=true, אחרת null.' },
         events: {
           type: 'array',
           description: 'כשההודעה מכסה מספר ימים/אירועים שונים — רשום כל אחד בנפרד עם תאריך ספציפי. לדוגמה: [{date:"2026-06-29",time:null,title:"אימון"},{date:"2026-06-30",time:"17:00",title:"הפנינג סיום"}]. אם האירוע הוא ביום בודד, השאר ריק.',

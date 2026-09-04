@@ -508,6 +508,18 @@ function initDB() {
   // Defaults to 1 so existing rows remain visible.
   try { db.exec("ALTER TABLE notices ADD COLUMN query_visible INTEGER DEFAULT 1"); } catch (_) {}
 
+  // K1: calendar-bridge columns. These existed in the prod DB (added out-of-band)
+  // but were never in a migration, so fresh checkouts / CI test DBs lacked them —
+  // saveNotice() now writes calendar_worthy/event_type and calendar-bridge.js
+  // reads/writes the rest, so make them exist everywhere.
+  try { db.exec("ALTER TABLE notices ADD COLUMN calendar_worthy INTEGER DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN event_type TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN calendar_status TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN calendar_event_id TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN calendar_attempts INTEGER DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN calendar_error TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN fingerprint TEXT"); } catch (_) {}
+
   // group_alerts — one row per "I joined a new/unknown group" alert we sent to
   // the master group, so batched triage doesn't re-alert about the same group.
   try {
@@ -906,7 +918,7 @@ function _extractNoticeTimes(text) {
   return (text || '').match(/\b\d{1,2}:\d{2}\b/g) || [];
 }
 
-function saveNotice({ group_name, content, relevance_date, relevance_time, source_timestamp, urgency_hint, urgency_source, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until, weekday_mismatch, validation_notes }) {
+function saveNotice({ group_name, content, relevance_date, relevance_time, source_timestamp, urgency_hint, urgency_source, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until, weekday_mismatch, validation_notes, calendar_worthy, event_type }) {
   // Deduplicate: same group + same content snippet + same relevance_date
   const snippet = (content || '').substring(0, 80);
   const existing = getDB().prepare(
@@ -921,8 +933,8 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
     `INSERT INTO notices
       (group_name, content, relevance_date, relevance_time, source_timestamp, dismissed, created_at, row_type, sources,
        urgency_hint, urgency_source, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until,
-       weekday_mismatch, validation_notes, normalized_content)
-     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       weekday_mismatch, validation_notes, normalized_content, calendar_worthy, event_type)
+     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     group_name, content, relevance_date || null, relevance_time || null,
     source_timestamp || Date.now(), Date.now(), JSON.stringify([group_name]),
@@ -933,7 +945,9 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
     validUntil,
     weekday_mismatch ? 1 : 0,
     validation_notes || null,
-    normalized
+    normalized,
+    calendar_worthy ? 1 : 0,
+    event_type || null
   );
   return result.lastInsertRowid;
 }

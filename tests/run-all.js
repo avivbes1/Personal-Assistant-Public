@@ -9,10 +9,16 @@
 const path = require('path');
 const fs = require('fs');
 
-const testDir = path.join(__dirname, 'regression');
-const testFiles = fs.readdirSync(testDir)
-  .filter(f => f.endsWith('.js'))
-  .sort();
+// Regression tests + unit tests (both expose a run() => {pass, message} export).
+const dirs = [
+  { dir: path.join(__dirname, 'regression'), match: f => f.endsWith('.js') },
+  { dir: path.join(__dirname, 'unit'),       match: f => f.endsWith('.test.js') },
+];
+const testFiles = dirs.flatMap(({ dir, match }) =>
+  fs.existsSync(dir)
+    ? fs.readdirSync(dir).filter(match).sort().map(f => path.join(dir, f))
+    : []
+);
 
 let passed = 0;
 let failed = 0;
@@ -20,12 +26,13 @@ let failed = 0;
 console.log(`\n🧪 Running ${testFiles.length} regression tests...\n`);
 
 (async () => {
-  for (const file of testFiles) {
+  for (const fullPath of testFiles) {
+    const file = path.relative(__dirname, fullPath);
     try {
       // require() inside the try so a single test file that fails to load
       // (e.g. a missing dependency in an unrelated module) is reported as one
       // ERROR instead of crashing the entire suite.
-      const mod = require(path.join(testDir, file));
+      const mod = require(fullPath);
       const result = typeof mod.run === 'function'
         ? await mod.run()
         : { pass: false, message: 'No run() export' };

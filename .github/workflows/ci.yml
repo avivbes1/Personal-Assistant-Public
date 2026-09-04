@@ -35,6 +35,41 @@ jobs:
       - name: Validate eval dataset
         run: node tests/eval/run-eval.js --dry-run
 
+  eval-gate:
+    name: Eval Gate (live LLM)
+    runs-on: ubuntu-latest
+    # PRs only — the live eval spends tokens, so we don't run it on every push.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      # Fork PRs don't get repo secrets, so ANTHROPIC_API_KEY is empty there.
+      # Skip (green) rather than fail red for contributors who can't run it.
+      - name: Check for API key
+        id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY not available (fork PR?) — skipping eval gate."
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Gold-only subset (40 rows, ~$0.06) through the M3 three-way gate:
+      # pipeline accuracy, multilabel action accuracy, send_now recall.
+      # run-eval.js exits non-zero if any gate fails → the job goes red.
+      - name: Run eval gate (gold subset)
+        if: steps.key.outputs.has_key == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TIMEZONE: "UTC"
+        run: node tests/eval/run-eval.js --gold-only --limit 40
+
   test:
     name: Tests (mock LLM)
     runs-on: ubuntu-latest

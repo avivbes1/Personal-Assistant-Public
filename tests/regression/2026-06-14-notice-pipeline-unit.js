@@ -112,7 +112,7 @@ module.exports = {
       if (!agentSrc.includes('_isBacklog')) {
         errors.push('UC-5: _isBacklog flag not handled in agent.js');
       }
-      if (!agentSrc.includes("urgencyHint = 'routine'")) {
+      if (!agentSrc.includes('computeUrgencyHint')) {
         errors.push('UC-5: backlog downgrade to routine not found in agent.js');
       }
     } catch (e) {
