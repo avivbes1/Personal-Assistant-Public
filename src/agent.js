@@ -13,7 +13,7 @@ const { getFamilyContext } = require('./family-profiles');
 const { render: renderPrompt } = require('./llm/prompts');
 const { searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent, listEventsForDate } = require('./calendar');
 const { processEventAction } = require('./calendarGate');
-const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, saveNoticeEvents, saveHomework, getPendingHomework, saveOrGetThread, dismissThread, linkNoticeToThread, getMostRecentDeliveredThread, markMessageProcessing, markMessageTerminal, markMessageFailed, getConfigValue } = require('./db');
+const { saveActionItem, saveMessage, getDB, saveBotTask, saveNotice, enrichNoticeByThreadKey, saveNoticeEvents, saveHomework, getPendingHomework, saveOrGetThread, dismissThread, linkNoticeToThread, getMostRecentDeliveredThread, markMessageProcessing, markMessageTerminal, markMessageFailed, getConfigValue } = require('./db');
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 const { buildProfileSlice, shouldSkipGroup } = require('./family-context');
 const { logToolCall, makeCorrelationId } = require('./audit-log');
@@ -427,6 +427,32 @@ async function _executeAction(action, senderName) {
               if (thread) linkNoticeToThread(noticeId, action.thread_key, thread.id);
             } catch (e) {
               console.warn('[Agent] thread link error:', e.message);
+            }
+          }
+          // K4: enrich a prior notice in the same thread with fields this
+          // follow-up newly supplies (e.g. a time that arrived after the date).
+          // Gap-fill only — never overwrites — and skips silently when there's
+          // no matching thread within 14 days. See enrichNoticeByThreadKey.
+          if (action.thread_key && noticeId) {
+            try {
+              const enrich = enrichNoticeByThreadKey(
+                noticeId,
+                action.thread_key,
+                {
+                  relevance_time:    action.relevance_time || null,
+                  relevance_date:    finalRelevanceDate,
+                  relevant_datetime: relevantDatetime,
+                  valid_until:       finalRelevanceDate,
+                  event_type:        action.event_type || null,
+                  calendar_worthy:   action.calendar_worthy ? 1 : 0,
+                },
+                action.group_name || 'unknown'
+              );
+              if (enrich.enriched) {
+                console.log(`[Agent] Enriched notice #${enrich.oldId} with ${enrich.fields.join(', ')} from new message`);
+              }
+            } catch (e) {
+              console.warn('[Agent] notice enrichment error:', e.message);
             }
           }
           console.log(`[Agent] Saved notice: "${finalContent.substring(0, 60)}" thread=${action.thread_key || 'none'} rel=${action.relevance_date || 'undated'}`);

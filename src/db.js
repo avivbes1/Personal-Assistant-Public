@@ -989,6 +989,101 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
   return result.lastInsertRowid;
 }
 
+/**
+ * K4: enrich a prior notice from a follow-up in the same thread.
+ *
+ * When a later message adds structured info the earlier notice lacked (e.g. a
+ * teacher first announces "parent meeting on 9.9", then two days later posts the
+ * time), that follow-up otherwise lands as a separate notice. This fills the
+ * ORIGINAL notice's gaps instead — strictly gap-filling, never overwriting a
+ * value that is already set.
+ *
+ * Matches the most recent OTHER notice sharing `threadKey` within 14 days
+ * (undismissed). Only genuinely-empty (NULL/'') fields are filled; the sole
+ * exception is calendar_worthy, which is promoted 0→1 (never demoted). The new
+ * notice's group is appended to the target's `sources` array. created_at is
+ * never touched. If the target has a linked calendar_intent whose time was
+ * 'unknown' and we just supplied a time, its time_status flips to 'updated'.
+ *
+ * @param {number} newNoticeId  id of the just-saved follow-up (excluded from match)
+ * @param {string} threadKey    thread to match on (exact)
+ * @param {object} fields       candidate values from the follow-up
+ * @param {string} newSource    group_name of the follow-up, appended to sources
+ * @returns {{enriched:boolean, oldId?:number, fields?:string[]}} audit summary
+ */
+function enrichNoticeByThreadKey(newNoticeId, threadKey, fields, newSource) {
+  if (!threadKey) return { enriched: false };
+  try {
+    const db = getDB();
+    const since = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    const old = db.prepare(
+      `SELECT * FROM notices
+        WHERE thread_key = ? AND id != ? AND dismissed = 0 AND created_at >= ?
+        ORDER BY created_at DESC LIMIT 1`
+    ).get(threadKey, newNoticeId, since);
+    if (!old) return { enriched: false };
+
+    // Gap-fill: only columns the target genuinely lacks (NULL or '').
+    const GAP_FIELDS = ['relevance_time', 'relevance_date', 'relevant_datetime', 'valid_until', 'event_type'];
+    const setClauses = [];
+    const values = [];
+    const enrichedFields = [];
+    for (const f of GAP_FIELDS) {
+      const oldVal = old[f];
+      const newVal = fields[f];
+      const oldEmpty = oldVal === null || oldVal === undefined || oldVal === '';
+      const newHas = newVal !== null && newVal !== undefined && newVal !== '';
+      if (oldEmpty && newHas) {
+        setClauses.push(`${f} = ?`);
+        values.push(newVal);
+        enrichedFields.push(f);
+      }
+    }
+    // calendar_worthy: promote 0→1 only (a follow-up can reveal an event is
+    // calendar-worthy; it must never un-mark one).
+    if (!old.calendar_worthy && fields.calendar_worthy) {
+      setClauses.push('calendar_worthy = 1');
+      enrichedFields.push('calendar_worthy');
+    }
+
+    // Append the follow-up's group to sources (dedup, preserve order).
+    let sourcesChanged = false;
+    if (newSource) {
+      let sources = [];
+      try { sources = JSON.parse(old.sources || '[]'); } catch (_) { sources = []; }
+      if (!Array.isArray(sources)) sources = [];
+      if (!sources.includes(newSource)) {
+        sources.push(newSource);
+        setClauses.push('sources = ?');
+        values.push(JSON.stringify(sources));
+        sourcesChanged = true;
+      }
+    }
+
+    if (enrichedFields.length === 0 && !sourcesChanged) return { enriched: false };
+
+    values.push(old.id);
+    db.prepare(`UPDATE notices SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+
+    // Propagate a newly-learned time to a linked calendar intent (K3 all-day
+    // events that were waiting on a time). Only touch intents still 'unknown'.
+    if (enrichedFields.includes('relevance_time')) {
+      try {
+        db.prepare(
+          `UPDATE calendar_intents
+              SET time_status = 'updated', updated_at = ?
+            WHERE notice_id = ? AND time_status = 'unknown'`
+        ).run(Date.now(), old.id);
+      } catch (_) {}
+    }
+
+    return { enriched: true, oldId: old.id, fields: enrichedFields };
+  } catch (e) {
+    console.error('[DB] enrichNoticeByThreadKey error:', e.message);
+    return { enriched: false };
+  }
+}
+
 function saveNoticeEvents(noticeId, events) {
   // events = [{date: 'YYYY-MM-DD', time: 'HH:MM'|null, title: 'string'}]
   if (!events || events.length === 0) return;
@@ -1823,6 +1918,7 @@ module.exports = {
   getRecentGroupMessages,
   markMessageProcessed,
   saveNotice,
+  enrichNoticeByThreadKey,
   saveNoticeEvents,
   getActiveNotices,
   markNoticesShownInDigest,

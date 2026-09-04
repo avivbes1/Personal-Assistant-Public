@@ -23,10 +23,44 @@ const HEBREW_STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'is', 'for',
 ]);
 
+// Single-letter Hebrew prefixes (prepositions / conjunctions / article) that
+// attach to the following word: ב(in) ל(to) כ(as) ה(the) ו(and) מ(from) ש(that).
+// Two spellings of the same stem — "בבית" vs "בית", "ולילדים" vs "ילדים" — are
+// the same word for dedup purposes, so we strip these before comparison.
+const HEBREW_PREFIXES = new Set(['ב', 'ל', 'כ', 'ה', 'ו', 'מ', 'ש']);
+const HEBREW_LETTER = /[֐-׿]/;
+
+/**
+ * Strip leading Hebrew prefix letters from a single token, one at a time, but
+ * only while the remaining stem stays ≥3 Hebrew characters. The ≥3 guard keeps
+ * genuinely short words (and their leading letters) intact — e.g. "של" is left
+ * alone, and "בית" (3 chars) never loses its ב. Non-Hebrew tokens pass through.
+ */
+function _stripHebrewPrefixes(word) {
+  let w = word;
+  // Require ≥4 now so ≥3 remains after removing one prefix letter. Also require
+  // the next char to be a Hebrew letter so we never mangle English/mixed tokens.
+  while (w.length >= 4 && HEBREW_PREFIXES.has(w[0]) && HEBREW_LETTER.test(w[1])) {
+    w = w.slice(1);
+  }
+  return w;
+}
+
+/**
+ * Hebrew morphology normalizer: apply _stripHebrewPrefixes across whitespace-
+ * separated tokens. Exposed for the threshold-tuning diagnostic and reused by
+ * normalizeText below so the same stemming runs in production.
+ */
+function _normalizeForDedup(text) {
+  if (!text) return '';
+  return String(text).split(/\s+/).map(_stripHebrewPrefixes).join(' ');
+}
+
 /**
  * Hebrew-aware text normalization.
  * - Lowercase (no-op for Hebrew, helps mixed Hebrew/English content)
  * - Replace punctuation with spaces, keeping letters (any script) and digits
+ * - Strip single-letter Hebrew prefixes so morphological variants collapse
  * - Drop common stopwords
  * Returns a space-joined normalized string ('' for empty/nullish input).
  */
@@ -35,7 +69,13 @@ function normalizeText(text) {
   const lowered = String(text).toLowerCase();
   // \p{L} = any letter (incl. Hebrew), \p{N} = any number. Everything else → space.
   const stripped = lowered.replace(/[^\p{L}\p{N}]+/gu, ' ');
-  const words = stripped.split(/\s+/).filter(w => w && !HEBREW_STOPWORDS.has(w));
+  const words = stripped
+    .split(/\s+/)
+    // Filter stopwords on the ORIGINAL token first: several curated stopwords
+    // ("הורים", "ילדים") begin with a prefix letter and would be mangled — and
+    // so escape the filter — if we stemmed before comparing against the set.
+    .filter(w => w && !HEBREW_STOPWORDS.has(w))
+    .map(_stripHebrewPrefixes);
   return words.join(' ');
 }
 
@@ -115,4 +155,4 @@ function findDuplicates(notices, threshold = 0.65) {
   return result;
 }
 
-module.exports = { normalizeText, textSimilarity, findDuplicates };
+module.exports = { normalizeText, textSimilarity, findDuplicates, _normalizeForDedup };
