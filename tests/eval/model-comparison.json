@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-09-04T17:00:00Z",
+  "sample_size": 20,
+  "note": "Same 20 gold messages, same prompt, different model. Limited sample \u2014 directional only.",
+  "haiku": {
+    "model": "claude-haiku-4-5",
+    "pipeline_accuracy": 0.9,
+    "action_accuracy_strict": 0.5,
+    "action_accuracy_multilabel": 0.6,
+    "cost_usd": 0.039618
+  },
+  "sonnet": {
+    "model": "claude-sonnet-4-5",
+    "pipeline_accuracy": 1,
+    "action_accuracy_strict": 0.3,
+    "action_accuracy_multilabel": 0.45,
+    "cost_usd": 0.163674
+  },
+  "recommendation": "Keep Haiku for classification. Higher action accuracy at 4x lower cost. Sonnet overclassifies add_event."
+}

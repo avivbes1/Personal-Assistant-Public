@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-04T14:08:31.526Z",
+  "generated_at": "2026-09-04T16:57:23.188Z",
   "model": "claude-haiku-4-5",
   "dataset": "tests/eval/dataset.jsonl",
   "thresholds": {
@@ -8,20 +8,20 @@
     "sendnow_recall": 0.1
   },
   "threshold": 0.7,
-  "overall_accuracy": 0.8148,
+  "overall_accuracy": 0.9,
   "gate": {
     "pipeline": {
-      "value": 0.8148,
+      "value": 0.9,
       "threshold": 0.7,
       "passed": true
     },
     "action": {
-      "value": 0.5556,
+      "value": 0.6,
       "threshold": 0.35,
       "passed": true
     },
     "sendnow_recall": {
-      "value": 0.2308,
+      "value": 0.5,
       "threshold": 0.1,
       "passed": true
     }
@@ -32,215 +32,215 @@
     "labeled": 137,
     "duplicate_ids": 39,
     "conflicting_ids": 7,
-    "attempted": 81,
-    "scored": 81,
+    "attempted": 20,
+    "scored": 20,
     "errors": 0,
     "skipped_empty_body": 0
   },
   "cost": {
-    "input_tokens": 54342,
-    "output_tokens": 15220,
-    "total_tokens": 69562,
-    "estimated_usd": 0.130442,
+    "input_tokens": 14168,
+    "output_tokens": 5090,
+    "total_tokens": 19258,
+    "estimated_usd": 0.039618,
     "pricing_per_mtok": {
       "input": 1,
       "output": 5
     }
   },
   "pipeline_state": {
-    "accuracy": 0.8148,
+    "accuracy": 0.9,
     "per_class": {
       "NOTICE_CREATED": {
-        "precision": 0.9778,
-        "recall": 0.7586,
-        "f1": 0.8544,
-        "tp": 44,
-        "fp": 1,
-        "fn": 14,
-        "support": 58
+        "precision": 1,
+        "recall": 0.9,
+        "f1": 0.9474,
+        "tp": 18,
+        "fp": 0,
+        "fn": 2,
+        "support": 20
       },
       "NOT_ACTIONABLE": {
-        "precision": 0.6111,
-        "recall": 0.9565,
-        "f1": 0.7458,
-        "tp": 22,
-        "fp": 14,
-        "fn": 1,
-        "support": 23
+        "precision": 0,
+        "recall": null,
+        "f1": null,
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "support": 0
       }
     },
     "confusion_matrix": {
       "NOTICE_CREATED": {
-        "NOTICE_CREATED": 44,
-        "NOT_ACTIONABLE": 14
+        "NOTICE_CREATED": 18,
+        "NOT_ACTIONABLE": 2
       },
       "NOT_ACTIONABLE": {
-        "NOTICE_CREATED": 1,
-        "NOT_ACTIONABLE": 22
+        "NOTICE_CREATED": 0,
+        "NOT_ACTIONABLE": 0
       }
     }
   },
   "priority": {
-    "accuracy": 0.5185,
-    "macro_precision": 0.5381,
-    "macro_recall": 0.465,
-    "macro_f1": 0.5287,
+    "accuracy": 0.6,
+    "macro_precision": 0.5846,
+    "macro_recall": 0.5275,
+    "macro_f1": 0.5513,
     "per_class": {
       "real_time": {
-        "precision": 0.6522,
-        "recall": 0.5172,
-        "f1": 0.5769,
-        "tp": 15,
-        "fp": 8,
-        "fn": 14,
-        "support": 29
+        "precision": 0.7692,
+        "recall": 0.7692,
+        "f1": 0.7692,
+        "tp": 10,
+        "fp": 3,
+        "fn": 3,
+        "support": 13
       },
       "batch": {
-        "precision": 0.5455,
-        "recall": 0.3429,
-        "f1": 0.4211,
-        "tp": 12,
-        "fp": 10,
-        "fn": 23,
-        "support": 35
+        "precision": 0.4,
+        "recall": 0.2857,
+        "f1": 0.3333,
+        "tp": 2,
+        "fp": 3,
+        "fn": 5,
+        "support": 7
       },
       "archive": {
         "precision": null,
-        "recall": 0,
+        "recall": null,
         "f1": null,
         "tp": 0,
         "fp": 0,
-        "fn": 2,
-        "support": 2
+        "fn": 0,
+        "support": 0
       },
       "noise": {
-        "precision": 0.4167,
-        "recall": 1,
-        "f1": 0.5882,
-        "tp": 15,
-        "fp": 21,
+        "precision": 0,
+        "recall": null,
+        "f1": null,
+        "tp": 0,
+        "fp": 2,
         "fn": 0,
-        "support": 15
+        "support": 0
       }
     },
     "confusion_matrix": {
       "real_time": {
-        "real_time": 15,
-        "batch": 10,
+        "real_time": 10,
+        "batch": 3,
         "archive": 0,
-        "noise": 4
+        "noise": 0
       },
       "batch": {
-        "real_time": 8,
-        "batch": 12,
+        "real_time": 3,
+        "batch": 2,
         "archive": 0,
-        "noise": 15
+        "noise": 2
       },
       "archive": {
         "real_time": 0,
         "batch": 0,
         "archive": 0,
-        "noise": 2
+        "noise": 0
       },
       "noise": {
         "real_time": 0,
         "batch": 0,
         "archive": 0,
-        "noise": 15
+        "noise": 0
       }
     }
   },
   "expected_action": {
-    "accuracy": 0.4815,
-    "accuracy_strict": 0.4815,
-    "accuracy_multilabel": 0.5556,
-    "multilabel_hits": 45,
-    "multilabel_off_primary_hits": 6,
-    "macro_precision": 0.4401,
-    "macro_recall": 0.474,
-    "macro_f1": 0.4149,
+    "accuracy": 0.5,
+    "accuracy_strict": 0.5,
+    "accuracy_multilabel": 0.6,
+    "multilabel_hits": 12,
+    "multilabel_off_primary_hits": 2,
+    "macro_precision": 0.4125,
+    "macro_recall": 0.475,
+    "macro_f1": 0.5386,
     "per_class": {
       "add_event": {
-        "precision": 0.5455,
-        "recall": 0.6667,
-        "f1": 0.6,
-        "tp": 6,
-        "fp": 5,
-        "fn": 3,
-        "support": 9
+        "precision": 0.4,
+        "recall": 1,
+        "f1": 0.5714,
+        "tp": 2,
+        "fp": 3,
+        "fn": 0,
+        "support": 2
       },
       "add_notice": {
-        "precision": 0.2105,
-        "recall": 0.4444,
-        "f1": 0.2857,
-        "tp": 4,
-        "fp": 15,
-        "fn": 5,
-        "support": 9
+        "precision": 0.5,
+        "recall": 0.4,
+        "f1": 0.4444,
+        "tp": 2,
+        "fp": 2,
+        "fn": 3,
+        "support": 5
       },
       "send_now": {
-        "precision": 0.6667,
-        "recall": 0.2308,
-        "f1": 0.3429,
+        "precision": 0.75,
+        "recall": 0.5,
+        "f1": 0.6,
         "tp": 6,
-        "fp": 3,
-        "fn": 20,
-        "support": 26
+        "fp": 2,
+        "fn": 6,
+        "support": 12
       },
       "defer": {
-        "precision": 0.1667,
-        "recall": 0.0714,
-        "f1": 0.1,
-        "tp": 1,
-        "fp": 5,
-        "fn": 13,
-        "support": 14
+        "precision": 0,
+        "recall": 0,
+        "f1": null,
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "support": 1
       },
       "skip": {
-        "precision": 0.6111,
-        "recall": 0.9565,
-        "f1": 0.7458,
-        "tp": 22,
-        "fp": 14,
-        "fn": 1,
-        "support": 23
+        "precision": 0,
+        "recall": null,
+        "f1": null,
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "support": 0
       }
     },
     "confusion_matrix": {
       "add_event": {
-        "add_event": 6,
-        "add_notice": 1,
+        "add_event": 2,
+        "add_notice": 0,
         "send_now": 0,
-        "defer": 2,
+        "defer": 0,
         "skip": 0
       },
       "add_notice": {
         "add_event": 0,
-        "add_notice": 4,
-        "send_now": 3,
+        "add_notice": 2,
+        "send_now": 2,
         "defer": 0,
-        "skip": 2
+        "skip": 1
       },
       "send_now": {
-        "add_event": 4,
-        "add_notice": 9,
+        "add_event": 3,
+        "add_notice": 1,
         "send_now": 6,
-        "defer": 3,
-        "skip": 4
+        "defer": 1,
+        "skip": 1
       },
       "defer": {
         "add_event": 0,
-        "add_notice": 5,
+        "add_notice": 1,
         "send_now": 0,
-        "defer": 1,
-        "skip": 8
+        "defer": 0,
+        "skip": 0
       },
       "skip": {
-        "add_event": 1,
+        "add_event": 0,
         "add_notice": 0,
         "send_now": 0,
         "defer": 0,
-        "skip": 22
+        "skip": 0
       }
     }
   },
@@ -300,12 +300,12 @@
       ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
+      "pred_action": "send_now",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "time_sensitive",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
         "add_notice"
       ],
@@ -330,8 +330,8 @@
       "production_urgency_hint": "immediate",
       "production_urgency_source": "date_with_signal",
       "tools": [
-        "add_notice",
-        "add_event"
+        "add_event",
+        "add_notice"
       ],
       "error": null
     },
@@ -346,15 +346,14 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_event",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "immediate",
       "production_urgency_source": "date_with_signal",
       "tools": [
-        "add_notice",
-        "add_event"
+        "add_notice"
       ],
       "error": null
     },
@@ -391,13 +390,14 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_event",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "immediate",
-      "production_urgency_source": "date_with_signal",
+      "production_urgency_source": "keyword",
       "tools": [
+        "add_event",
         "add_notice"
       ],
       "error": null
@@ -459,12 +459,12 @@
       ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
-      "production_urgency_hint": "immediate",
-      "production_urgency_source": "keyword",
+      "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -503,14 +503,13 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_event",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "keyword",
       "tools": [
-        "add_event",
         "add_notice"
       ],
       "error": null
@@ -528,12 +527,12 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "routine",
-      "production_urgency_source": "default",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
         "add_notice"
       ],
@@ -552,9 +551,9 @@
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_event",
-      "pred_priority": "batch",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "time_sensitive",
+      "llm_urgency_hint": "immediate",
       "production_urgency_hint": "time_sensitive",
       "production_urgency_source": "default",
       "tools": [
@@ -602,7 +601,7 @@
       "pred_action": "defer",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
+      "llm_urgency_hint": "time_sensitive",
       "production_urgency_hint": "routine",
       "production_urgency_source": "default",
       "tools": [
@@ -665,1208 +664,6 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 19437,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 20211,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "add_event",
-      "original_expected_action": "add_event",
-      "human_actions": [
-        "add_notice",
-        "add_event"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_event",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "routine",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_event",
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 20246,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 20266,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "add_notice",
-      "original_expected_action": "add_notice",
-      "human_actions": [
-        "add_notice"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 20244,
-      "group_id": "120363402591906138@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "immediate",
-      "production_urgency_source": "date_with_signal",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 19828,
-      "group_id": "120363304480461484@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now",
-        "add_notice"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "time_sensitive",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 20987,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "add_event",
-      "original_expected_action": "add_event",
-      "human_actions": [
-        "add_notice",
-        "add_event"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "routine",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21046,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 21067,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "add_event",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "routine",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_event",
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21118,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now",
-        "add_event"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "routine",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21190,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now",
-        "add_notice"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21244,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "add_event",
-      "original_expected_action": "add_event",
-      "human_actions": [
-        "add_notice",
-        "add_event"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "routine",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21306,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "add_event",
-      "original_expected_action": "add_event",
-      "human_actions": [
-        "add_notice",
-        "add_event"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_event",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice",
-        "add_event"
-      ],
-      "error": null
-    },
-    {
-      "id": 21408,
-      "group_id": "120363430507203277@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now",
-        "add_notice"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "time_sensitive",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21419,
-      "group_id": "120363430507203277@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "time_sensitive",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21435,
-      "group_id": "120363430507203277@g.us",
-      "recorded_pipeline_state": "NOTICE_CREATED",
-      "label_action": "add_event",
-      "original_expected_action": "add_event",
-      "human_actions": [
-        "add_notice",
-        "add_event"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 16811,
-      "group_id": "120363157012148587@g.us",
-      "recorded_pipeline_state": "FAILED",
-      "label_action": "skip",
-      "original_expected_action": "none",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 20216,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "routine",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 19272,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 21380,
-      "group_id": "120363430507203277@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "none",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 18977,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "none",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 19275,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "none",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 16496,
-      "group_id": "120363279968362864@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 16609,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 21074,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 17930,
-      "group_id": "120363390401101753@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 16618,
-      "group_id": "120363390401101753@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "none",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 18783,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "add_event",
-      "original_expected_action": "add_event",
-      "human_actions": [
-        "add_notice",
-        "add_event"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_event",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_event",
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 20972,
-      "group_id": "120363282818641802@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 16636,
-      "group_id": "120363157012148587@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 20222,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21216,
-      "group_id": "120363157012148587@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 17912,
-      "group_id": "120363402591906138@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 21312,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 20519,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 21453,
-      "group_id": "120363412521517701@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 18917,
-      "group_id": "120363420483556958@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "archive",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 16633,
-      "group_id": "120363390401101753@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21299,
-      "group_id": "120363157012148587@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "none",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 21285,
-      "group_id": "120363157012148587@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 18986,
-      "group_id": "120363157012148587@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 16629,
-      "group_id": "120363390401101753@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 20268,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 17935,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "none",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 16604,
-      "group_id": "120363168238198071@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "immediate",
-      "production_urgency_source": "date_with_signal",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 21099,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 20214,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 18886,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 19727,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "add_notice",
-      "original_expected_action": "add_notice",
-      "human_actions": [
-        "add_notice"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "immediate",
-      "production_urgency_source": "date_with_signal",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 19475,
-      "group_id": "120363279968362864@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "add_notice",
-      "original_expected_action": "add_notice",
-      "human_actions": [
-        "add_notice"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 19924,
-      "group_id": "120363157012148587@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 19860,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 19648,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 18757,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "send_now",
-      "original_expected_action": "send_now",
-      "human_actions": [
-        "send_now"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
       "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
@@ -1879,169 +676,13 @@
       "error": null
     },
     {
-      "id": 19831,
+      "id": 19437,
       "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
+      "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
       "original_expected_action": "send_now",
       "human_actions": [
         "send_now"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "time_sensitive",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 19671,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 19464,
-      "group_id": "972547860979-1599304865@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "add_event",
-      "original_expected_action": "add_event",
-      "human_actions": [
-        "add_notice",
-        "add_event"
-      ],
-      "label_priority": "real_time",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_event",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "time_sensitive",
-      "production_urgency_hint": "routine",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_event",
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 19954,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "archive",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 18885,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "skip",
-      "original_expected_action": "skip",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 19842,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "skip",
-      "original_expected_action": "none",
-      "human_actions": [
-        "skip"
-      ],
-      "label_priority": "noise",
-      "label_pipeline": "NOT_ACTIONABLE",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
-      "llm_urgency_hint": null,
-      "production_urgency_hint": null,
-      "production_urgency_source": null,
-      "tools": [
-        "no_action"
-      ],
-      "error": null
-    },
-    {
-      "id": 19738,
-      "group_id": "120363402591906138@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "add_notice",
-      "original_expected_action": "add_notice",
-      "human_actions": [
-        "add_notice"
-      ],
-      "label_priority": "batch",
-      "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
-      "production_urgency_source": "default",
-      "tools": [
-        "add_notice"
-      ],
-      "error": null
-    },
-    {
-      "id": 19783,
-      "group_id": "120363421222455453@g.us",
-      "recorded_pipeline_state": "RECEIVED",
-      "label_action": "defer",
-      "original_expected_action": "defer",
-      "human_actions": [
-        "defer"
       ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
