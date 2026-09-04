@@ -1,10 +1,32 @@
 {
-  "generated_at": "2026-09-04T11:55:02.358Z",
+  "generated_at": "2026-09-04T12:21:07.790Z",
   "model": "claude-haiku-4-5",
   "dataset": "tests/eval/dataset.jsonl",
+  "thresholds": {
+    "pipeline": 0.7,
+    "action": 0.35,
+    "sendnow_recall": 0.1
+  },
   "threshold": 0.7,
-  "overall_accuracy": 0.8025,
-  "passed": true,
+  "overall_accuracy": 0.8272,
+  "gate": {
+    "pipeline": {
+      "value": 0.8272,
+      "threshold": 0.7,
+      "passed": true
+    },
+    "action": {
+      "value": 0.5185,
+      "threshold": 0.35,
+      "passed": true
+    },
+    "sendnow_recall": {
+      "value": 0,
+      "threshold": 0.1,
+      "passed": false
+    }
+  },
+  "passed": false,
   "counts": {
     "total_records": 137,
     "labeled": 137,
@@ -17,40 +39,40 @@
   },
   "cost": {
     "input_tokens": 54342,
-    "output_tokens": 14211,
-    "total_tokens": 68553,
-    "estimated_usd": 0.125397,
+    "output_tokens": 15199,
+    "total_tokens": 69541,
+    "estimated_usd": 0.130337,
     "pricing_per_mtok": {
       "input": 1,
       "output": 5
     }
   },
   "pipeline_state": {
-    "accuracy": 0.8025,
+    "accuracy": 0.8272,
     "per_class": {
       "NOTICE_CREATED": {
-        "precision": 0.9773,
-        "recall": 0.7414,
-        "f1": 0.8431,
-        "tp": 43,
+        "precision": 0.9783,
+        "recall": 0.7759,
+        "f1": 0.8654,
+        "tp": 45,
         "fp": 1,
-        "fn": 15,
+        "fn": 13,
         "support": 58
       },
       "NOT_ACTIONABLE": {
-        "precision": 0.5946,
+        "precision": 0.6286,
         "recall": 0.9565,
-        "f1": 0.7333,
+        "f1": 0.7586,
         "tp": 22,
-        "fp": 15,
+        "fp": 13,
         "fn": 1,
         "support": 23
       }
     },
     "confusion_matrix": {
       "NOTICE_CREATED": {
-        "NOTICE_CREATED": 43,
-        "NOT_ACTIONABLE": 15
+        "NOTICE_CREATED": 45,
+        "NOT_ACTIONABLE": 13
       },
       "NOT_ACTIONABLE": {
         "NOTICE_CREATED": 1,
@@ -59,27 +81,27 @@
     }
   },
   "priority": {
-    "accuracy": 0.5309,
-    "macro_precision": 0.5629,
-    "macro_recall": 0.4707,
-    "macro_f1": 0.541,
+    "accuracy": 0.5679,
+    "macro_precision": 0.5943,
+    "macro_recall": 0.501,
+    "macro_f1": 0.5698,
     "per_class": {
       "real_time": {
-        "precision": 0.7,
-        "recall": 0.4828,
-        "f1": 0.5714,
-        "tp": 14,
-        "fp": 6,
-        "fn": 15,
+        "precision": 0.6667,
+        "recall": 0.6897,
+        "f1": 0.678,
+        "tp": 20,
+        "fp": 10,
+        "fn": 9,
         "support": 29
       },
       "batch": {
-        "precision": 0.5833,
-        "recall": 0.4,
-        "f1": 0.4746,
-        "tp": 14,
-        "fp": 10,
-        "fn": 21,
+        "precision": 0.6875,
+        "recall": 0.3143,
+        "f1": 0.4314,
+        "tp": 11,
+        "fp": 5,
+        "fn": 24,
         "support": 35
       },
       "archive": {
@@ -92,27 +114,27 @@
         "support": 2
       },
       "noise": {
-        "precision": 0.4054,
+        "precision": 0.4286,
         "recall": 1,
-        "f1": 0.5769,
+        "f1": 0.6,
         "tp": 15,
-        "fp": 22,
+        "fp": 20,
         "fn": 0,
         "support": 15
       }
     },
     "confusion_matrix": {
       "real_time": {
-        "real_time": 14,
-        "batch": 10,
+        "real_time": 20,
+        "batch": 5,
         "archive": 0,
-        "noise": 5
+        "noise": 4
       },
       "batch": {
-        "real_time": 6,
-        "batch": 14,
+        "real_time": 10,
+        "batch": 11,
         "archive": 0,
-        "noise": 15
+        "noise": 14
       },
       "archive": {
         "real_time": 0,
@@ -130,113 +152,95 @@
   },
   "expected_action": {
     "accuracy": 0.4198,
-    "macro_precision": 0.422,
-    "macro_recall": 0.3542,
-    "macro_f1": 0.3878,
+    "accuracy_strict": 0.4198,
+    "accuracy_multilabel": 0.5185,
+    "multilabel_hits": 42,
+    "multilabel_off_primary_hits": 8,
+    "macro_precision": 0.3861,
+    "macro_recall": 0.45,
+    "macro_f1": 0.4286,
     "per_class": {
       "add_event": {
-        "precision": 0.6,
-        "recall": 0.3333,
-        "f1": 0.4286,
-        "tp": 3,
-        "fp": 2,
-        "fn": 6,
+        "precision": 0.5556,
+        "recall": 0.5556,
+        "f1": 0.5556,
+        "tp": 5,
+        "fp": 4,
+        "fn": 4,
         "support": 9
       },
       "add_notice": {
-        "precision": 0.1,
-        "recall": 0.1111,
-        "f1": 0.1053,
-        "tp": 1,
-        "fp": 9,
-        "fn": 8,
+        "precision": 0.1935,
+        "recall": 0.6667,
+        "f1": 0.3,
+        "tp": 6,
+        "fp": 25,
+        "fn": 3,
         "support": 9
       },
       "send_now": {
-        "precision": 0.6316,
-        "recall": 0.4615,
-        "f1": 0.5333,
-        "tp": 12,
-        "fp": 7,
-        "fn": 14,
-        "support": 26
-      },
-      "defer": {
-        "precision": 0.4,
-        "recall": 0.2857,
-        "f1": 0.3333,
-        "tp": 4,
-        "fp": 6,
-        "fn": 10,
-        "support": 14
-      },
-      "skip": {
-        "precision": 0.3784,
-        "recall": 0.9333,
-        "f1": 0.5385,
-        "tp": 14,
-        "fp": 23,
-        "fn": 1,
-        "support": 15
-      },
-      "none": {
         "precision": null,
         "recall": 0,
         "f1": null,
         "tp": 0,
         "fp": 0,
-        "fn": 8,
-        "support": 8
+        "fn": 26,
+        "support": 26
+      },
+      "defer": {
+        "precision": 0.1667,
+        "recall": 0.0714,
+        "f1": 0.1,
+        "tp": 1,
+        "fp": 5,
+        "fn": 13,
+        "support": 14
+      },
+      "skip": {
+        "precision": 0.6286,
+        "recall": 0.9565,
+        "f1": 0.7586,
+        "tp": 22,
+        "fp": 13,
+        "fn": 1,
+        "support": 23
       }
     },
     "confusion_matrix": {
       "add_event": {
-        "add_event": 3,
-        "add_notice": 1,
-        "send_now": 4,
+        "add_event": 5,
+        "add_notice": 3,
+        "send_now": 0,
         "defer": 1,
-        "skip": 0,
-        "none": 0
+        "skip": 0
       },
       "add_notice": {
         "add_event": 0,
-        "add_notice": 1,
-        "send_now": 3,
-        "defer": 3,
-        "skip": 2,
-        "none": 0
+        "add_notice": 6,
+        "send_now": 0,
+        "defer": 1,
+        "skip": 2
       },
       "send_now": {
-        "add_event": 1,
-        "add_notice": 7,
-        "send_now": 12,
-        "defer": 2,
-        "skip": 4,
-        "none": 0
+        "add_event": 3,
+        "add_notice": 17,
+        "send_now": 0,
+        "defer": 3,
+        "skip": 3
       },
       "defer": {
         "add_event": 0,
-        "add_notice": 1,
+        "add_notice": 5,
         "send_now": 0,
-        "defer": 4,
-        "skip": 9,
-        "none": 0
+        "defer": 1,
+        "skip": 8
       },
       "skip": {
         "add_event": 1,
         "add_notice": 0,
         "send_now": 0,
         "defer": 0,
-        "skip": 14,
-        "none": 0
-      },
-      "none": {
-        "add_event": 0,
-        "add_notice": 0,
-        "send_now": 0,
-        "defer": 0,
-        "skip": 8,
-        "none": 0
+        "skip": 22
       }
     }
   },
@@ -246,11 +250,17 @@
       "group_id": "120363279968362864@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_notice",
+      "original_expected_action": "add_notice",
+      "human_actions": [
+        "add_notice"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -261,11 +271,17 @@
       "group_id": "120363157012148587@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -276,11 +292,17 @@
       "group_id": "120363168238198071@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_notice",
+      "original_expected_action": "add_notice",
+      "human_actions": [
+        "add_notice"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_notice",
-      "pred_priority": "batch",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -291,14 +313,21 @@
       "group_id": "120363402591906138@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_event",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
-        "add_notice",
-        "add_event"
+        "add_event",
+        "add_notice"
       ],
       "error": null
     },
@@ -307,11 +336,17 @@
       "group_id": "120363044434449780@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -322,13 +357,19 @@
       "group_id": "120363390401101753@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
+      "pred_action": "add_notice",
+      "pred_priority": "batch",
+      "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
-        "no_action"
+        "add_notice"
       ],
       "error": null
     },
@@ -337,11 +378,17 @@
       "group_id": "120363390401101753@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -352,11 +399,18 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_event",
+      "original_expected_action": "add_event",
+      "human_actions": [
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_event",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "routine",
       "tools": [
         "add_event",
         "add_notice"
@@ -368,11 +422,17 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -383,11 +443,17 @@
       "group_id": "120363402591906138@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_notice",
+      "original_expected_action": "add_notice",
+      "human_actions": [
+        "add_notice"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
+      "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -398,13 +464,19 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_notice",
+      "original_expected_action": "add_notice",
+      "human_actions": [
+        "add_notice"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
+      "pred_action": "defer",
+      "pred_priority": "batch",
+      "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "routine",
       "tools": [
-        "no_action"
+        "add_notice"
       ],
       "error": null
     },
@@ -413,11 +485,17 @@
       "group_id": "120363420483556958@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -428,11 +506,19 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now",
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
+      "pred_action": "defer",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "routine",
       "tools": [
         "add_notice"
       ],
@@ -443,11 +529,18 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_event",
+      "original_expected_action": "add_event",
+      "human_actions": [
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -458,12 +551,21 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now",
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_event",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
+        "add_event",
         "add_notice"
       ],
       "error": null
@@ -473,11 +575,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
+      "pred_action": "defer",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "routine",
       "tools": [
         "add_notice"
       ],
@@ -488,11 +596,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_notice",
+      "original_expected_action": "add_notice",
+      "human_actions": [
+        "add_notice"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -503,12 +617,19 @@
       "group_id": "120363402591906138@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
-      "pred_priority": "real_time",
+      "pred_action": "add_event",
+      "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
+        "add_event",
         "add_notice"
       ],
       "error": null
@@ -518,11 +639,17 @@
       "group_id": "120363420483556958@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -533,11 +660,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -548,14 +681,21 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_event",
+      "original_expected_action": "add_event",
+      "human_actions": [
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_event",
-      "pred_priority": "batch",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "routine",
       "tools": [
-        "add_notice",
-        "add_event"
+        "add_event",
+        "add_notice"
       ],
       "error": null
     },
@@ -564,11 +704,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -579,13 +725,19 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_notice",
+      "original_expected_action": "add_notice",
+      "human_actions": [
+        "add_notice"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
+      "pred_action": "skip",
+      "pred_priority": "noise",
+      "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
-        "add_notice"
+        "no_action"
       ],
       "error": null
     },
@@ -594,11 +746,17 @@
       "group_id": "120363402591906138@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -609,11 +767,18 @@
       "group_id": "120363304480461484@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now",
+        "add_notice"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -624,11 +789,18 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_event",
+      "original_expected_action": "add_event",
+      "human_actions": [
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "defer",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "routine",
       "tools": [
         "add_notice"
       ],
@@ -639,11 +811,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -654,11 +832,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "add_event",
-      "pred_priority": "batch",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "routine",
       "tools": [
         "add_event",
         "add_notice"
@@ -670,11 +854,18 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
+      "pred_action": "defer",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "routine",
       "tools": [
         "add_notice"
       ],
@@ -685,11 +876,18 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now",
+        "add_notice"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -700,13 +898,21 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_event",
+      "original_expected_action": "add_event",
+      "human_actions": [
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
+      "pred_action": "add_event",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "routine",
       "tools": [
-        "add_notice"
+        "add_notice",
+        "add_event"
       ],
       "error": null
     },
@@ -715,11 +921,18 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_event",
+      "original_expected_action": "add_event",
+      "human_actions": [
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
-      "pred_priority": "real_time",
+      "pred_action": "add_notice",
+      "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -730,11 +943,18 @@
       "group_id": "120363430507203277@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now",
+        "add_notice"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_notice",
-      "pred_priority": "batch",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -745,11 +965,17 @@
       "group_id": "120363430507203277@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_notice",
-      "pred_priority": "batch",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice",
         "add_task"
@@ -761,12 +987,20 @@
       "group_id": "120363430507203277@g.us",
       "recorded_pipeline_state": "NOTICE_CREATED",
       "label_action": "add_event",
+      "original_expected_action": "add_event",
+      "human_actions": [
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_event",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
+        "add_event",
         "add_notice"
       ],
       "error": null
@@ -775,12 +1009,18 @@
       "id": 16811,
       "group_id": "120363157012148587@g.us",
       "recorded_pipeline_state": "FAILED",
-      "label_action": "none",
+      "label_action": "skip",
+      "original_expected_action": "none",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -791,11 +1031,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "defer",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "routine",
       "tools": [
         "add_notice"
       ],
@@ -806,11 +1052,17 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -820,12 +1072,18 @@
       "id": 21380,
       "group_id": "120363430507203277@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "none",
+      "label_action": "skip",
+      "original_expected_action": "none",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -835,12 +1093,18 @@
       "id": 18977,
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "none",
+      "label_action": "skip",
+      "original_expected_action": "none",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -850,12 +1114,18 @@
       "id": 19275,
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "none",
+      "label_action": "skip",
+      "original_expected_action": "none",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -866,11 +1136,17 @@
       "group_id": "120363279968362864@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -881,11 +1157,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -896,11 +1178,17 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -911,11 +1199,17 @@
       "group_id": "120363390401101753@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -925,12 +1219,18 @@
       "id": 16618,
       "group_id": "120363390401101753@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "none",
+      "label_action": "skip",
+      "original_expected_action": "none",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -941,11 +1241,18 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "add_event",
+      "original_expected_action": "add_event",
+      "human_actions": [
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
+      "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -956,13 +1263,19 @@
       "group_id": "120363282818641802@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "skip",
-      "pred_priority": "noise",
-      "pred_pipeline": "NOT_ACTIONABLE",
+      "pred_action": "add_notice",
+      "pred_priority": "batch",
+      "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
-        "no_action"
+        "add_notice"
       ],
       "error": null
     },
@@ -971,11 +1284,17 @@
       "group_id": "120363157012148587@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -986,11 +1305,17 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
+      "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1001,11 +1326,17 @@
       "group_id": "120363157012148587@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1016,11 +1347,17 @@
       "group_id": "120363402591906138@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
+      "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1031,11 +1368,17 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1046,11 +1389,17 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1061,11 +1410,17 @@
       "group_id": "120363412521517701@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1076,11 +1431,17 @@
       "group_id": "120363420483556958@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "archive",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1091,11 +1452,17 @@
       "group_id": "120363390401101753@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
+      "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1105,12 +1472,18 @@
       "id": 21299,
       "group_id": "120363157012148587@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "none",
+      "label_action": "skip",
+      "original_expected_action": "none",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1121,11 +1494,17 @@
       "group_id": "120363157012148587@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1136,11 +1515,17 @@
       "group_id": "120363157012148587@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1151,11 +1536,17 @@
       "group_id": "120363390401101753@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
+      "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1166,11 +1557,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1180,12 +1577,18 @@
       "id": 17935,
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
-      "label_action": "none",
+      "label_action": "skip",
+      "original_expected_action": "none",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1196,11 +1599,17 @@
       "group_id": "120363168238198071@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
-      "pred_priority": "batch",
+      "pred_action": "add_notice",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1211,11 +1620,17 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1226,11 +1641,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "NOT_ACTIONABLE",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1241,11 +1662,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1256,11 +1683,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "add_notice",
+      "original_expected_action": "add_notice",
+      "human_actions": [
+        "add_notice"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1271,11 +1704,17 @@
       "group_id": "120363279968362864@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "add_notice",
+      "original_expected_action": "add_notice",
+      "human_actions": [
+        "add_notice"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1286,11 +1725,17 @@
       "group_id": "120363157012148587@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
+      "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1301,11 +1746,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1316,11 +1767,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1331,11 +1788,17 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "send_now",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1346,11 +1809,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "send_now",
+      "original_expected_action": "send_now",
+      "human_actions": [
+        "send_now"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_notice",
-      "pred_priority": "batch",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1361,11 +1830,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1376,11 +1851,18 @@
       "group_id": "972547860979-1599304865@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "add_event",
+      "original_expected_action": "add_event",
+      "human_actions": [
+        "add_notice",
+        "add_event"
+      ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_event",
-      "pred_priority": "batch",
+      "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "immediate",
+      "production_urgency_hint": "routine",
       "tools": [
         "add_event",
         "add_notice"
@@ -1392,11 +1874,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "archive",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1407,11 +1895,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "skip",
+      "original_expected_action": "skip",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1421,12 +1915,18 @@
       "id": 19842,
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
-      "label_action": "none",
+      "label_action": "skip",
+      "original_expected_action": "none",
+      "human_actions": [
+        "skip"
+      ],
       "label_priority": "noise",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],
@@ -1437,11 +1937,17 @@
       "group_id": "120363402591906138@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "add_notice",
+      "original_expected_action": "add_notice",
+      "human_actions": [
+        "add_notice"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "defer",
+      "pred_action": "add_notice",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
+      "llm_urgency_hint": "routine",
+      "production_urgency_hint": "time_sensitive",
       "tools": [
         "add_notice"
       ],
@@ -1452,11 +1958,17 @@
       "group_id": "120363421222455453@g.us",
       "recorded_pipeline_state": "RECEIVED",
       "label_action": "defer",
+      "original_expected_action": "defer",
+      "human_actions": [
+        "defer"
+      ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "skip",
       "pred_priority": "noise",
       "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
       "tools": [
         "no_action"
       ],

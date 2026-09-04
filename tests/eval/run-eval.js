@@ -16,7 +16,8 @@
  *     (actionable → NOTICE_CREATED, otherwise NOT_ACTIONABLE)
  *   - Precision / recall per priority level  (real_time, batch, archive, noise)
  *   - Precision / recall per expected_action (add_event, add_notice, send_now,
- *     defer, skip, none)
+ *     defer, skip). Strict and multilabel action accuracy (scored against the
+ *     row's human_actions set when present).
  *   - Confusion matrices for both axes
  *   - Cost: total input/output tokens + an approximate USD estimate
  *
@@ -31,15 +32,18 @@
  *                      --dry-run to inspect the gold set without any LLM calls.
  *   --limit N          Classify only the first N labeled messages (quick checks).
  *   --model MODEL      Override the classification model (model-matrix runs).
- *   --threshold F      Accuracy threshold for exit code (default 0.70).
+ *   --pipeline-threshold F        Pipeline-accuracy gate (default 0.70).
+ *   --threshold F                 Alias for --pipeline-threshold (backwards compat).
+ *   --action-threshold F          Multilabel action-accuracy gate (default 0.35).
+ *   --sendnow-recall-threshold F  send_now recall gate (default 0.10).
  *   --strict           Promote duplicate-ID detection to a fatal integrity error
  *                      (default: duplicates warn, and the full eval auto-dedups
  *                      by keeping the last occurrence of each ID).
  *   --out PATH         Override the results output path.
  *
  * Exit codes:
- *   0  dry-run: dataset valid  |  full run: overall accuracy ≥ threshold
- *   1  dry-run: integrity errors  |  full run: accuracy below threshold
+ *   0  dry-run: dataset valid  |  full run: all three gates passed
+ *   1  dry-run: integrity errors  |  full run: one or more gates failed
  *   2  usage / fatal error
  *
  * NOTE ON FIDELITY: the dataset stores group_id (not the display name) and no
@@ -76,7 +80,9 @@ const DEFAULT_RESULTS_PATH = path.join(__dirname, 'eval-results.json');
 // ── Taxonomy (must match the bootstrap labeler in scripts/export-eval-set.js) ──
 
 const PRIORITIES = ['real_time', 'batch', 'archive', 'noise'];
-const ACTIONS = ['add_event', 'add_notice', 'send_now', 'defer', 'skip', 'none'];
+// M2: production makes no skip/none distinction — 'none' is remapped to 'skip'
+// at load time, so the taxonomy carries only the 5 producible actions.
+const ACTIONS = ['add_event', 'add_notice', 'send_now', 'defer', 'skip'];
 const PIPELINE_STATES = ['NOTICE_CREATED', 'NOT_ACTIONABLE'];
 
 // ── Rate limiting / RAM constraints ─────────────────────────────────────────────
@@ -88,7 +94,10 @@ const BATCH_SIZE = 10;
 const REQUEST_INTERVAL_MS = 250; // ≤ 4 req/s, safely under the 5 req/s cap
 const BATCH_DELAY_MS = 1000;     // breather between batches of 10
 
-const DEFAULT_THRESHOLD = 0.70;
+// M3: the gate is a conjunction of three thresholds, not pipeline accuracy alone.
+const DEFAULT_PIPELINE_THRESHOLD = 0.70;
+const DEFAULT_ACTION_THRESHOLD = 0.35;        // multilabel action accuracy
+const DEFAULT_SENDNOW_RECALL_THRESHOLD = 0.10; // recall on the send_now class
 
 // Approximate USD per 1M tokens. Rough — edit to match current pricing.
 const PRICING = {
@@ -102,7 +111,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { dryRun: false, goldOnly: false, limit: null, model: null, threshold: DEFAULT_THRESHOLD, strict: false, out: DEFAULT_RESULTS_PATH };
+  const args = {
+    dryRun: false, goldOnly: false, limit: null, model: null,
+    pipelineThreshold: DEFAULT_PIPELINE_THRESHOLD,
+    actionThreshold: DEFAULT_ACTION_THRESHOLD,
+    sendnowRecallThreshold: DEFAULT_SENDNOW_RECALL_THRESHOLD,
+    strict: false, out: DEFAULT_RESULTS_PATH,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') args.dryRun = true;
@@ -112,8 +127,14 @@ function parseArgs(argv) {
     else if (a.startsWith('--limit=')) args.limit = parseInt(a.split('=')[1], 10);
     else if (a === '--model') args.model = argv[++i];
     else if (a.startsWith('--model=')) args.model = a.split('=')[1];
-    else if (a === '--threshold') args.threshold = parseFloat(argv[++i]);
-    else if (a.startsWith('--threshold=')) args.threshold = parseFloat(a.split('=')[1]);
+    // --threshold is a backwards-compat alias for --pipeline-threshold.
+    else if (a === '--threshold' || a === '--pipeline-threshold') args.pipelineThreshold = parseFloat(argv[++i]);
+    else if (a.startsWith('--threshold=')) args.pipelineThreshold = parseFloat(a.split('=')[1]);
+    else if (a.startsWith('--pipeline-threshold=')) args.pipelineThreshold = parseFloat(a.split('=')[1]);
+    else if (a === '--action-threshold') args.actionThreshold = parseFloat(argv[++i]);
+    else if (a.startsWith('--action-threshold=')) args.actionThreshold = parseFloat(a.split('=')[1]);
+    else if (a === '--sendnow-recall-threshold') args.sendnowRecallThreshold = parseFloat(argv[++i]);
+    else if (a.startsWith('--sendnow-recall-threshold=')) args.sendnowRecallThreshold = parseFloat(a.split('=')[1]);
     else if (a === '--out') args.out = argv[++i];
     else if (a.startsWith('--out=')) args.out = a.split('=')[1];
     else if (a === '--help' || a === '-h') { printUsage(); process.exit(0); }
@@ -122,8 +143,14 @@ function parseArgs(argv) {
   if (args.limit != null && (!Number.isFinite(args.limit) || args.limit <= 0)) {
     console.error('[eval] --limit must be a positive integer'); process.exit(2);
   }
-  if (!Number.isFinite(args.threshold) || args.threshold < 0 || args.threshold > 1) {
-    console.error('[eval] --threshold must be between 0 and 1'); process.exit(2);
+  for (const [name, val] of [
+    ['--pipeline-threshold', args.pipelineThreshold],
+    ['--action-threshold', args.actionThreshold],
+    ['--sendnow-recall-threshold', args.sendnowRecallThreshold],
+  ]) {
+    if (!Number.isFinite(val) || val < 0 || val > 1) {
+      console.error(`[eval] ${name} must be between 0 and 1`); process.exit(2);
+    }
   }
   return args;
 }
@@ -135,7 +162,10 @@ function printUsage() {
   --gold-only        Restrict to human-labeled gold rows (label_source==='human')
   --limit N          Classify only the first N labeled messages
   --model MODEL      Override the classification model
-  --threshold F      Accuracy threshold for exit code (default ${DEFAULT_THRESHOLD})
+  --pipeline-threshold F     Pipeline-accuracy gate (default ${DEFAULT_PIPELINE_THRESHOLD})
+  --threshold F              Alias for --pipeline-threshold (backwards compat)
+  --action-threshold F       Multilabel action-accuracy gate (default ${DEFAULT_ACTION_THRESHOLD})
+  --sendnow-recall-threshold F  send_now recall gate (default ${DEFAULT_SENDNOW_RECALL_THRESHOLD})
   --strict           Treat duplicate IDs as a fatal integrity error
   --out PATH         Results output path (default tests/eval/eval-results.json)
   -h, --help         Show this help`);
@@ -175,6 +205,18 @@ async function loadDataset() {
     } catch (e) {
       fatal.push(`line ${lineNo}: invalid JSON (${e.message})`);
       continue;
+    }
+
+    // M2: production has no skip/none distinction. Remap 'none' → 'skip' in both
+    // the primary label and the multilabel human_actions, keeping the pre-remap
+    // value as original_expected_action for provenance. Done before validation so
+    // 'none' (no longer in ACTIONS) doesn't read as an invalid label.
+    if (rec.label) {
+      rec.original_expected_action = rec.label.expected_action;
+      if (rec.label.expected_action === 'none') rec.label.expected_action = 'skip';
+    }
+    if (Array.isArray(rec.human_actions)) {
+      rec.human_actions = rec.human_actions.map((a) => (a === 'none' ? 'skip' : a));
     }
 
     // Required top-level fields (body may legitimately be empty for media-only,
@@ -304,21 +346,51 @@ function isActionable(toolCalls) {
   return toolCalls.some((t) => ['add_notice', 'add_event', 'add_task', 'add_homework'].includes(t.name));
 }
 
+// M4: production overwrites the LLM's urgency_hint with computeUrgencyHint()
+// (src/agent.js) before storing the notice, so the eval must score THAT value,
+// not the LLM guess. computeUrgencyHint is required lazily — only reached on the
+// full-eval path when a real add_notice tool call exists — so --dry-run stays
+// runnable in CI with no src/ modules, no DB, and no secrets.
+let _computeUrgencyHint = null;
+function getComputeUrgencyHint() {
+  if (!_computeUrgencyHint) {
+    _computeUrgencyHint = require('../../src/agent').computeUrgencyHint;
+  }
+  return _computeUrgencyHint;
+}
+
+/**
+ * The urgency production would store for this notice: reconstruct the action
+ * object from the tool input and run the same deterministic classifier, using
+ * the message's recorded timestamp (NOT Date.now()) so date-relative rules are
+ * evaluated as of when the message actually arrived.
+ */
+function productionUrgency(notice, messageTimestamp) {
+  const input = (notice && notice.input) || {};
+  const action = {
+    content: input.content || '',
+    relevant_datetime: input.relevant_datetime,
+    relevance_date: input.relevance_date,
+    relevance_time: input.relevance_time,
+  };
+  const ts = Number(messageTimestamp);
+  return getComputeUrgencyHint()(action, Number.isFinite(ts) ? ts : Date.now());
+}
+
 /** Map production tool calls → the label's expected_action taxonomy. */
-function predictAction(toolCalls) {
+function predictAction(toolCalls, messageTimestamp) {
   const names = toolNames(toolCalls);
   if (names.includes('add_event')) return 'add_event';
   const notice = firstNotice(toolCalls);
   if (notice) {
-    const u = notice.input && notice.input.urgency_hint;
+    // Score the deterministic urgency production stores, not the LLM's guess.
+    const u = productionUrgency(notice, messageTimestamp);
     if (u === 'immediate') return 'send_now';        // deliver now
     if (u === 'time_sensitive') return 'add_notice'; // notice, soon
     return 'defer';                                  // routine / unspecified
   }
   if (names.includes('add_task') || names.includes('add_homework')) return 'add_notice';
-  // no_action / download_image / log_profile_contradiction / nothing.
-  // Both label buckets "skip" (majority) and "none" collapse here; we predict
-  // "skip" since production has no signal to distinguish them.
+  // no_action / download_image / log_profile_contradiction / nothing → skip.
   return 'skip';
 }
 
@@ -586,9 +658,15 @@ async function runEval(loaded, args) {
       }
     }
 
-    const predAction = recError ? null : predictAction(toolCalls);
+    const predAction = recError ? null : predictAction(toolCalls, rec.timestamp);
     const predPriority = recError ? null : predictPriority(toolCalls);
     const predPipeline = recError ? null : predictPipeline(toolCalls);
+
+    // Urgency diagnostics: the LLM's raw guess vs the deterministic value
+    // production actually stores (M4). Only meaningful when a notice was emitted.
+    const noticeCall = recError ? null : firstNotice(toolCalls);
+    const llmUrgencyHint = noticeCall && noticeCall.input ? (noticeCall.input.urgency_hint ?? null) : null;
+    const productionUrgencyHint = noticeCall ? productionUrgency(noticeCall, rec.timestamp) : null;
 
     perRecord.push({
       id: rec.id,
@@ -596,12 +674,17 @@ async function runEval(loaded, args) {
       recorded_pipeline_state: rec.pipeline_state || null,
       // ground truth (label)
       label_action: rec.label.expected_action,
+      original_expected_action: rec.original_expected_action ?? rec.label.expected_action,
+      human_actions: Array.isArray(rec.human_actions) ? rec.human_actions : null,
       label_priority: rec.label.priority,
       label_pipeline: labelPipeline(rec.label.expected_action),
       // prediction
       pred_action: predAction,
       pred_priority: predPriority,
       pred_pipeline: predPipeline,
+      // urgency diagnostics (M4)
+      llm_urgency_hint: llmUrgencyHint,
+      production_urgency_hint: productionUrgencyHint,
       tools: toolCalls.map((t) => t.name),
       error: recError,
     });
@@ -626,8 +709,36 @@ async function runEval(loaded, args) {
   const priorityResult = prf(priorityPairs, PRIORITIES);
   const pipelineResult = prf(pipelinePairs, PIPELINE_STATES);
 
-  const overallAccuracy = pipelineResult.accuracy ?? 0;
-  const passed = overallAccuracy >= args.threshold;
+  // ── M1: multilabel action accuracy ──
+  // A prediction counts as correct if it appears in the row's human_actions set
+  // (40+ gold rows list several valid actions), falling back to the single
+  // expected_action when human_actions is absent.
+  const validActionsFor = (r) =>
+    (Array.isArray(r.human_actions) && r.human_actions.length ? r.human_actions : [r.label_action]);
+  let multilabelHits = 0;
+  let offPrimaryHits = 0; // multilabel hit on an action other than expected_action
+  for (const r of scored) {
+    const valid = validActionsFor(r);
+    if (valid.includes(r.pred_action)) {
+      multilabelHits++;
+      if (r.pred_action !== r.label_action) offPrimaryHits++;
+    }
+  }
+  const accuracyStrict = actionResult.accuracy ?? 0;           // pred === expected_action
+  const accuracyMultilabel = scored.length ? multilabelHits / scored.length : 0;
+
+  // ── M3: gate on a conjunction, not pipeline accuracy alone ──
+  const pipelineAccuracy = pipelineResult.accuracy ?? 0;
+  const sendnowRecall = actionResult.per_class.send_now
+    ? (actionResult.per_class.send_now.recall ?? 0)
+    : 0;
+  const gate = {
+    pipeline:       { value: round(pipelineAccuracy), threshold: args.pipelineThreshold, passed: pipelineAccuracy >= args.pipelineThreshold },
+    action:         { value: round(accuracyMultilabel), threshold: args.actionThreshold, passed: accuracyMultilabel >= args.actionThreshold },
+    sendnow_recall: { value: round(sendnowRecall), threshold: args.sendnowRecallThreshold, passed: sendnowRecall >= args.sendnowRecallThreshold },
+  };
+  const overallAccuracy = pipelineAccuracy; // preserved for backwards compat
+  const passed = gate.pipeline.passed && gate.action.passed && gate.sendnow_recall.passed;
 
   const totalTokens = inputTokens + outputTokens;
   const cost = estimateCost(model, inputTokens, outputTokens);
@@ -636,8 +747,14 @@ async function runEval(loaded, args) {
     generated_at: new Date().toISOString(),
     model,
     dataset: path.relative(path.join(__dirname, '..', '..'), DATASET_PATH),
-    threshold: args.threshold,
+    thresholds: {
+      pipeline: args.pipelineThreshold,
+      action: args.actionThreshold,
+      sendnow_recall: args.sendnowRecallThreshold,
+    },
+    threshold: args.pipelineThreshold, // backwards-compat: old single-threshold field
     overall_accuracy: overallAccuracy,
+    gate,
     passed,
     counts: {
       total_records: records.length,
@@ -670,7 +787,11 @@ async function runEval(loaded, args) {
       confusion_matrix: confusion(priorityPairs, PRIORITIES),
     },
     expected_action: {
-      accuracy: actionResult.accuracy,
+      accuracy: actionResult.accuracy,          // == accuracy_strict, kept for compat
+      accuracy_strict: round(accuracyStrict),
+      accuracy_multilabel: round(accuracyMultilabel),
+      multilabel_hits: multilabelHits,
+      multilabel_off_primary_hits: offPrimaryHits,
       macro_precision: actionResult.macro_precision,
       macro_recall: actionResult.macro_recall,
       macro_f1: actionResult.macro_f1,
@@ -689,7 +810,9 @@ async function runEval(loaded, args) {
   console.log(`[eval] RESULTS — model: ${model}`);
   console.log('='.repeat(64));
   console.log(`Scored: ${scored.length}/${perRecord.length} (errors: ${errors}, empty: ${skippedEmpty})`);
-  console.log(`\nOverall accuracy (pipeline_state vs label): ${overallAccuracy.toFixed(4)}  [threshold ${args.threshold}]`);
+  console.log(`\nOverall accuracy (pipeline_state vs label): ${overallAccuracy.toFixed(4)}`);
+  console.log(`Action accuracy — strict: ${accuracyStrict.toFixed(4)}   multilabel: ${accuracyMultilabel.toFixed(4)} ` +
+    `(${multilabelHits} hit(s), ${offPrimaryHits} on a non-primary valid action)`);
 
   printPRF('Priority', priorityResult, PRIORITIES);
   printConfusion('Priority confusion', results.priority.confusion_matrix, PRIORITIES);
@@ -703,7 +826,14 @@ async function runEval(loaded, args) {
     (cost.estimated_usd != null ? `  (~$${cost.estimated_usd})` : '  (pricing unknown for this model)'));
 
   console.log(`\nResults written to ${path.relative(process.cwd(), args.out)}`);
-  console.log(`\n[eval] ${passed ? '✓ PASS' : '✗ FAIL'} — accuracy ${overallAccuracy.toFixed(4)} ${passed ? '≥' : '<'} threshold ${args.threshold}`);
+
+  // ── M3: three-way gate ──
+  const mark = (g) => (g.passed ? '✓' : '✗');
+  console.log('\n[eval] Gate (all must pass):');
+  console.log(`[eval]   ${mark(gate.pipeline)} pipeline accuracy      ${gate.pipeline.value?.toFixed(4)} ≥ ${gate.pipeline.threshold}`);
+  console.log(`[eval]   ${mark(gate.action)} action accuracy (ML)    ${gate.action.value?.toFixed(4)} ≥ ${gate.action.threshold}`);
+  console.log(`[eval]   ${mark(gate.sendnow_recall)} send_now recall         ${gate.sendnow_recall.value?.toFixed(4)} ≥ ${gate.sendnow_recall.threshold}`);
+  console.log(`\n[eval] ${passed ? '✓ PASS' : '✗ FAIL'} — ${passed ? 'all gates met' : 'one or more gates failed'}`);
 
   return passed ? 0 : 1;
 }
