@@ -235,6 +235,27 @@ check('P-013', 'integrity check function exists in db.js', () => {
   }
 });
 
+// ── P-015 — No Calendar Event Without a Validated Source ─────────────────────
+check('P-015', 'validateCalendarWrite exists in sourceValidator.js', () => {
+  const src = readSrc('src/validation/sourceValidator.js');
+  if (src === null) return { skip: 'src/validation/sourceValidator.js not present' };
+  if (!src.includes('function validateCalendarWrite')) {
+    return 'sourceValidator.js must export validateCalendarWrite() to ground agent-proposed calendar writes.';
+  }
+});
+
+check('P-015', 'processEventAction validates the source before writing', () => {
+  const raw = readSrc('src/calendarGate.js');
+  if (raw === null) return { skip: 'src/calendarGate.js not present' };
+  const src = codeOnly(raw);
+  if (!/validateCalendarWrite\s*\(/.test(src)) {
+    return 'calendarGate.js:processEventAction must call validateCalendarWrite() before writing (P-015).';
+  }
+  if (!/logBlocked\s*\(/.test(src)) {
+    return 'calendarGate.js must logBlocked() when a calendar write is refused (P-015).';
+  }
+});
+
 // ── P-014 — Every Shim Field Has a Fixture Test ──────────────────────────────
 check('P-014', 'baileys shim fixture suite is present', () => {
   const runner = path.join(ROOT, 'tests/shim/run.js');

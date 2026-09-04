@@ -119,6 +119,114 @@ function validateSource(sourceType, sourceId) {
   return { valid: true, record };
 }
 
+// ── G1: calendar-write source grounding ─────────────────────────────────────────
+// A calendar event proposed by an *agent* (Lipa / OpenClaw) — as opposed to one
+// derived by calendar-bridge.js from a notice's own fields — must be grounded in
+// a real source notice. Every non-null proposed field (date, time, location) has
+// to appear in that notice; a value the source does not contain is treated as
+// fabricated and the write is rejected. This is the guard that would have caught
+// ISSUE-025 (Lipa inventing an 18:30 parent-meeting time the notice never stated).
+
+/**
+ * Plausible textual forms an ISO date (YYYY-MM-DD) could take in a Hebrew
+ * WhatsApp notice: "9.9", "09/09", "9.9.2026", "9.9.26", the ISO itself, etc.
+ * Israel writes day-first (D.M / D.M.Y), so we only emit day-before-month forms.
+ */
+function dateVariants(isoDate) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || ''));
+  if (!m) return [];
+  const [, yyyy, mm, dd] = m;
+  const yy = yyyy.slice(2);
+  const days = [String(Number(dd)), dd];    // "9" and "09"
+  const months = [String(Number(mm)), mm];  // "9" and "09"
+  const seps = ['.', '/', '-'];
+  const out = new Set([isoDate]);
+  for (const d of days) {
+    for (const mo of months) {
+      for (const sep of seps) {
+        out.add(`${d}${sep}${mo}`);
+        out.add(`${d}${sep}${mo}${sep}${yyyy}`);
+        out.add(`${d}${sep}${mo}${sep}${yy}`);
+      }
+    }
+  }
+  return [...out];
+}
+
+/** Plausible textual forms of an HH:MM time ("18:30", "18.30", "8:30", "08:30"). */
+function timeVariants(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+  if (!m) return [String(hhmm || '').trim()].filter(Boolean);
+  const [, h, min] = m;
+  const hp = h.padStart(2, '0');
+  return [...new Set([`${h}:${min}`, `${hp}:${min}`, `${h}.${min}`, `${hp}.${min}`])];
+}
+
+function anyAppearsIn(haystack, variants) {
+  if (!haystack) return false;
+  const s = String(haystack);
+  return variants.some(v => v && s.includes(v));
+}
+
+/**
+ * validateCalendarWrite(sourceNoticeId, proposedFields)
+ * Returns { valid: true } or { valid: false, reason, ungrounded_fields: [...] }.
+ *
+ * proposedFields: { date?: 'YYYY-MM-DD', time?: 'HH:MM', location?: string, summary?: string }
+ *
+ * Grounding rules (P-015 — a value absent from the source is never inferred):
+ *   - date     : must equal notice.relevance_date, or appear (in any plausible
+ *                Hebrew form) in notice.content.
+ *   - time     : must equal notice.relevance_time, or appear in notice.content.
+ *                A time the source never states is a REJECTION.
+ *   - location : must appear (case-insensitive substring) in notice.content.
+ * summary is not grounded — it is a human-facing label, not a factual claim.
+ */
+function validateCalendarWrite(sourceNoticeId, proposedFields = {}) {
+  const id = Number(sourceNoticeId);
+  if (!Number.isInteger(id) || id <= 0) {
+    return { valid: false, reason: `invalid source_notice_id "${sourceNoticeId}"`, ungrounded_fields: [] };
+  }
+
+  const notice = getDB().prepare('SELECT * FROM notices WHERE id = ?').get(id);
+  if (!notice) {
+    return { valid: false, reason: `no notice with id=${id}`, ungrounded_fields: [] };
+  }
+
+  const content = notice.content || '';
+  const ungrounded = [];
+
+  if (proposedFields.date) {
+    const grounded =
+      (notice.relevance_date && notice.relevance_date === proposedFields.date) ||
+      anyAppearsIn(content, dateVariants(proposedFields.date));
+    if (!grounded) ungrounded.push('date');
+  }
+
+  if (proposedFields.time) {
+    const grounded =
+      (notice.relevance_time && notice.relevance_time === proposedFields.time) ||
+      anyAppearsIn(content, timeVariants(proposedFields.time));
+    if (!grounded) ungrounded.push('time');
+  }
+
+  if (proposedFields.location) {
+    const loc = String(proposedFields.location).trim();
+    if (loc && !content.toLowerCase().includes(loc.toLowerCase())) {
+      ungrounded.push('location');
+    }
+  }
+
+  if (ungrounded.length > 0) {
+    return {
+      valid: false,
+      reason: `calendar write for notice #${id} proposes field(s) absent from the source: ${ungrounded.join(', ')}`,
+      ungrounded_fields: ungrounded,
+    };
+  }
+  return { valid: true };
+}
+
 /**
  * recordSent — mark a (sourceType, sourceId) as reminded. Idempotent via the
  * UNIQUE(source_type, source_id) constraint.
@@ -149,4 +257,4 @@ function logBlocked(actionType, payload, reason) {
   }
 }
 
-module.exports = { validateSource, recordSent, logBlocked, VALID_SOURCE_TYPES };
+module.exports = { validateSource, validateCalendarWrite, recordSent, logBlocked, VALID_SOURCE_TYPES };

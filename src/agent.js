@@ -234,6 +234,7 @@ async function _executeAction(action, senderName) {
             rawMessage: action._rawMessage || null,
             groupName:  action._groupName  || null,
             sendToMasterGroup,
+            source_notice_id: action._source_notice_id != null ? action._source_notice_id : null,
           });
 
           const ok = ['created', 'updated'].includes(result.action);
@@ -248,6 +249,10 @@ async function _executeAction(action, senderName) {
           if (!ok && result.action === 'error') {
             return { type: 'add_event', ok: false, action: 'add_event', reason: result.reason || 'calendar write failed', details: result.details || null, title: action.summary || action.title };
           }
+          if (result.action === 'blocked') {
+            // G1/P-015: write refused because a proposed field was not grounded in the source.
+            return { type: 'add_event', ok: false, action: 'blocked', reason: result.reason, ungrounded_fields: result.ungrounded_fields || [], title: action.summary || action.title };
+          }
           return { type: 'add_event', ok, action: result.action, title: action.summary || action.title };
         } catch (err) {
           console.error('[Agent] processEventAction error:', err.message);
@@ -257,6 +262,7 @@ async function _executeAction(action, senderName) {
 
       case 'add_notice': {
         const { normalizeNoticeContent } = require('./normalizer');
+        let noticeId = null;
         const noticeContent = action.content || action.summary || '';
         // Apply deterministic date normalization using anchor date
         const anchorDate = action.source_timestamp
@@ -309,7 +315,9 @@ async function _executeAction(action, senderName) {
           })();
           if (existingForSlot) {
             console.log('[Agent] Dedup: skipping notice for ' + action.group_name + ' ' + action.relevance_date + ' ' + action.relevance_time + ' - existing #' + existingForSlot.id + ' (date=' + existingForSlot.relevance_date + ') already covers this slot');
-            return { type: 'add_notice', ok: true, content: noticeContent, isSideEffect: true, deduped: true };
+            // Return the existing notice id so a companion add_event can still
+            // ground itself against a real source (G1/P-015).
+            return { type: 'add_notice', ok: true, content: noticeContent, isSideEffect: true, deduped: true, noticeId: existingForSlot.id };
           }
           // Rules-based urgency classifier - deterministic, no LLM guessing
           const urgencyHint = computeUrgencyHint(action, Date.now());
@@ -349,7 +357,7 @@ async function _executeAction(action, senderName) {
             console.warn('[Agent] date-parse error (non-fatal):', parseErr.message);
           }
 
-          const noticeId = saveNotice({
+          noticeId = saveNotice({
             group_name:        action.group_name || 'unknown',
             content:           finalContent,
             relevance_date:    finalRelevanceDate,
@@ -392,7 +400,7 @@ async function _executeAction(action, senderName) {
           }
           console.log(`[Agent] Saved notice: "${finalContent.substring(0, 60)}" thread=${action.thread_key || 'none'} rel=${action.relevance_date || 'undated'}`);
         }
-        return { type: 'add_notice', ok: true, content: finalContent, isSideEffect: true };
+        return { type: 'add_notice', ok: true, content: finalContent, isSideEffect: true, noticeId };
       }
 
       case 'add_homework': {
@@ -1300,7 +1308,16 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
           let pipelineState = 'NOT_ACTIONABLE'; // will be updated if notice/event created
           let noticeCreatedId = null;
 
-          for (const tool of toolUseBlocks) {
+          // G1/P-015: process add_notice before add_event (stable) so a companion
+          // notice's id is available to ground the calendar write. The model does
+          // not guarantee tool order; without this, an add_event emitted first
+          // would silently skip source validation.
+          const orderedTools = [...toolUseBlocks].sort((a, b) => {
+            const rank = t => (t.name === 'add_notice' ? 0 : 1);
+            return rank(a) - rank(b);
+          });
+
+          for (const tool of orderedTools) {
             const input = tool.input || {};
 
             if (tool.name === 'no_action') {
@@ -1339,7 +1356,12 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
             }
 
             if (tool.name === 'add_event') {
-              const eventAction = { action: 'add_event', ...input, _isBacklog: isBacklog, _rawMessage: body, _groupName: groupName };
+              // G1/P-015: ground this write in the companion add_notice created
+              // earlier in this same message's tool loop, when one exists.
+              if (noticeCreatedId == null) {
+                console.log(`[Agent] Group "${groupName}": add_event with no companion notice — proceeding without source validation`);
+              }
+              const eventAction = { action: 'add_event', ...input, _isBacklog: isBacklog, _rawMessage: body, _groupName: groupName, _source_notice_id: noticeCreatedId };
               const result = await executeAction(eventAction, sender);
               if (result) {
                 if (result.isSideEffect) sideEffects.push(result);

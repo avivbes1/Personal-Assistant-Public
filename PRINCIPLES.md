@@ -307,6 +307,31 @@ grep -c "voiceSend\|/send-message" deliver-batch.js deliver-immediate.js  # Expe
 
 ---
 
+## P-015 — No Calendar Event Without a Validated Source
+
+**Principle:** No calendar event, reminder, or family-facing factual claim is written without a validated source row. A value absent from the source is reported as absent, never inferred.
+
+**Source incident:** ISSUE-025 — Lipa fabricated an 18:30 time for a parent meeting (אסיפת הורים) when the source notice only carried a date. `guardedSend` + `sourceValidator` covered reminder sends, but calendar writes went through `calendarGate.js:processEventAction()` with no source validation, so an agent-proposed time that appeared nowhere in the source was written to the family calendar.
+
+**Root cause:** the guard boundary stopped at reminder sends. Calendar writes — the other outbound factual surface — had no equivalent grounding check, so any field an agent proposed (date, time, location) was trusted verbatim.
+
+**Rule:**
+- Agent-proposed calendar writes carry a `source_notice_id`. `processEventAction()` calls `validateCalendarWrite(source_notice_id, {date, time, location, summary})` before proceeding.
+- Each non-null proposed field must be grounded in the source notice: `date` matches `relevance_date` or appears in `content`; `time` matches `relevance_time` or appears in `content`; `location` appears in `content`. A field the source never states (e.g. a time it never mentioned) is a rejection.
+- On rejection: `logBlocked('calendar_write', action, reason)` and return `{ action: 'blocked' }` — nothing is written.
+- Writes with no `source_notice_id` (e.g. a direct user request through Lipa) proceed but log a warning, so the ungrounded path stays visible.
+- `calendar-bridge.js:createCalendarForNotice()` derives its fields from the notice row itself and is not an agent proposal — it is out of scope for this guard.
+
+**Verification:**
+```bash
+# Check: the grounding validator exists and calendarGate calls it before writing
+grep -n "function validateCalendarWrite" src/validation/sourceValidator.js
+grep -n "validateCalendarWrite" src/calendarGate.js
+# Expected: a definition in sourceValidator.js and a call in calendarGate.js
+```
+
+---
+
 ## P-014 — Every Shim Field Has a Fixture Test
 
 **Principle:** Every field of the whatsapp-web.js compatibility surface in `src/baileys-client.js` has a fixture test. No shim field may be added or changed without one.

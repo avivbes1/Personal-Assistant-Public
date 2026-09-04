@@ -17,6 +17,7 @@ const https   = require('https');
 const config  = require('./config');
 const { addSharedEvent, updateCalendarEvent, listEventsForDateRange } = require('./calendar');
 const { logCalendarIntent } = require('./db');
+const { validateCalendarWrite, logBlocked } = require('./validation/sourceValidator');
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -381,9 +382,33 @@ function padTime(timeStr, durationMin) {
  * @param {string} opts.rawMessage Original WhatsApp message (for time-source detection)
  * @param {string} opts.groupName  Group name (if from monitored group)
  * @param {function} opts.sendToMasterGroup  Fn to send WA message to master group
+ * @param {number} opts.source_notice_id  Notice this write is grounded in (G1/P-015)
  * @returns {Promise<{action: string, gcalId?: string, event?: object, reason?: string}>}
  */
-async function processEventAction(action, { rawMessage, groupName, sendToMasterGroup } = {}) {
+async function processEventAction(action, { rawMessage, groupName, sendToMasterGroup, source_notice_id } = {}) {
+  // G1 / P-015: no calendar event without a validated source. When this write is
+  // grounded in a notice, every agent-proposed field (date/time/location) must
+  // appear in that notice — a value the source never stated is fabricated and the
+  // write is blocked. Absent an id (e.g. a direct user request through Lipa) we
+  // proceed but log a warning so the ungrounded path stays visible.
+  const sourceNoticeId = source_notice_id != null ? source_notice_id : action.source_notice_id;
+  if (sourceNoticeId != null) {
+    const proposed = {
+      date:     action.date || null,
+      time:     action.time || null,
+      location: action.location || null,
+      summary:  action.summary || action.title || null,
+    };
+    const check = validateCalendarWrite(sourceNoticeId, proposed);
+    if (!check.valid) {
+      logBlocked('calendar_write', { ...action, source_notice_id: sourceNoticeId }, check.reason);
+      console.warn(`[CalendarGate] BLOCKED calendar write (notice #${sourceNoticeId}): ${check.reason}`);
+      return { action: 'blocked', reason: check.reason, ungrounded_fields: check.ungrounded_fields || [] };
+    }
+  } else {
+    console.warn(`[CalendarGate] Calendar write with no source_notice_id ("${action.summary || action.title || 'event'}") — proceeding WITHOUT source validation`);
+  }
+
   // Stage 1: Extract & normalise candidate
   const candidate = await extractCandidate(action, rawMessage, groupName);
   if (!candidate) return { action: 'skipped', reason: 'extraction failed' };
