@@ -25,6 +25,10 @@
  * Flags:
  *   --dry-run          Validate dataset integrity only. No LLM calls, no src/
  *                      modules required, no DB. Used by CI.
+ *   --gold-only        Restrict the run to human-labeled gold rows
+ *                      (label_source === 'human'). Prints a gold-set summary
+ *                      (total unique messages + per-action counts). Combine with
+ *                      --dry-run to inspect the gold set without any LLM calls.
  *   --limit N          Classify only the first N labeled messages (quick checks).
  *   --model MODEL      Override the classification model (model-matrix runs).
  *   --threshold F      Accuracy threshold for exit code (default 0.70).
@@ -98,10 +102,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { dryRun: false, limit: null, model: null, threshold: DEFAULT_THRESHOLD, strict: false, out: DEFAULT_RESULTS_PATH };
+  const args = { dryRun: false, goldOnly: false, limit: null, model: null, threshold: DEFAULT_THRESHOLD, strict: false, out: DEFAULT_RESULTS_PATH };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') args.dryRun = true;
+    else if (a === '--gold-only') args.goldOnly = true;
     else if (a === '--strict') args.strict = true;
     else if (a === '--limit') args.limit = parseInt(argv[++i], 10);
     else if (a.startsWith('--limit=')) args.limit = parseInt(a.split('=')[1], 10);
@@ -127,6 +132,7 @@ function printUsage() {
   console.log(`Usage: node tests/eval/run-eval.js [options]
 
   --dry-run          Validate dataset integrity only (no LLM, no DB) — used by CI
+  --gold-only        Restrict to human-labeled gold rows (label_source==='human')
   --limit N          Classify only the first N labeled messages
   --model MODEL      Override the classification model
   --threshold F      Accuracy threshold for exit code (default ${DEFAULT_THRESHOLD})
@@ -236,6 +242,36 @@ function analyzeDuplicates(records) {
     if (labelKeys.size > 1) conflictingIds.push(id);
   }
   return { uniqueIds: byId.size, dupIds, dupLines, conflictingIds };
+}
+
+/** Keep only human-labeled gold rows (label_source === 'human'). */
+function filterGold(records) {
+  return records.filter((r) => r.label_source === 'human');
+}
+
+/**
+ * Summarize the gold set: unique labeled messages (deduped by id, since the
+ * dataset stores the same message id on multiple lines) and per-action counts
+ * over the label's primary expected_action.
+ */
+function goldStats(records) {
+  const unique = dedupById(records.filter((r) => r.label));
+  const byAction = {};
+  for (const c of ACTIONS) byAction[c] = 0;
+  for (const r of unique) {
+    const a = r.label.expected_action;
+    byAction[a] = (byAction[a] || 0) + 1;
+  }
+  return { totalRows: records.length, uniqueMessages: unique.length, byAction };
+}
+
+function printGoldSummary(records) {
+  const { totalRows, uniqueMessages, byAction } = goldStats(records);
+  console.log('\n[eval] Gold set (human-labeled) summary:');
+  console.log(`[eval]   gold dataset rows:      ${totalRows}`);
+  console.log(`[eval]   unique gold messages:   ${uniqueMessages}`);
+  console.log('[eval]   per-action (primary expected_action, deduped by id):');
+  for (const c of ACTIONS) console.log(`[eval]     ${c.padEnd(12)} ${byAction[c]}`);
 }
 
 /** Collapse to one record per id, keeping the LAST occurrence. */
@@ -679,6 +715,24 @@ async function main() {
 
   const loaded = await loadDataset();
 
+  // --gold-only: narrow the working set to human-labeled gold rows. The full
+  // dataset is still validated by loadDataset() (fatal/warnings are global), but
+  // everything downstream operates on the gold subset.
+  if (args.goldOnly) {
+    const before = loaded.records.length;
+    loaded.records = filterGold(loaded.records);
+    loaded.duplicates = analyzeDuplicates(loaded.records);
+    printGoldSummary(loaded.records);
+    console.log(
+      `[eval] --gold-only: ${loaded.records.length} human-labeled row(s) of ${before} total ` +
+        `→ ${loaded.duplicates.uniqueIds} unique gold message(s).`
+    );
+    if (loaded.records.length === 0) {
+      console.error('[eval] --gold-only: no rows with label_source === "human". Nothing to do.');
+      process.exit(2);
+    }
+  }
+
   const code = args.dryRun ? runDryRun(loaded, args) : await runEval(loaded, args);
   process.exit(code);
 }
@@ -700,6 +754,8 @@ module.exports = {
   confusion,
   analyzeDuplicates,
   dedupById,
+  filterGold,
+  goldStats,
   estimateCost,
   PRIORITIES,
   ACTIONS,
