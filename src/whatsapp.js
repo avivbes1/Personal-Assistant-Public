@@ -48,7 +48,7 @@ async function alertUnmatchedReply() {
   }
 }
 
-const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, setGroupMonitoring, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, getPendingGroupQuestionByStanza, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus } = require('./db');
+const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, setGroupMonitoring, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, getPendingGroupQuestionByStanza, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus, updateMessageBodyByStanza } = require('./db');
 const { archiveMedia } = require('./media-archive');
 const { resolveMembersInText } = require('./family-profiles');
 const { validateOutgoing, repairMessage } = require('./validate-outgoing');
@@ -514,7 +514,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
     // Save to DB (skip if caller already saved to avoid duplicates)
     let messageId;
     if (!alreadySaved) {
-      messageId = saveMessage({ group_id: groupId, sender, body, timestamp: msg.timestamp * 1000 });
+      messageId = saveMessage({ group_id: groupId, sender, body, timestamp: msg.timestamp * 1000, stanza_id: msg.id?.id });
       recordMessagePersisted();
     } else {
       // Update the already-saved row with the extracted body if we got real content
@@ -784,7 +784,7 @@ async function scanGroupHistory(chat, { saveDays = 7, parseDays = 1 } = {}) {
       }
 
       // Always save to DB for context
-      saveMessage({ group_id: groupId, sender, body, timestamp: msgTs });
+      saveMessage({ group_id: groupId, sender, body, timestamp: msgTs, stanza_id: msg.id?.id });
       recordMessagePersisted();
       saved++;
 
@@ -1631,6 +1631,33 @@ function initWhatsApp() {
       }
     } catch (err) {
       logger.error({ component: 'WhatsApp', err: err.message }, 'message handler error');
+    }
+  });
+
+  // ── E1: message edits ──
+  // A WhatsApp edit updates the stored message body and re-queues it for
+  // extraction, so a stale notice can be refreshed from the corrected text.
+  client.on('message_edit', async ({ stanzaId, groupId, newBody }) => {
+    try {
+      // Only process edits for monitored groups. isMonitoredGroup expects a
+      // msg-like object; give it just enough to run its DB + config-name checks.
+      const monitored = await isMonitoredGroup({
+        from: groupId,
+        getChat: async () => client.getChatById(groupId),
+      });
+      if (!monitored) return;
+
+      const msgId = updateMessageBodyByStanza(stanzaId, groupId, newBody);
+      if (!msgId) {
+        logger.info({ component: 'WhatsApp', stanzaId, groupId }, 'Edit for unknown message — ignoring');
+        return;
+      }
+
+      // updateMessageBodyByStanza already reset pipeline_state='RECEIVED' and
+      // processed=0; the next extraction cycle picks the row up.
+      logger.info({ component: 'WhatsApp', stanzaId, msgId, preview: newBody.substring(0, 60) }, 'Message edit captured — re-queued for extraction');
+    } catch (err) {
+      logger.error({ component: 'WhatsApp', err: err.message }, 'message_edit handler error');
     }
   });
 

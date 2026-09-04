@@ -557,6 +557,32 @@ function initDB() {
   try { db.exec('ALTER TABLE messages ADD COLUMN media_retry_count INTEGER DEFAULT 0'); } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_media_status ON messages(media_status, media_retry_count)'); } catch (_) {}
 
+  // ── Pipeline-state columns (migration 004, applied inline) ──────────────────
+  // These originally lived only in migrations/004_pipeline_state.sql, which no
+  // runner executes — so fresh checkouts and isolated test DBs never got them and
+  // any pipeline_state query crashed. Adding them here (idempotent) keeps the live
+  // DB unchanged while making a from-scratch initDB() self-sufficient.
+  try { db.exec("ALTER TABLE messages ADD COLUMN pipeline_state TEXT DEFAULT 'RECEIVED'"); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN pipeline_error TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN processing_started_at INTEGER'); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN processing_completed_at INTEGER'); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN notice_id INTEGER'); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN retry_count INTEGER DEFAULT 0'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_pipeline_state ON messages(pipeline_state, processing_started_at)'); } catch (_) {}
+
+  // ── E1: message-edit capture (messages.update) ──────────────────────────────
+  // stanza_id is the stable WhatsApp message id (rawMsg.key.id); edits arrive
+  // keyed on it. body_history keeps prior bodies so an edit is auditable; the old
+  // body is never silently lost. updated_at records the last edit time.
+  try { db.exec('ALTER TABLE messages ADD COLUMN stanza_id TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN body_history TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN updated_at INTEGER'); } catch (_) {}
+  // Non-unique index for edit lookups by (group_id, stanza_id). The legacy dedup
+  // UNIQUE index on (group_id, timestamp, body) is intentionally left in place —
+  // switching dedup to (group_id, stanza_id) waits until stanza_id is fully
+  // backfilled on historical rows.
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_stanza ON messages(group_id, stanza_id)'); } catch (_) {}
+
   // Phase 2.3: notice feedback — thumbs up/down + "missed" reports for triage tuning
   try {
     db.exec(`
@@ -698,17 +724,22 @@ function checkEnumIntegrity() {
   return violations;
 }
 
-function saveMessage({ group_id, sender, body, timestamp }) {
+function saveMessage({ group_id, sender, body, timestamp, stanza_id }) {
   const ts = timestamp || Date.now();
   const stmt = getDB().prepare(
-    'INSERT OR IGNORE INTO messages (group_id, sender, body, timestamp, processed) VALUES (?, ?, ?, ?, 0)'
+    'INSERT OR IGNORE INTO messages (group_id, sender, body, timestamp, processed, stanza_id) VALUES (?, ?, ?, ?, 0, ?)'
   );
-  const result = stmt.run(group_id, sender, body, ts);
+  const result = stmt.run(group_id, sender, body, ts, stanza_id || null);
   if (result.changes > 0) return result.lastInsertRowid;
   // Already existed — return the existing row id
   const existing = getDB().prepare(
-    'SELECT id FROM messages WHERE group_id=? AND timestamp=? AND body=? LIMIT 1'
+    'SELECT id, stanza_id FROM messages WHERE group_id=? AND timestamp=? AND body=? LIMIT 1'
   ).get(group_id, ts, body);
+  // Backfill stanza_id on rows saved before we started capturing it, so a later
+  // edit (keyed on stanza_id) can still find this row.
+  if (existing && stanza_id && !existing.stanza_id) {
+    getDB().prepare('UPDATE messages SET stanza_id=? WHERE id=?').run(stanza_id, existing.id);
+  }
   return existing?.id ?? null;
 }
 
@@ -763,6 +794,37 @@ function incrementMediaRetry(id) {
 function updateMessageBody(id, body) {
   if (!id) return;
   getDB().prepare('UPDATE messages SET body=? WHERE id=?').run(body, id);
+}
+
+/**
+ * E1: Apply a WhatsApp message edit, keyed on stanza_id.
+ *
+ * Finds the message by (stanza_id, group_id), archives the previous body into
+ * body_history, writes the new body, and resets pipeline state so the next
+ * extraction cycle re-processes the edited content. Returns the row id, or null
+ * if no matching message exists (an edit for something we never saw).
+ *
+ * Named distinctly from updateMessageBody(id, body) — that one is the media
+ * re-extraction path (keyed on the numeric row id) and must not change.
+ */
+function updateMessageBodyByStanza(stanzaId, groupId, newBody) {
+  if (!stanzaId || !groupId) return null;
+  const msg = getDB().prepare(
+    'SELECT id, body, body_history FROM messages WHERE stanza_id=? AND group_id=?'
+  ).get(stanzaId, groupId);
+  if (!msg) return null;
+
+  // No-op if the body didn't actually change (WhatsApp can redeliver updates).
+  if (msg.body === newBody) return msg.id;
+
+  const history = msg.body_history ? JSON.parse(msg.body_history) : [];
+  history.push({ body: msg.body, replaced_at: Date.now() });
+
+  getDB().prepare(
+    "UPDATE messages SET body=?, body_history=?, processed=0, pipeline_state='RECEIVED', updated_at=? WHERE id=?"
+  ).run(newBody, JSON.stringify(history), Date.now(), msg.id);
+
+  return msg.id;
 }
 
 /**
@@ -1803,6 +1865,7 @@ module.exports = {
   setMediaStatus,
   incrementMediaRetry,
   updateMessageBody,
+  updateMessageBodyByStanza,
   getFailedMedia,
   // Config management
   getConfigValue,

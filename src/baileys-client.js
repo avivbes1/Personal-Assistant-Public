@@ -472,6 +472,41 @@ class BaileysClient extends EventEmitter {
       }
     });
 
+    // ── Message edits (E1) ──
+    // Baileys delivers edits via messages.update, not messages.upsert. The edited
+    // payload can arrive under a couple of shapes depending on the WA version, so
+    // detection is deliberately defensive. We emit message_edit with the new body;
+    // whatsapp.js re-queues the stored message for extraction.
+    this._sock.ev.on('messages.update', async (updates) => {
+      for (const update of updates) {
+        try {
+          const editMsg = update.update?.message?.editedMessage
+            || update.update?.message?.protocolMessage?.editedMessage
+            || update.update?.message?.protocolMessage?.editedMessage?.message;
+          if (!editMsg) continue;
+
+          const key = update.key;
+          const stanzaId = key?.id;
+          const groupId = key?.remoteJid;
+          if (!stanzaId || !groupId) continue;
+
+          // The edited content may be nested one level under .message (protocol edits).
+          const inner = editMsg.message || editMsg;
+          const newBody = inner.conversation
+            || inner.extendedTextMessage?.text
+            || inner.imageMessage?.caption
+            || inner.videoMessage?.caption
+            || '';
+
+          if (!newBody) continue;
+
+          this.emit('message_edit', { stanzaId, groupId, newBody, key, update });
+        } catch (err) {
+          appLogger.error({ component: 'Baileys', err: err.message }, 'Error processing message edit');
+        }
+      }
+    });
+
     // ── Group events ──
     this._sock.ev.on('groups.upsert', (groups) => {
       for (const group of groups) {
