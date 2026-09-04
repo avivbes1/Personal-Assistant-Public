@@ -48,7 +48,7 @@ async function alertUnmatchedReply() {
   }
 }
 
-const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, setGroupMonitoring, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, getPendingGroupQuestionByStanza, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus, updateMessageBodyByStanza } = require('./db');
+const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, setGroupMonitoring, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, getPendingGroupQuestionByStanza, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus, updateMessageBodyByStanza, saveFeedback, getSentMessageByStanzaId } = require('./db');
 const { archiveMedia } = require('./media-archive');
 const { resolveMembersInText } = require('./family-profiles');
 const { validateOutgoing, repairMessage } = require('./validate-outgoing');
@@ -631,6 +631,19 @@ const ALLOWED_NUMBERS = new Set([
   config.AVIV_PHONE, // primary parent phone
   config.LIAT_PHONE, // secondary parent phone
 ]);
+
+// ── D1: reaction → feedback mapping ───────────────────────────────────────────
+// Family reactions on the bot's own messages become 'good'/'bad' feedback rows.
+// The emoji sets are env-configurable (comma-separated) so the family can tune
+// which reactions count without a code change.
+function buildEmojiFeedbackMap() {
+  const parse = (v, dflt) => (v || dflt).split(',').map(s => s.trim()).filter(Boolean);
+  const map = {};
+  for (const e of parse(process.env.FEEDBACK_EMOJI_GOOD, '👍,❤️,✅')) map[e] = 'good';
+  for (const e of parse(process.env.FEEDBACK_EMOJI_BAD,  '👎,❌'))    map[e] = 'bad';
+  return map;
+}
+const EMOJI_FEEDBACK = buildEmojiFeedbackMap();
 
 async function isSenderAuthorized(msg) {
   try {
@@ -1637,6 +1650,42 @@ function initWhatsApp() {
   // ── E1: message edits ──
   // A WhatsApp edit updates the stored message body and re-queues it for
   // extraction, so a stale notice can be refreshed from the corrected text.
+  // ── D1: Reaction-based feedback ──
+  const GOOD_REACTIONS = new Set(['👍', '❤️', '✅', '👏', '💪']);
+  const BAD_REACTIONS = new Set(['👎', '❌', '😡', '🤦']);
+  const FAMILY_REACTION_PHONES = [config.AVIV_PHONE, config.LIAT_PHONE].map(p => String(p).replace(/\D/g, ''));
+
+  client.on('message_reaction', async ({ emoji, targetStanzaId, targetGroupId, targetFromMe, reactorJid }) => {
+    try {
+      // Only process reactions on BOT messages from FAMILY members
+      if (!targetFromMe) return;
+      if (!emoji) return; // reaction removed
+      const reactorPhone = (reactorJid || '').split('@')[0];
+      if (!FAMILY_REACTION_PHONES.some(p => reactorPhone.includes(p))) return;
+
+      const feedback = GOOD_REACTIONS.has(emoji) ? 'good' : BAD_REACTIONS.has(emoji) ? 'bad' : null;
+      if (!feedback) return;
+
+      const { getSentMessageByStanzaId, saveFeedback } = require('./db');
+      const sent = getSentMessageByStanzaId(targetStanzaId);
+      if (!sent || !sent.source_notice_ids) {
+        logger.info({ component: 'WhatsApp', emoji, targetStanzaId }, 'Reaction on bot message but no linked notices');
+        return;
+      }
+
+      let noticeIds;
+      try { noticeIds = JSON.parse(sent.source_notice_ids); } catch (_) { noticeIds = []; }
+      if (!Array.isArray(noticeIds) || noticeIds.length === 0) return;
+
+      for (const nid of noticeIds) {
+        saveFeedback(nid, feedback, `reaction:${emoji}`);
+      }
+      logger.info({ component: 'WhatsApp', emoji, feedback, noticeIds, reactor: reactorPhone }, `D1: ${feedback} feedback recorded via reaction`);
+    } catch (err) {
+      logger.error({ component: 'WhatsApp', err: err.message }, 'message_reaction handler error');
+    }
+  });
+
   client.on('message_edit', async ({ stanzaId, groupId, newBody }) => {
     try {
       // Only process edits for monitored groups. isMonitoredGroup expects a
@@ -1658,6 +1707,54 @@ function initWhatsApp() {
       logger.info({ component: 'WhatsApp', stanzaId, msgId, preview: newBody.substring(0, 60) }, 'Message edit captured — re-queued for extraction');
     } catch (err) {
       logger.error({ component: 'WhatsApp', err: err.message }, 'message_edit handler error');
+    }
+  });
+
+  // ── D1: reaction → feedback ──
+  // A 👍/👎 from Aviv or Liat on one of the bot's own master-group messages is
+  // recorded as feedback on the notice(s) that produced that message. Lightweight
+  // by design: emoji lookup + a stanza-id DB read, no LLM calls.
+  client.on('message_reaction', async ({ emoji, targetStanzaId, targetGroupId, reactorJid, targetFromMe }) => {
+    try {
+      // Only reactions on the bot's own messages carry feedback about our output.
+      if (!targetFromMe) return;
+
+      const feedback = EMOJI_FEEDBACK[emoji];
+      if (!feedback) return; // unmapped emoji (or reaction removed → empty string)
+
+      // Only Aviv / Liat. reactorJid may be a phone JID or a privacy-mode @lid.
+      const familyDigits = new Set([config.AVIV_PHONE, config.LIAT_PHONE].map(p => String(p).replace(/\D/g, '')));
+      const reactorUser = String(reactorJid || '').split('@')[0].replace(/\D/g, '');
+      let isFamily = reactorUser && familyDigits.has(reactorUser);
+      if (!isFamily && String(reactorJid || '').endsWith('@lid')) {
+        try {
+          const phone = await getPhoneByJid(reactorJid);
+          if (phone && familyDigits.has(String(phone).replace(/\D/g, ''))) isFamily = true;
+        } catch (e) {
+          logger.warn({ component: 'WhatsApp', err: e.message, reactorJid }, 'Reaction LID resolution failed');
+        }
+      }
+      if (!isFamily) return;
+
+      if (!targetStanzaId) return;
+      const sent = getSentMessageByStanzaId(targetStanzaId);
+      if (!sent || !sent.source_notice_ids) {
+        logger.info({ component: 'WhatsApp', targetStanzaId, emoji, feedback }, 'Reaction on bot message with no linked notices');
+        return;
+      }
+
+      let noticeIds;
+      try { noticeIds = JSON.parse(sent.source_notice_ids); } catch (_) { return; }
+      if (!Array.isArray(noticeIds) || noticeIds.length === 0) return;
+
+      for (const nid of noticeIds) {
+        try { saveFeedback(nid, feedback, `reaction:${emoji}`); } catch (e) {
+          logger.error({ component: 'WhatsApp', err: e.message, noticeId: nid }, 'saveFeedback failed');
+        }
+      }
+      logger.info({ component: 'WhatsApp', emoji, feedback, noticeIds, sentId: sent.id }, 'Reaction feedback recorded');
+    } catch (err) {
+      logger.error({ component: 'WhatsApp', err: err.message }, 'message_reaction handler error');
     }
   });
 

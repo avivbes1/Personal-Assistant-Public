@@ -345,11 +345,22 @@ function markNoticesTriaged(db, decisions) {
   }
 }
 
-function saveSentMessage(db, topicKey, text, noticeIds, groupName = null) {
+// D1: msgId is the serialized whatsapp-web.js id returned by the sender
+// (true_<jid>_<stanzaId>[_participant]); we store both the full id and the parsed
+// stanza id so a later family reaction maps back to source_notice_ids. When the
+// sender doesn't surface an id, both stay null and reaction feedback degrades
+// gracefully (the send still records normally).
+function stanzaIdFromMsgId(msgId) {
+  if (!msgId) return null;
+  const parts = String(msgId).split('_');
+  return parts.length >= 3 ? parts[2] : null;
+}
+
+function saveSentMessage(db, topicKey, text, noticeIds, groupName = null, msgId = null) {
   db.prepare(`
-    INSERT INTO sent_messages (topic_key, sent_at, message_text, source_notice_ids, group_name)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(topicKey, Date.now(), text, JSON.stringify(noticeIds), groupName);
+    INSERT INTO sent_messages (topic_key, sent_at, message_text, source_notice_ids, group_name, stanza_id, msg_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(topicKey, Date.now(), text, JSON.stringify(noticeIds), groupName, stanzaIdFromMsgId(msgId), msgId || null);
 }
 
 function markNoticesSent(db, noticeIds) {
@@ -866,9 +877,9 @@ async function runTriage() {
       shadowLog({ type: 'immediate', notice_id: n.id, text });
     } else {
       try {
-        await voiceSend(GROUP_JID, text);
+        const sent = await voiceSend(GROUP_JID, text);
         markNoticesSent(db, [n.id]);
-        saveSentMessage(db, `immediate-${n.id}`, text, [n.id], n.group_name);
+        saveSentMessage(db, `immediate-${n.id}`, text, [n.id], n.group_name, sent && sent.msgId);
         console.log(`[Triage] Sent immediate #${n.id}`);
       } catch (e) {
         console.error(`[Triage] Failed immediate #${n.id}:`, e.message);
@@ -1048,10 +1059,10 @@ async function runTriage() {
         shadowLog({ type: action, topic_key: topicKey, notice_ids: groupNotices.map(n => n.id), message });
       } else {
         try {
-          await voiceSend(GROUP_JID, message);
+          const sent = await voiceSend(GROUP_JID, message);
           const noticeIds = groupNotices.map(n => n.id);
           markNoticesSent(db, noticeIds);
-          saveSentMessage(db, topicKey, message, noticeIds, sourceGroup);
+          saveSentMessage(db, topicKey, message, noticeIds, sourceGroup, sent && sent.msgId);
           console.log(`[Triage] Sent [${topicKey}]: "${message.substring(0, 60)}"`);
           // Update thread last_delivered_at for topic continuity
           for (const n of groupNotices) {
@@ -1171,12 +1182,12 @@ async function runDigest() {
   }
 
   try {
-    await voiceSend(GROUP_JID, digest.body);
+    const sent = await voiceSend(GROUP_JID, digest.body);
     const batchId = `digest-${Date.now()}`;
     const ph = digest.ids.map(() => '?').join(',');
     db.prepare(`UPDATE notices SET posted_to_master=1, sent_to_master=1, delivery_status='delivered_batch', delivered_at=?, batch_id=? WHERE id IN (${ph})`)
       .run(Date.now(), batchId, ...digest.ids);
-    saveSentMessage(db, batchId, digest.body, digest.ids, null);
+    saveSentMessage(db, batchId, digest.body, digest.ids, null, sent && sent.msgId);
     // 'Batch delivered' — kept in this exact form so the OpenClaw launcher's
     // output check (which greps for it) keeps working.
     console.log(`[Triage:digest] Batch delivered: ${digest.ids.length} notices, ${digest.clusterCount} clusters`);
@@ -1277,9 +1288,9 @@ async function runImmediate() {
       continue;
     }
     try {
-      await voiceSend(GROUP_JID, text);
+      const sent = await voiceSend(GROUP_JID, text);
       markNoticesSent(db, [n.id]);
-      saveSentMessage(db, `immediate-${n.id}`, text, [n.id], n.group_name);
+      saveSentMessage(db, `immediate-${n.id}`, text, [n.id], n.group_name, sent && sent.msgId);
       console.log(`[Triage:immediate] Immediate: #${n.id} "${text.substring(0, 50)}"`);
       afterDeliveryHook([n.id]).catch(() => {});
     } catch (e) {

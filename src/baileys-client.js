@@ -443,7 +443,31 @@ class BaileysClient extends EventEmitter {
         try {
           // Skip own messages to prevent infinite self-reply loops
           if (rawMsg.key.fromMe) continue;
-          // Skip protocol messages, reactions, status updates
+
+          // ── D1: Reaction capture ──
+          // Reactions arrive as ordinary messages carrying a reactionMessage payload
+          // (its .key identifies the message being reacted to). Emit a dedicated
+          // event BEFORE the no-content skip below, then stop — a reaction is never a
+          // normal chat message. targetFromMe lets whatsapp.js gate on bot messages
+          // without a DB round-trip; an empty emoji means the reaction was removed.
+          const reaction = rawMsg.message && rawMsg.message.reactionMessage;
+          if (reaction) {
+            try {
+              const targetKey = reaction.key || {};
+              this.emit('message_reaction', {
+                emoji: reaction.text || '',
+                targetStanzaId: targetKey.id || null,
+                targetGroupId: toWWebJid(targetKey.remoteJid || rawMsg.key.remoteJid),
+                targetFromMe: !!targetKey.fromMe,
+                reactorJid: toWWebJid(rawMsg.key.participant || rawMsg.key.remoteJid),
+              });
+            } catch (err) {
+              appLogger.error({ component: 'Baileys', err: err.message }, 'Error processing reaction');
+            }
+            continue;
+          }
+
+          // Skip protocol messages, status updates
           if (!rawMsg.message) continue;
           if (rawMsg.key.remoteJid === 'status@broadcast') continue;
 

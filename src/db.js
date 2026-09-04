@@ -456,6 +456,12 @@ function initDB() {
   // (group_name, sent_at) now that group matching uses a real column instead of
   // an 8-char message-text substring.
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_sent_group ON sent_messages(group_name, sent_at)'); } catch (_) {}
+  // D1: record the WhatsApp id of each bot send so a later family reaction — which
+  // carries only the target message's stanza id — maps back to the source notices.
+  // stanza_id is the stable WA message id; msg_id is the serialized whatsapp-web.js id.
+  try { db.exec('ALTER TABLE sent_messages ADD COLUMN stanza_id TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE sent_messages ADD COLUMN msg_id TEXT'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_sent_stanza ON sent_messages(stanza_id)'); } catch (_) {}
   // B2: backfill group_name on historical rows from the notices referenced by
   // source_notice_ids, so pre-migration sends still count toward the group cap.
   // Bounded per-run and idempotent (only touches NULL group_name rows).
@@ -1865,6 +1871,29 @@ function getMostRecentDeliveredThread() {
 // ── Phase 2.3: Notice feedback ───────────────────────────────────────────────
 
 /**
+ * D1: look up a bot-sent message by the WhatsApp stanza id (preferred) or the
+ * serialized msg id. A family reaction gives us the reacted message's stanza id;
+ * this maps it back to the row that recorded which notices produced that send.
+ * Returns { id, source_notice_ids, message_text } or null.
+ */
+function getSentMessageByStanzaId(stanzaId, msgId) {
+  if (!stanzaId && !msgId) return null;
+  const db = getDB();
+  let row = null;
+  if (stanzaId) {
+    row = db.prepare(
+      'SELECT id, source_notice_ids, message_text FROM sent_messages WHERE stanza_id = ? ORDER BY id DESC LIMIT 1'
+    ).get(stanzaId);
+  }
+  if (!row && msgId) {
+    row = db.prepare(
+      'SELECT id, source_notice_ids, message_text FROM sent_messages WHERE msg_id = ? ORDER BY id DESC LIMIT 1'
+    ).get(msgId);
+  }
+  return row || null;
+}
+
+/**
  * Save user feedback on a notice ('good' | 'bad' | 'missed').
  * Looks up the notice's thread_key (best-effort) so feedback survives even if the
  * notice row is later purged. Returns the inserted row id.
@@ -1935,6 +1964,7 @@ module.exports = {
   getDB,
   saveFeedback,
   getFeedbackStats,
+  getSentMessageByStanzaId,
   saveMessage,
   getRecentGroupMessages,
   markMessageProcessed,
