@@ -231,7 +231,7 @@ function getPendingNotices(db) {
   //   Asia/Jerusalem and filter in JS after the query.
   // P-001: triage is the SOLE actor on this queue.
   const rows = db.prepare(`
-    SELECT id, group_name, content, urgency_hint,
+    SELECT id, group_name, content, urgency_hint, urgency_source,
            relevance_date, relevance_time, relevant_datetime, created_at
     FROM notices
     WHERE dismissed = 0
@@ -816,6 +816,16 @@ async function runTriage() {
   const normal = pending.filter(n => n.urgency_hint !== 'immediate');
 
   for (const n of immediates) {
+    // B4: quiet-hours hole. Immediates send here, BEFORE the quiet-hours check
+    // that gates the normal path (~line 920). Keyword/date-signal immediates are
+    // not truly time-critical at 3am — only datetime-grounded ones (event ≤3h)
+    // justify a night ping. Demote the rest to normal triage so quiet hours
+    // defers them to the morning digest.
+    if (isQuietHours() && n.urgency_source !== 'datetime') {
+      console.log(`[Triage] Immediate #${n.id} (source=${n.urgency_source || 'unknown'}) demoted to normal — quiet hours, non-datetime`);
+      normal.push(n);
+      continue;
+    }
     // Check dismissal — for immediates, topic_key is not stored, so also check
     // content-based keyword matching against topic_key scope_values.
     const immediateContentDismissed = activeDismissals.some(d => {

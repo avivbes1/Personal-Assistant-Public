@@ -372,9 +372,14 @@ function productionUrgency(notice, messageTimestamp) {
     relevant_datetime: input.relevant_datetime,
     relevance_date: input.relevance_date,
     relevance_time: input.relevance_time,
+    // U1: advisory LLM signal (backwards compat with pre-rename urgency_hint).
+    // computeUrgencyHint uses it only as a same-day tiebreaker.
+    urgency_signal: input.urgency_signal ?? input.urgency_hint ?? null,
   };
   const ts = Number(messageTimestamp);
-  return getComputeUrgencyHint()(action, Number.isFinite(ts) ? ts : Date.now());
+  // computeUrgencyHint sets action.urgency_source as a side effect (B4).
+  const hint = getComputeUrgencyHint()(action, Number.isFinite(ts) ? ts : Date.now());
+  return { hint, source: action.urgency_source || null };
 }
 
 /** Map production tool calls → the label's expected_action taxonomy. */
@@ -384,7 +389,7 @@ function predictAction(toolCalls, messageTimestamp) {
   const notice = firstNotice(toolCalls);
   if (notice) {
     // Score the deterministic urgency production stores, not the LLM's guess.
-    const u = productionUrgency(notice, messageTimestamp);
+    const u = productionUrgency(notice, messageTimestamp).hint;
     if (u === 'immediate') return 'send_now';        // deliver now
     if (u === 'time_sensitive') return 'add_notice'; // notice, soon
     return 'defer';                                  // routine / unspecified
@@ -398,7 +403,7 @@ function predictAction(toolCalls, messageTimestamp) {
 function predictPriority(toolCalls) {
   if (!isActionable(toolCalls)) return 'noise';
   const notice = firstNotice(toolCalls);
-  if (notice && notice.input && notice.input.urgency_hint === 'immediate') return 'real_time';
+  if (notice && notice.input && (notice.input.urgency_signal ?? notice.input.urgency_hint) === 'immediate') return 'real_time';
   // "archive" is rarely reachable from production signals; batch is the
   // majority actionable bucket. Recall for archive will read ~0 (honest).
   return 'batch';
@@ -665,8 +670,10 @@ async function runEval(loaded, args) {
     // Urgency diagnostics: the LLM's raw guess vs the deterministic value
     // production actually stores (M4). Only meaningful when a notice was emitted.
     const noticeCall = recError ? null : firstNotice(toolCalls);
-    const llmUrgencyHint = noticeCall && noticeCall.input ? (noticeCall.input.urgency_hint ?? null) : null;
-    const productionUrgencyHint = noticeCall ? productionUrgency(noticeCall, rec.timestamp) : null;
+    const llmUrgencyHint = noticeCall && noticeCall.input ? (noticeCall.input.urgency_signal ?? noticeCall.input.urgency_hint ?? null) : null;
+    const prodUrgency = noticeCall ? productionUrgency(noticeCall, rec.timestamp) : null;
+    const productionUrgencyHint = prodUrgency ? prodUrgency.hint : null;
+    const productionUrgencySource = prodUrgency ? prodUrgency.source : null;
 
     perRecord.push({
       id: rec.id,
@@ -685,6 +692,7 @@ async function runEval(loaded, args) {
       // urgency diagnostics (M4)
       llm_urgency_hint: llmUrgencyHint,
       production_urgency_hint: productionUrgencyHint,
+      production_urgency_source: productionUrgencySource,
       tools: toolCalls.map((t) => t.name),
       error: recError,
     });

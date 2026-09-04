@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-04T12:21:07.790Z",
+  "generated_at": "2026-09-04T14:04:25.372Z",
   "model": "claude-haiku-4-5",
   "dataset": "tests/eval/dataset.jsonl",
   "thresholds": {
@@ -8,25 +8,25 @@
     "sendnow_recall": 0.1
   },
   "threshold": 0.7,
-  "overall_accuracy": 0.8272,
+  "overall_accuracy": 0.7901,
   "gate": {
     "pipeline": {
-      "value": 0.8272,
+      "value": 0.7901,
       "threshold": 0.7,
       "passed": true
     },
     "action": {
-      "value": 0.5185,
+      "value": 0.5556,
       "threshold": 0.35,
       "passed": true
     },
     "sendnow_recall": {
-      "value": 0,
+      "value": 0.3077,
       "threshold": 0.1,
-      "passed": false
+      "passed": true
     }
   },
-  "passed": false,
+  "passed": true,
   "counts": {
     "total_records": 137,
     "labeled": 137,
@@ -39,40 +39,40 @@
   },
   "cost": {
     "input_tokens": 54342,
-    "output_tokens": 15199,
-    "total_tokens": 69541,
-    "estimated_usd": 0.130337,
+    "output_tokens": 14918,
+    "total_tokens": 69260,
+    "estimated_usd": 0.128932,
     "pricing_per_mtok": {
       "input": 1,
       "output": 5
     }
   },
   "pipeline_state": {
-    "accuracy": 0.8272,
+    "accuracy": 0.7901,
     "per_class": {
       "NOTICE_CREATED": {
-        "precision": 0.9783,
-        "recall": 0.7759,
-        "f1": 0.8654,
-        "tp": 45,
+        "precision": 0.9767,
+        "recall": 0.7241,
+        "f1": 0.8317,
+        "tp": 42,
         "fp": 1,
-        "fn": 13,
+        "fn": 16,
         "support": 58
       },
       "NOT_ACTIONABLE": {
-        "precision": 0.6286,
+        "precision": 0.5789,
         "recall": 0.9565,
-        "f1": 0.7586,
+        "f1": 0.7213,
         "tp": 22,
-        "fp": 13,
+        "fp": 16,
         "fn": 1,
         "support": 23
       }
     },
     "confusion_matrix": {
       "NOTICE_CREATED": {
-        "NOTICE_CREATED": 45,
-        "NOT_ACTIONABLE": 13
+        "NOTICE_CREATED": 42,
+        "NOT_ACTIONABLE": 16
       },
       "NOT_ACTIONABLE": {
         "NOTICE_CREATED": 1,
@@ -81,27 +81,27 @@
     }
   },
   "priority": {
-    "accuracy": 0.5679,
-    "macro_precision": 0.5943,
-    "macro_recall": 0.501,
-    "macro_f1": 0.5698,
+    "accuracy": 0.5432,
+    "macro_precision": 0.5782,
+    "macro_recall": 0.4823,
+    "macro_f1": 0.5506,
     "per_class": {
       "real_time": {
-        "precision": 0.6667,
-        "recall": 0.6897,
-        "f1": 0.678,
-        "tp": 20,
-        "fp": 10,
-        "fn": 9,
+        "precision": 0.7083,
+        "recall": 0.5862,
+        "f1": 0.6415,
+        "tp": 17,
+        "fp": 7,
+        "fn": 12,
         "support": 29
       },
       "batch": {
-        "precision": 0.6875,
-        "recall": 0.3143,
-        "f1": 0.4314,
-        "tp": 11,
-        "fp": 5,
-        "fn": 24,
+        "precision": 0.6316,
+        "recall": 0.3429,
+        "f1": 0.4444,
+        "tp": 12,
+        "fp": 7,
+        "fn": 23,
         "support": 35
       },
       "archive": {
@@ -114,27 +114,27 @@
         "support": 2
       },
       "noise": {
-        "precision": 0.4286,
+        "precision": 0.3947,
         "recall": 1,
-        "f1": 0.6,
+        "f1": 0.566,
         "tp": 15,
-        "fp": 20,
+        "fp": 23,
         "fn": 0,
         "support": 15
       }
     },
     "confusion_matrix": {
       "real_time": {
-        "real_time": 20,
-        "batch": 5,
+        "real_time": 17,
+        "batch": 7,
         "archive": 0,
-        "noise": 4
+        "noise": 5
       },
       "batch": {
-        "real_time": 10,
-        "batch": 11,
+        "real_time": 7,
+        "batch": 12,
         "archive": 0,
-        "noise": 14
+        "noise": 16
       },
       "archive": {
         "real_time": 0,
@@ -151,89 +151,89 @@
     }
   },
   "expected_action": {
-    "accuracy": 0.4198,
-    "accuracy_strict": 0.4198,
-    "accuracy_multilabel": 0.5185,
-    "multilabel_hits": 42,
-    "multilabel_off_primary_hits": 8,
-    "macro_precision": 0.3861,
-    "macro_recall": 0.45,
-    "macro_f1": 0.4286,
+    "accuracy": 0.4691,
+    "accuracy_strict": 0.4691,
+    "accuracy_multilabel": 0.5556,
+    "multilabel_hits": 45,
+    "multilabel_off_primary_hits": 7,
+    "macro_precision": 0.4285,
+    "macro_recall": 0.4227,
+    "macro_f1": 0.3872,
     "per_class": {
       "add_event": {
-        "precision": 0.5556,
-        "recall": 0.5556,
-        "f1": 0.5556,
-        "tp": 5,
-        "fp": 4,
-        "fn": 4,
+        "precision": 0.4444,
+        "recall": 0.4444,
+        "f1": 0.4444,
+        "tp": 4,
+        "fp": 5,
+        "fn": 5,
         "support": 9
       },
       "add_notice": {
-        "precision": 0.1935,
-        "recall": 0.6667,
-        "f1": 0.3,
-        "tp": 6,
-        "fp": 25,
-        "fn": 3,
+        "precision": 0.1765,
+        "recall": 0.3333,
+        "f1": 0.2308,
+        "tp": 3,
+        "fp": 14,
+        "fn": 6,
         "support": 9
       },
       "send_now": {
-        "precision": null,
-        "recall": 0,
-        "f1": null,
-        "tp": 0,
-        "fp": 0,
-        "fn": 26,
+        "precision": 0.8,
+        "recall": 0.3077,
+        "f1": 0.4444,
+        "tp": 8,
+        "fp": 2,
+        "fn": 18,
         "support": 26
       },
       "defer": {
-        "precision": 0.1667,
+        "precision": 0.1429,
         "recall": 0.0714,
-        "f1": 0.1,
+        "f1": 0.0952,
         "tp": 1,
-        "fp": 5,
+        "fp": 6,
         "fn": 13,
         "support": 14
       },
       "skip": {
-        "precision": 0.6286,
+        "precision": 0.5789,
         "recall": 0.9565,
-        "f1": 0.7586,
+        "f1": 0.7213,
         "tp": 22,
-        "fp": 13,
+        "fp": 16,
         "fn": 1,
         "support": 23
       }
     },
     "confusion_matrix": {
       "add_event": {
-        "add_event": 5,
-        "add_notice": 3,
+        "add_event": 4,
+        "add_notice": 2,
         "send_now": 0,
-        "defer": 1,
-        "skip": 0
+        "defer": 2,
+        "skip": 1
       },
       "add_notice": {
         "add_event": 0,
-        "add_notice": 6,
-        "send_now": 0,
+        "add_notice": 3,
+        "send_now": 2,
         "defer": 1,
-        "skip": 2
+        "skip": 3
       },
       "send_now": {
-        "add_event": 3,
-        "add_notice": 17,
-        "send_now": 0,
+        "add_event": 4,
+        "add_notice": 8,
+        "send_now": 8,
         "defer": 3,
         "skip": 3
       },
       "defer": {
         "add_event": 0,
-        "add_notice": 5,
+        "add_notice": 4,
         "send_now": 0,
         "defer": 1,
-        "skip": 8
+        "skip": 9
       },
       "skip": {
         "add_event": 1,
@@ -256,11 +256,12 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "keyword",
       "tools": [
         "add_notice"
       ],
@@ -277,11 +278,12 @@
       ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "keyword",
       "tools": [
         "add_notice"
       ],
@@ -298,11 +300,12 @@
       ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
         "add_notice"
       ],
@@ -324,7 +327,8 @@
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
         "add_event",
         "add_notice"
@@ -342,11 +346,12 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
         "add_notice"
       ],
@@ -368,6 +373,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -384,13 +390,15 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "add_event",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
-        "add_notice"
+        "add_notice",
+        "add_event"
       ],
       "error": null
     },
@@ -409,8 +417,9 @@
       "pred_action": "add_event",
       "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
+      "llm_urgency_hint": "time_sensitive",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
         "add_event",
         "add_notice"
@@ -428,11 +437,12 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
         "add_notice"
       ],
@@ -454,6 +464,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -475,6 +486,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -496,6 +508,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -519,6 +532,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -536,12 +550,14 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "real_time",
+      "pred_action": "add_event",
+      "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
+      "llm_urgency_hint": "time_sensitive",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
+        "add_event",
         "add_notice"
       ],
       "error": null
@@ -564,6 +580,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_event",
         "add_notice"
@@ -586,6 +603,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -602,13 +620,14 @@
       ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "real_time",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "pred_action": "skip",
+      "pred_priority": "noise",
+      "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
-        "add_notice"
+        "no_action"
       ],
       "error": null
     },
@@ -628,6 +647,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_event",
         "add_notice"
@@ -645,11 +665,12 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
         "add_notice"
       ],
@@ -671,6 +692,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -693,9 +715,10 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
-        "add_event",
-        "add_notice"
+        "add_notice",
+        "add_event"
       ],
       "error": null
     },
@@ -715,6 +738,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -736,6 +760,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -752,11 +777,12 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
         "add_notice"
       ],
@@ -779,6 +805,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "time_sensitive",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -801,6 +828,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -822,6 +850,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -839,10 +868,11 @@
       "label_priority": "real_time",
       "label_pipeline": "NOT_ACTIONABLE",
       "pred_action": "add_event",
-      "pred_priority": "real_time",
+      "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
+      "llm_urgency_hint": "time_sensitive",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
         "add_event",
         "add_notice"
@@ -866,6 +896,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -888,6 +919,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -910,6 +942,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice",
         "add_event"
@@ -933,6 +966,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -951,12 +985,14 @@
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_notice",
-      "pred_priority": "real_time",
+      "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
+      "llm_urgency_hint": "time_sensitive",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
-        "add_notice"
+        "add_notice",
+        "add_task"
       ],
       "error": null
     },
@@ -971,14 +1007,14 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
-        "add_notice",
-        "add_task"
+        "add_notice"
       ],
       "error": null
     },
@@ -994,13 +1030,13 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_event",
+      "pred_action": "add_notice",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
-        "add_event",
         "add_notice"
       ],
       "error": null
@@ -1021,6 +1057,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1042,6 +1079,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1063,6 +1101,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1084,6 +1123,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1105,6 +1145,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1126,6 +1167,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1147,6 +1189,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1168,6 +1211,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1189,6 +1233,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1210,6 +1255,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1231,6 +1277,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1248,13 +1295,14 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
+      "pred_action": "skip",
+      "pred_priority": "noise",
+      "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
-        "add_notice"
+        "no_action"
       ],
       "error": null
     },
@@ -1274,6 +1322,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1295,6 +1344,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1316,6 +1366,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1337,6 +1388,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1353,13 +1405,14 @@
       ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
-      "pred_priority": "batch",
-      "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "routine",
-      "production_urgency_hint": "time_sensitive",
+      "pred_action": "skip",
+      "pred_priority": "noise",
+      "pred_pipeline": "NOT_ACTIONABLE",
+      "llm_urgency_hint": null,
+      "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
-        "add_notice"
+        "no_action"
       ],
       "error": null
     },
@@ -1379,6 +1432,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1400,6 +1454,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1421,6 +1476,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1442,6 +1498,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1463,6 +1520,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1484,6 +1542,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1505,6 +1564,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1526,6 +1586,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1547,6 +1608,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1568,6 +1630,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1589,6 +1652,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1605,11 +1669,12 @@
       ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "date_with_signal",
       "tools": [
         "add_notice"
       ],
@@ -1631,6 +1696,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1652,6 +1718,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1673,6 +1740,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1690,10 +1758,11 @@
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_notice",
-      "pred_priority": "real_time",
+      "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
+      "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1715,6 +1784,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1736,6 +1806,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1757,6 +1828,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1778,6 +1850,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1794,11 +1867,12 @@
       ],
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_notice",
+      "pred_action": "send_now",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
-      "production_urgency_hint": "time_sensitive",
+      "production_urgency_hint": "immediate",
+      "production_urgency_source": "keyword",
       "tools": [
         "add_notice"
       ],
@@ -1816,10 +1890,11 @@
       "label_priority": "batch",
       "label_pipeline": "NOTICE_CREATED",
       "pred_action": "add_notice",
-      "pred_priority": "real_time",
+      "pred_priority": "batch",
       "pred_pipeline": "NOTICE_CREATED",
-      "llm_urgency_hint": "immediate",
+      "llm_urgency_hint": "time_sensitive",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1841,6 +1916,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1858,13 +1934,13 @@
       ],
       "label_priority": "real_time",
       "label_pipeline": "NOTICE_CREATED",
-      "pred_action": "add_event",
+      "pred_action": "defer",
       "pred_priority": "real_time",
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "immediate",
       "production_urgency_hint": "routine",
+      "production_urgency_source": "default",
       "tools": [
-        "add_event",
         "add_notice"
       ],
       "error": null
@@ -1885,6 +1961,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1906,6 +1983,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1927,6 +2005,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],
@@ -1948,6 +2027,7 @@
       "pred_pipeline": "NOTICE_CREATED",
       "llm_urgency_hint": "routine",
       "production_urgency_hint": "time_sensitive",
+      "production_urgency_source": "default",
       "tools": [
         "add_notice"
       ],
@@ -1969,6 +2049,7 @@
       "pred_pipeline": "NOT_ACTIONABLE",
       "llm_urgency_hint": null,
       "production_urgency_hint": null,
+      "production_urgency_source": null,
       "tools": [
         "no_action"
       ],

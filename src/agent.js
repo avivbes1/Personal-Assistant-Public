@@ -156,47 +156,75 @@ function stripActionBlocks(text, blocks) {
  * the WhatsApp client (handled by whatsapp.js).
  */
 /**
- * Deterministic urgency classifier - replaces LLM urgency_hint.
- * Rules:
- *   immediate    = cancellation/emergency keywords, OR event within 3h
- *   time_sensitive = event today or tomorrow
- *   routine      = everything else
+ * Deterministic urgency classifier - authoritative over the LLM's advisory signal.
+ * The LLM's `urgency_signal` (U1) is ONE input, not the verdict: it only tips
+ * borderline same-day date-only events. Everything else is rule-driven.
+ *
+ * Rules (first match wins):
+ *   immediate      = cancellation/emergency/staff-change keywords (any date), OR
+ *                    today + action-requiring keywords, OR event within 3h, OR
+ *                    same-day date-only event the LLM flagged immediate
+ *   time_sensitive = event within 24h, OR event today/tomorrow (date-only)
+ *   routine        = everything else
+ *
+ * Side effect: sets `action.urgency_source` to the rule that fired
+ * ('keyword' | 'datetime' | 'date_with_signal' | 'default') so downstream
+ * consumers (B4 quiet-hours gate) can tell WHY a notice is immediate.
  */
 function computeUrgencyHint(action, nowMs) {
   const content = action.content || '';
   const ISRAEL_TZ = 'Asia/Jerusalem';
 
-  // 1. Keyword override - always immediate regardless of date
-  const URGENT_KEYWORDS = /סגור|ביטול|נדחה|בוטל|איסוף מוקדם|חירום|דחוף|חד פעמי|בית ספר סגור|פינוי|אזעקה|נעילה|מצב חירום/i;
-  if (URGENT_KEYWORDS.test(content)) return 'immediate';
+  // Step 0 (U1): advisory LLM signal — NOT authoritative, just one input.
+  // Accept urgency_hint too for backwards compat with pre-rename records.
+  const llmSignal = action.urgency_signal || action.urgency_hint || null;
 
-  // 2. Datetime-based rules
+  // Record the deciding rule and log when the rules override the LLM's guess.
+  const decide = (hint, source) => {
+    action.urgency_source = source;
+    if (llmSignal && llmSignal !== hint) {
+      console.log(`[Urgency] rules=${hint} (${source}) override LLM signal=${llmSignal}`);
+    }
+    return hint;
+  };
+
+  // 1. Keyword override - always immediate regardless of date.
+  // U2: extended with last-minute staff-change / absence vocabulary.
+  const URGENT_KEYWORDS = /סגור|ביטול|נדחה|בוטל|איסוף מוקדם|חירום|דחוף|חד פעמי|בית ספר סגור|פינוי|אזעקה|נעילה|מצב חירום|שינוי|מחליפ[הם]|במקום|לא (יגיע|מגיע|תגיע|יבוא)|היעדרות|החלפת|לא יהיה|לא תהיה/i;
+  if (URGENT_KEYWORDS.test(content)) return decide('immediate', 'keyword');
+
+  // Date helpers (Israel-local ISO dates)
+  const todayIso = new Date(nowMs).toLocaleDateString('en-CA', { timeZone: ISRAEL_TZ });
+  const tomorrowIso = new Date(nowMs + 86400000).toLocaleDateString('en-CA', { timeZone: ISRAEL_TZ });
+  const isToday = !!action.relevance_date && action.relevance_date === todayIso;
+
+  // 2. U2: today + action-requiring keywords → immediate.
+  const ACTION_TODAY_KEYWORDS = /תזכורת|נא (להגיע|לשלוח|להביא)|יש להביא|חובה להביא|אישור עד|נא לאשר|אנא (שלחו|הביאו)|מזכירה/;
+  if (isToday && ACTION_TODAY_KEYWORDS.test(content)) return decide('immediate', 'keyword');
+
+  // 3. Datetime-based rules
   const relevantMs = action.relevant_datetime && action.relevant_datetime !== 'null'
     ? Date.parse(action.relevant_datetime) : null;
 
   if (relevantMs && !isNaN(relevantMs)) {
     const diffMs = relevantMs - nowMs;
     // Within 3h (or just passed by up to 1h) → immediate
-    if (diffMs <= 3 * 3600000 && diffMs > -3600000) return 'immediate';
+    if (diffMs <= 3 * 3600000 && diffMs > -3600000) return decide('immediate', 'datetime');
     // Within 24h and upcoming → time_sensitive
-    if (diffMs <= 24 * 3600000 && diffMs > 0) return 'time_sensitive';
+    if (diffMs <= 24 * 3600000 && diffMs > 0) return decide('time_sensitive', 'datetime');
   }
 
-  // 3. Date-only rules (no time specified)
+  // 4. Date-only rules (no time specified)
   if (action.relevance_date) {
-    const todayIso = new Date(nowMs).toLocaleDateString('en-CA', { timeZone: ISRAEL_TZ });
-    const tomorrowIso = new Date(nowMs + 86400000).toLocaleDateString('en-CA', { timeZone: ISRAEL_TZ });
-    if (action.relevance_date === todayIso) return 'time_sensitive';
-    if (action.relevance_date === tomorrowIso) return 'time_sensitive';
+    // U2 #3: same-day date-only event the LLM flagged immediate → immediate.
+    // LLM used only as a tiebreaker for today; deterministic rules stay primary.
+    if (isToday && llmSignal === 'immediate') return decide('immediate', 'date_with_signal');
+    if (action.relevance_date === todayIso) return decide('time_sensitive', 'default');
+    if (action.relevance_date === tomorrowIso) return decide('time_sensitive', 'default');
   }
 
-  // 4. Backlog messages that didn't qualify above - force routine (event already passed or too far)
-  if (action._isBacklog) {
-    const urgencyHint = 'routine'; // explicit for test visibility
-    return urgencyHint;
-  }
-
-  return 'routine';
+  // 5. Everything else → routine (backlog events already passed or too far out).
+  return decide('routine', 'default');
 }
 
 /**
@@ -364,6 +392,7 @@ async function _executeAction(action, senderName) {
             relevance_time:    action.relevance_time || null,
             source_timestamp:  action.source_timestamp || Date.now(),
             urgency_hint:      urgencyHint,
+            urgency_source:    action.urgency_source || 'default',
             relevant_datetime: relevantDatetime,
             message_timestamp: action.source_timestamp || Date.now(),
             delivery_status:   'pending',
@@ -897,7 +926,7 @@ const GROUP_TOOLS = [
         thread_key:        { type: 'string',  description: 'kebab-case slug ייחודי לנושא, עקבי על פני הודעות דומות. דוגמה: vo-bni-end-year-show' },
         relevance_date:    { type: 'string',  description: 'YYYY-MM-DD בלבד. חישוב מהתאריכים שבsystem prompt. חובה.' },
         relevance_time:    { type: ['string', 'null'], description: 'HH:MM רק אם שעה מפורשת בטקסט. אחרת null.' },
-        urgency_hint:      { type: 'string',  enum: ['immediate', 'time_sensitive', 'routine'], description: 'routine לרוב. immediate רק אם דחוף ל-24ש.' },
+        urgency_signal:    { type: 'string',  enum: ['immediate', 'time_sensitive', 'routine'], description: 'סימון רמת דחיפות מייעצת בלבד — ייבדק ויוחלף על ידי מערכת חוקים. immediate: האירוע היום / שינוי ברגע האחרון. time_sensitive: ימים קרובים. routine: ברירת מחדל.' },
         relevant_datetime: { type: ['string', 'null'], description: 'ISO datetime של מתי האירוע קורה, או null.' },
         events: {
           type: 'array',
@@ -913,7 +942,7 @@ const GROUP_TOOLS = [
           }
         }
       },
-      required: ['content', 'thread_key', 'relevance_date', 'urgency_hint']
+      required: ['content', 'thread_key', 'relevance_date', 'urgency_signal']
     }
   },
   {
@@ -1057,7 +1086,7 @@ function buildGroupSystemPromptParts({ groupName, sender, ts = Date.now(), group
 - relevance_date: "מחר" = ${tomorrowIso}, "היום/הערב" = ${todayIso}. ברירת מחדל: ${todayIso}.
 - relevance_time: רק אם שעה מפורשת בטקסט. אחרת null.
 - thread_key: kebab-case, עקבי לנושא. דוגמאות: "vo2-end-year-show", "nevo-football-game-jun".
-- urgency_hint — הבחן בין *הודעה רשמית* (מצוות/מורה/מנהל/מארגן) לבין *דיון בין הורים*:
+- urgency_signal (מייעץ בלבד — מערכת חוקים תבדוק ותחליט סופית) — הבחן בין *הודעה רשמית* (מצוות/מורה/מנהל/מארגן) לבין *דיון בין הורים*:
   - immediate: כמעט כל הודעה רשמית שדורשת מודעות או פעולה — תזכורת, בקשה (שליחת תמונות/טפסים, אישור הגעה, לסמן מי מגיע), הכרזה, שינוי ברגע האחרון, או קובץ/מסמך שנשלח. וכן כל דבר שקורה היום/מחר או ממש עכשיו.
   - time_sensitive: סיכומים כלליים, מכתבים רכים, ומידע רשמי שאינו דחוף ואינו דורש פעולה.
   - routine: **שאלות ודיונים בין הורים** (תיאום, החלפות, "מתי/מה להביא", "יש מחר...?") — גם אם מוזכר תאריך קרוב.
@@ -1338,7 +1367,7 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
                 thread_key:        input.thread_key,
                 relevance_date:    input.relevance_date,
                 relevance_time:    input.relevance_time || null,
-                urgency_hint:      input.urgency_hint || 'routine',
+                urgency_signal:    input.urgency_signal ?? input.urgency_hint ?? 'routine',
                 relevant_datetime: input.relevant_datetime || null,
                 events:            input.events || null,
                 group_name:        groupName,

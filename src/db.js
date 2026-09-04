@@ -492,6 +492,10 @@ function initDB() {
   // Day/date mismatch detection (Phase 1) — warn-only, never mutates source
   try { db.exec("ALTER TABLE notices ADD COLUMN weekday_mismatch INTEGER DEFAULT 0"); } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN validation_notes TEXT"); } catch (_) {}
+  // B4: which computeUrgencyHint rule set this notice's urgency
+  // ('keyword' | 'datetime' | 'date_with_signal' | 'default'). Lets the triage
+  // quiet-hours gate distinguish datetime-grounded immediates from keyword ones.
+  try { db.exec("ALTER TABLE notices ADD COLUMN urgency_source TEXT"); } catch (_) {}
   // RC-2/RC-3 fix: query_visible for schedule queries, group_alerts for unknown group tracking
   try { db.exec("ALTER TABLE notices ADD COLUMN query_visible INTEGER DEFAULT 1"); } catch (_) {}
   try { db.exec(`CREATE TABLE IF NOT EXISTS group_alerts (
@@ -902,7 +906,7 @@ function _extractNoticeTimes(text) {
   return (text || '').match(/\b\d{1,2}:\d{2}\b/g) || [];
 }
 
-function saveNotice({ group_name, content, relevance_date, relevance_time, source_timestamp, urgency_hint, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until, weekday_mismatch, validation_notes }) {
+function saveNotice({ group_name, content, relevance_date, relevance_time, source_timestamp, urgency_hint, urgency_source, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until, weekday_mismatch, validation_notes }) {
   // Deduplicate: same group + same content snippet + same relevance_date
   const snippet = (content || '').substring(0, 80);
   const existing = getDB().prepare(
@@ -916,13 +920,13 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
   const result = getDB().prepare(
     `INSERT INTO notices
       (group_name, content, relevance_date, relevance_time, source_timestamp, dismissed, created_at, row_type, sources,
-       urgency_hint, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until,
+       urgency_hint, urgency_source, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until,
        weekday_mismatch, validation_notes, normalized_content)
-     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     group_name, content, relevance_date || null, relevance_time || null,
     source_timestamp || Date.now(), Date.now(), JSON.stringify([group_name]),
-    urgency_hint || 'routine', relevant_datetime || null,
+    urgency_hint || 'routine', urgency_source || 'default', relevant_datetime || null,
     message_timestamp || source_timestamp || Date.now(),
     delivery_status || 'pending',
     message_sent_at || null,
