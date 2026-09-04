@@ -130,6 +130,22 @@ function buildHealthPayload() {
   return payload;
 }
 
+// ── Q1/Q3: Notices query path ────────────────────────────────────────────────
+// Shared search cascade used by both /api/notices/search and /api/notices/lookup:
+// try the date-bounded "upcoming" window first, fall back to a wider content
+// search when that yields nothing. Returns { results (≤20), matched_via }.
+function noticeSearch({ q, child, days } = {}) {
+  const { NoticeRepository } = require('./notices/repository');
+  const repo = new NoticeRepository();
+  let results = repo.findUpcoming({ searchText: q || null, childName: child || null });
+  let matched_via = 'upcoming';
+  if (!results || results.length === 0) {
+    results = repo.findByContent({ searchText: q || null, childName: child || null, daysBack: days || 14 });
+    matched_via = 'content_search';
+  }
+  return { results: (results || []).slice(0, 20), matched_via };
+}
+
 function createServer() {
   const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
@@ -494,6 +510,76 @@ function createServer() {
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
       return;
+    }
+
+    // ── Q1: GET /api/notices/search?q=<text>&child=<name>&days=<N> ─────────────
+    // Search cascade: upcoming window first, wider content search as fallback.
+    if (req.method === 'GET' && req.url.startsWith('/api/notices/search')) {
+      try {
+        const urlObj = new URL(req.url, 'http://localhost');
+        const q = urlObj.searchParams.get('q') || null;
+        const child = urlObj.searchParams.get('child') || null;
+        const days = parseInt(urlObj.searchParams.get('days') || '', 10) || null;
+        const { results, matched_via } = noticeSearch({ q, child, days });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ results, matched_via, count: results.length }));
+      } catch (e) {
+        console.error('[VoiceServer] /api/notices/search error:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: e.message }));
+      }
+    }
+
+    // ── Q1: GET /api/notices/upcoming?from=<date>&to=<date>&child=<name> ───────
+    if (req.method === 'GET' && req.url.startsWith('/api/notices/upcoming')) {
+      try {
+        const urlObj = new URL(req.url, 'http://localhost');
+        const from = urlObj.searchParams.get('from') || undefined;
+        const to = urlObj.searchParams.get('to') || undefined;
+        const child = urlObj.searchParams.get('child') || null;
+        const { NoticeRepository } = require('./notices/repository');
+        const results = new NoticeRepository()
+          .findUpcoming({ from, to, childName: child })
+          .slice(0, 20);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ results, count: results.length }));
+      } catch (e) {
+        console.error('[VoiceServer] /api/notices/upcoming error:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: e.message }));
+      }
+    }
+
+    // ── Q3: GET /api/notices/lookup?query=<text>&child=<name>&from=&to= ────────
+    // The OpenClaw tool endpoint Lipa calls before answering schedule questions.
+    // Combines the search cascade (when `query` is given) with the plain upcoming
+    // lookup, and always includes notice_ids so Lipa can cite sources (G1).
+    if (req.method === 'GET' && req.url.startsWith('/api/notices/lookup')) {
+      try {
+        const urlObj = new URL(req.url, 'http://localhost');
+        const query = urlObj.searchParams.get('query') || null;
+        const child = urlObj.searchParams.get('child') || null;
+        const from = urlObj.searchParams.get('from') || undefined;
+        const to = urlObj.searchParams.get('to') || undefined;
+        let results, matched_via;
+        if (query) {
+          const days = parseInt(urlObj.searchParams.get('days') || '', 10) || null;
+          ({ results, matched_via } = noticeSearch({ q: query, child, days }));
+        } else {
+          const { NoticeRepository } = require('./notices/repository');
+          results = new NoticeRepository()
+            .findUpcoming({ from, to, childName: child })
+            .slice(0, 20);
+          matched_via = 'upcoming';
+        }
+        const notice_ids = results.map(r => r.id);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ results, matched_via, count: results.length, notice_ids }));
+      } catch (e) {
+        console.error('[VoiceServer] /api/notices/lookup error:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: e.message }));
+      }
     }
 
     if (req.method === 'POST' && req.url === '/send-message') {

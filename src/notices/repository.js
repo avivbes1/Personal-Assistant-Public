@@ -46,7 +46,7 @@ class NoticeRepository {
 
     let sql = `
       SELECT id, group_name, content, relevance_date, relevance_time,
-             relevant_datetime, created_at, triage_decision, query_visible
+             relevant_datetime, created_at, triage_decision, query_visible, primary_child
       FROM notices
       WHERE query_visible = 1
         AND dismissed = 0
@@ -70,9 +70,13 @@ class NoticeRepository {
       return [];
     }
 
-    // Hebrew content filtering (post-query, since SQLite LIKE is case-insensitive ASCII only)
+    // Hebrew content filtering (post-query, since SQLite LIKE is case-insensitive ASCII only).
+    // Q2: match on primary_child (the group→child link) OR the child's name in the
+    // body, so notices from a class group that never names the child still surface.
     if (childName) {
-      results = results.filter(r => r.content && r.content.includes(childName));
+      results = results.filter(r =>
+        r.primary_child === childName || (r.content && r.content.includes(childName))
+      );
     }
     if (searchText) {
       results = results.filter(r => r.content && r.content.includes(searchText));
@@ -97,7 +101,7 @@ class NoticeRepository {
     let results;
     try {
       results = this.db.prepare(`
-        SELECT id, group_name, content, relevance_date, relevance_time, created_at
+        SELECT id, group_name, content, relevance_date, relevance_time, created_at, primary_child
         FROM notices
         WHERE query_visible = 1
           AND dismissed = 0
@@ -110,7 +114,8 @@ class NoticeRepository {
       return [];
     }
 
-    if (childName) results = results.filter(r => r.content?.includes(childName));
+    // Q2: match on the group→child link OR the child's name in the body.
+    if (childName) results = results.filter(r => r.primary_child === childName || r.content?.includes(childName));
     if (searchText) results = results.filter(r => r.content?.includes(searchText));
 
     return results.slice(0, 20);

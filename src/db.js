@@ -520,6 +520,20 @@ function initDB() {
   try { db.exec("ALTER TABLE notices ADD COLUMN calendar_error TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN fingerprint TEXT"); } catch (_) {}
 
+  // Q2: primary_child on notices — links a notice to the child whose class group
+  // it came from, even when the message body never names the child. The link
+  // lives on the group (groups.primary_child); saveNotice() copies it onto each
+  // new notice and this backfill populates historical rows.
+  try { db.exec("ALTER TABLE notices ADD COLUMN primary_child TEXT"); } catch (_) {}
+  try {
+    db.exec(`
+      UPDATE notices SET primary_child = (
+        SELECT primary_child FROM groups WHERE groups.name = notices.group_name
+      )
+      WHERE primary_child IS NULL
+    `);
+  } catch (_) {}
+
   // group_alerts — one row per "I joined a new/unknown group" alert we sent to
   // the master group, so batched triage doesn't re-alert about the same group.
   try {
@@ -929,12 +943,19 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
   const validUntil = valid_until || relevance_date || null;
   // Phase 2.2: precompute normalized content so future dedup passes are cheaper.
   const normalized = normalizeText(content);
+  // Q2: copy the source group's primary_child onto the notice so child-scoped
+  // queries work even when the message body never names the child.
+  let primaryChild = null;
+  try {
+    const grp = getDB().prepare('SELECT primary_child FROM groups WHERE name = ? LIMIT 1').get(group_name);
+    primaryChild = grp ? grp.primary_child : null;
+  } catch (_) {}
   const result = getDB().prepare(
     `INSERT INTO notices
       (group_name, content, relevance_date, relevance_time, source_timestamp, dismissed, created_at, row_type, sources,
        urgency_hint, urgency_source, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until,
-       weekday_mismatch, validation_notes, normalized_content, calendar_worthy, event_type)
-     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       weekday_mismatch, validation_notes, normalized_content, calendar_worthy, event_type, primary_child)
+     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     group_name, content, relevance_date || null, relevance_time || null,
     source_timestamp || Date.now(), Date.now(), JSON.stringify([group_name]),
@@ -947,7 +968,8 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
     validation_notes || null,
     normalized,
     calendar_worthy ? 1 : 0,
-    event_type || null
+    event_type || null,
+    primaryChild
   );
   return result.lastInsertRowid;
 }
