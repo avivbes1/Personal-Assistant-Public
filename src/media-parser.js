@@ -21,6 +21,12 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_WHISPER_MODEL = 'whisper-large-v3-turbo';
 
+// C3: ivrit.ai Hebrew-optimized Whisper model (faster-whisper, local).
+// Falls back to Groq when the local model is unavailable or fails.
+const IVRIT_MODEL = process.env.IVRIT_WHISPER_MODEL || 'ivrit-ai/whisper-large-v3-turbo-ct2';
+const IVRIT_COMPUTE_TYPE = process.env.IVRIT_COMPUTE_TYPE || 'int8';
+const USE_IVRIT = process.env.USE_IVRIT_WHISPER !== '0'; // enabled by default
+
 /**
  * Returns true if this group is linked to a child member.
  * Uses the primary_child DB field — set during group reconciliation.
@@ -147,12 +153,67 @@ function audioExtFromMime(mimeType) {
  * @param {Buffer} buffer   — raw audio bytes
  * @param {string} mimeType — e.g. 'audio/ogg; codecs=opus'
  */
+/**
+ * C3: Transcribe via ivrit.ai's Hebrew-fine-tuned Whisper model (local, faster-whisper).
+ * Returns transcription text or null on failure. Spawns a Python child process.
+ */
+async function transcribeWithIvrit(buffer, mimeType) {
+  if (!buffer || !buffer.length) return null;
+  const { execFile } = require('child_process');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+
+  const ext = audioExtFromMime(mimeType);
+  const tmpPath = path.join(os.tmpdir(), `ivrit-${Date.now()}.${ext}`);
+  fs.writeFileSync(tmpPath, buffer);
+
+  const scriptPath = path.join(__dirname, '..', 'scripts', 'ivrit-transcribe.py');
+  const startMs = Date.now();
+
+  return new Promise((resolve) => {
+    execFile('python3', [scriptPath, tmpPath, '--model', IVRIT_MODEL, '--compute-type', IVRIT_COMPUTE_TYPE], {
+      timeout: 120000, // 2 min timeout for model loading + transcription
+      maxBuffer: 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      try { fs.unlinkSync(tmpPath); } catch (_) {}
+      const durationMs = Date.now() - startMs;
+
+      if (err) {
+        console.warn(`[MediaParser] ivrit.ai transcription failed (${durationMs}ms):`, stderr?.trim() || err.message);
+        traceCall({ model: IVRIT_MODEL, callSite: 'media.transcribe.ivrit', durationMs, success: false, error: err.message });
+        resolve(null);
+        return;
+      }
+
+      const text = (stdout || '').trim();
+      if (text) {
+        traceCall({ model: IVRIT_MODEL, callSite: 'media.transcribe.ivrit', durationMs, success: true });
+        console.log(`[MediaParser] ivrit.ai transcribed ${text.length} chars in ${durationMs}ms`);
+        resolve(text);
+      } else {
+        traceCall({ model: IVRIT_MODEL, callSite: 'media.transcribe.ivrit', durationMs, success: false, error: 'no text' });
+        resolve(null);
+      }
+    });
+  });
+}
+
 async function transcribeAudio(buffer, mimeType) {
+  if (!buffer || !buffer.length) return null;
+
+  // C3: Try ivrit.ai Hebrew model first (local, better Hebrew accuracy)
+  if (USE_IVRIT) {
+    const ivritResult = await transcribeWithIvrit(buffer, mimeType);
+    if (ivritResult) return ivritResult;
+    console.log('[MediaParser] ivrit.ai failed, falling back to Groq Whisper...');
+  }
+
+  // Fallback: Groq Whisper (remote)
   if (!GROQ_API_KEY) {
-    console.warn('[MediaParser] GROQ_API_KEY not set — cannot transcribe audio.');
+    console.warn('[MediaParser] GROQ_API_KEY not set and ivrit.ai failed — cannot transcribe audio.');
     return null;
   }
-  if (!buffer || !buffer.length) return null;
 
   try {
     const CRLF = '\r\n';
