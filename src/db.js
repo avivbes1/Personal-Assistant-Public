@@ -615,6 +615,16 @@ function initDB() {
   try { db.exec('ALTER TABLE messages ADD COLUMN retry_count INTEGER DEFAULT 0'); } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_pipeline_state ON messages(pipeline_state, processing_started_at)'); } catch (_) {}
 
+  // ── Q6: query_misses ──────────────────────────────────────────────────────
+  try { db.exec(`CREATE TABLE IF NOT EXISTS query_misses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question TEXT NOT NULL,
+    reply TEXT,
+    tool_called INTEGER DEFAULT 0,
+    data_existed INTEGER DEFAULT NULL,
+    created_at INTEGER NOT NULL
+  )`); } catch (_) {}
+
   // ── E1: message-edit capture (messages.update) ──────────────────────────────
   // stanza_id is the stable WhatsApp message id (rawMsg.key.id); edits arrive
   // keyed on it. body_history keeps prior bodies so an edit is auditable; the old
@@ -1909,6 +1919,17 @@ function getFeedbackStats() {
   return { ...stats, byAction };
 }
 
+// ── Q6: log unanswered schedule questions ──────────────────────────────────
+function logQueryMiss(question, reply, toolCalled = false) {
+  try {
+    getDB().prepare(
+      'INSERT INTO query_misses (question, reply, tool_called, created_at) VALUES (?, ?, ?, ?)'
+    ).run(question, reply || null, toolCalled ? 1 : 0, Date.now());
+  } catch (e) {
+    console.error('[DB] logQueryMiss error:', e.message);
+  }
+}
+
 module.exports = {
   initDB,
   getDB,
@@ -1919,6 +1940,7 @@ module.exports = {
   markMessageProcessed,
   saveNotice,
   enrichNoticeByThreadKey,
+  logQueryMiss,
   saveNoticeEvents,
   getActiveNotices,
   markNoticesShownInDigest,
