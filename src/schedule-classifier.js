@@ -46,6 +46,14 @@ const SCHEDULE_PATTERNS = [
   /מה (קורה|יש) (היום|מחר|בשבוע|השבוע)/,                // "מה קורה מחר"
   /יש (חוגים?|פעילות|טיול|מסיבה|אירוע)/,                // "יש טיול"
   /מה (נדרש|צריך|אמור) ל/,                                // "מה נדרש לשגב"
+  // Q5: additional schedule/logistics phrasings
+  /באיזה שעה/,                                             // "באיזה שעה"
+  /איפה (ה|יהיה)/,                                        // "איפה האירוע / איפה יהיה"
+  /מה עם ה/,                                               // "מה עם המסיבה"
+  /כמה עולה/,                                              // "כמה עולה"
+  /מתי (מתחיל|מתחילה|מסתיים|מסתיימת)/,                    // "מתי מתחיל / מתי מסתיים"
+  /צריך להביא/,                                            // "צריך להביא"
+  /יש ל\S+ (חוג|אימון|שיעור)/,                            // "יש לנטע חוג"
 ];
 
 /**
@@ -137,4 +145,61 @@ function classifyScheduleQuery(text) {
   return { isScheduleQuery: true, childName, dateHint, dateRange };
 }
 
-module.exports = { isScheduleQuery, classifyScheduleQuery, extractChildName, CHILD_NAMES };
+/**
+ * Q4: Pre-fetch the notices relevant to a schedule query and format them as an
+ * LLM context block. This is the "primary path" described at the top of this
+ * file — the caller injects the result into the prompt so the answer is grounded
+ * in real notices instead of relying on the LLM to remember to call a lookup.
+ *
+ * It is a HINT, never a gate: when the text is not a schedule query, or nothing
+ * matches, it returns '' and the caller's behaviour is unchanged. Notice ids are
+ * included so the answering LLM can cite its source (G1).
+ *
+ * @param {string} text
+ * @param {object} [opts]
+ * @param {object} [opts.repo]  Injectable NoticeRepository (for tests)
+ * @returns {string}  context block, or '' when there is nothing to add
+ */
+function buildScheduleHint(text, opts = {}) {
+  const cls = classifyScheduleQuery(text);
+  if (!cls.isScheduleQuery) return '';
+
+  let repo = opts.repo;
+  if (!repo) {
+    try {
+      const { NoticeRepository } = require('./notices/repository');
+      repo = new NoticeRepository();
+    } catch (_) {
+      return ''; // repository unavailable — degrade silently, never block the answer
+    }
+  }
+
+  try {
+    const range = cls.dateRange || {};
+    let rows = repo.findUpcoming({
+      from:      range.from,
+      to:        range.to,
+      childName: cls.childName || null,
+    });
+    // Widen to a content search when the date window turns up nothing.
+    if (!rows || rows.length === 0) {
+      rows = repo.findByContent({ childName: cls.childName || null });
+    }
+    if (!rows || rows.length === 0) return '';
+
+    const lines = rows.slice(0, 12).map(r => {
+      const date = r.relevance_date || 'ללא תאריך';
+      const time = r.relevance_time ? ` ${r.relevance_time}` : '';
+      const grp  = r.group_name ? ` [${r.group_name}]` : '';
+      const body = (r.content || '').replace(/\s+/g, ' ').trim().substring(0, 160);
+      return `• [notice:${r.id}] ${date}${time}${grp}: ${body}`;
+    });
+
+    return `\n## התראות רלוונטיות לשאלה (נשלפו מראש):\n${lines.join('\n')}\n`;
+  } catch (e) {
+    console.warn('[ScheduleClassifier] buildScheduleHint error:', e.message);
+    return '';
+  }
+}
+
+module.exports = { isScheduleQuery, classifyScheduleQuery, extractChildName, buildScheduleHint, CHILD_NAMES };

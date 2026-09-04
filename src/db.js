@@ -320,6 +320,21 @@ function initDB() {
     CREATE INDEX IF NOT EXISTS idx_cal_intents_date ON calendar_intents(event_date, status);
   `);
 
+  // calendar_intents outbox columns used by calendar-bridge.js. These were added
+  // to production out-of-band and never captured in the original CREATE TABLE, so
+  // a fresh checkout / CI DB lacked them and the bridge INSERT crashed. Safe
+  // migrations — no-op when the column already exists.
+  try { db.exec('ALTER TABLE calendar_intents ADD COLUMN notice_id INTEGER'); } catch (_) {}
+  try { db.exec('ALTER TABLE calendar_intents ADD COLUMN fingerprint TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE calendar_intents ADD COLUMN event_location TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE calendar_intents ADD COLUMN attempts INTEGER DEFAULT 0'); } catch (_) {}
+  try { db.exec('ALTER TABLE calendar_intents ADD COLUMN last_error TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE calendar_intents ADD COLUMN updated_at INTEGER'); } catch (_) {}
+  // K3: date-known / time-unknown notices become all-day events. time_status
+  // records why a time is absent — 'known' (has time), 'unknown' (not yet
+  // published), or 'updated' (a time arrived later and the event was patched).
+  try { db.exec("ALTER TABLE calendar_intents ADD COLUMN time_status TEXT DEFAULT 'known'"); } catch (_) {}
+
   // Migrations — add columns that may not exist in older DBs
   try { db.exec("ALTER TABLE reminders ADD COLUMN owner TEXT DEFAULT 'both'"); } catch (_) {}
   // TASK 0.3: audit column recording when a reserved reminder was confirmed sent.

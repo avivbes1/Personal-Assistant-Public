@@ -293,7 +293,16 @@ async function answerQuery(question, history = [], memberContext = null) {
     ? `\nאנשים שמוזכרים בהודעה:\n${memberContext}\n`
     : '';
 
-  const systemPrompt = `${renderPrompt("query-system", { BOT_NAME: config.BOT_NAME, BOT_NAME_ALT: config.BOT_NAME_ALT, CONTEXT: context + memberSection })}
+  // Q4: pre-fetch notices for schedule questions so the answer is grounded in
+  // real notices. Returns '' for non-schedule questions — behaviour unchanged.
+  let scheduleHint = '';
+  try {
+    scheduleHint = require('./schedule-classifier').buildScheduleHint(question);
+  } catch (e) {
+    console.warn('[Query] buildScheduleHint error:', e.message);
+  }
+
+  const systemPrompt = `${renderPrompt("query-system", { BOT_NAME: config.BOT_NAME, BOT_NAME_ALT: config.BOT_NAME_ALT, CONTEXT: context + memberSection + scheduleHint })}
 
 ## כלל 1 — השתמש בהקשר, אל תבקש הבהרה מיותרת
 אם יש לך הקשר מהשיחה או מהודעה מצוטטת, **השתמש בו ישירות**. לעולם אל תשאל "על מה אתה מדבר?" כשהתשובה ברורה מההיסטוריה או מהציטוט.

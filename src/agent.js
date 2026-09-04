@@ -771,6 +771,16 @@ async function handleMessage(text, quotedMsg, senderName, conversationHistory = 
     console.warn('[Agent] buildQuerySpecificContext error:', err.message);
   }
 
+  // Q4: pre-fetch notices for schedule questions and inject them as context.
+  // No-op (returns '') when the message isn't a schedule query — not a gate.
+  try {
+    const { buildScheduleHint } = require('./schedule-classifier');
+    const scheduleHint = buildScheduleHint(text);
+    if (scheduleHint) context += scheduleHint;
+  } catch (err) {
+    console.warn('[Agent] buildScheduleHint error:', err.message);
+  }
+
   const systemPrompt = buildSystemPrompt(context);
 
   // Build messages array with recent history

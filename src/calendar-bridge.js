@@ -81,10 +81,16 @@ function fingerprint(groupName, date, contentPrefix) {
  * Build a Google Calendar event payload from a notice row.
  */
 function buildEventPayload(notice) {
-  const title   = notice.event_title || _inferTitle(notice);
-  const date    = notice.relevance_date;
-  const time    = notice.relevance_time;
-  const location = notice.event_location || null;
+  const baseTitle = notice.event_title || _inferTitle(notice);
+  const date      = notice.relevance_date;
+  const time      = notice.relevance_time;
+  const location  = notice.event_location || null;
+
+  // K3: a known date with no time is an all-day event, never a fabricated time.
+  // Flag it in the title so the family knows the hour is still pending, and
+  // record time_status so a later update can fill it in.
+  const timeKnown = !!time;
+  const title     = timeKnown ? baseTitle : `${baseTitle} — שעה טרם פורסמה`;
 
   const startIso = time ? `${date}T${time}:00` : date;
   const endIso   = time
@@ -93,10 +99,11 @@ function buildEventPayload(notice) {
 
   return {
     title,
-    start_time: startIso,
-    end_time:   endIso,
+    start_time:  startIso,
+    end_time:    endIso,
     location,
     description: `מקור: ${notice.group_name || 'קבוצה'}\n${notice.content || ''}`,
+    time_status: timeKnown ? 'known' : 'unknown',
   };
 }
 
@@ -186,8 +193,8 @@ async function createCalendarForNotice(notice) {
     const result = db.prepare(`
       INSERT INTO calendar_intents
         (source, event_title, event_date, event_start, event_end, raw_message,
-         status, created_at, notice_id, fingerprint, event_location, attempts, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, 0, ?)
+         status, created_at, notice_id, fingerprint, event_location, attempts, updated_at, time_status)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, 0, ?, ?)
     `).run(
       'calendar_bridge',
       payload.title,
@@ -199,7 +206,8 @@ async function createCalendarForNotice(notice) {
       notice.id,
       fp,
       payload.location || null,
-      now
+      now,
+      payload.time_status || 'known'
     );
     intentId = result.lastInsertRowid;
 

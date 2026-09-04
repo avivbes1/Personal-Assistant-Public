@@ -174,10 +174,15 @@ async function extractCandidate(action, rawMessage, groupName) {
     ? await resolveLocationAddress(action.location)
     : null;
 
+  // K3: a candidate with no usable time is an all-day event. A time that looks
+  // inferred (not explicit in the message) is dropped — we never fabricate one.
+  const finalTime = timeSource === 'inferred' ? null : time;
+
   return {
     title:       action.summary || action.title || 'אירוע',
     date,
-    time:        timeSource === 'inferred' ? null : time,  // drop inferred times
+    time:        finalTime,  // drop inferred times
+    allDay:      !finalTime,
     timeSource,
     owner:       (action.owner || 'both').toLowerCase(),
     location:    resolvedLocation,
