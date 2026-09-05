@@ -95,9 +95,19 @@ const REQUEST_INTERVAL_MS = 250; // ≤ 4 req/s, safely under the 5 req/s cap
 const BATCH_DELAY_MS = 1000;     // breather between batches of 10
 
 // M3: the gate is a conjunction of three thresholds, not pipeline accuracy alone.
+// M1: these are FALLBACK floors, used only when no baseline.json exists (or a
+// metric is missing from it). With a baseline present, each unset threshold is
+// derived as baseline_value − margin so the gate tracks the baseline rather than
+// a stale hardcoded number.
 const DEFAULT_PIPELINE_THRESHOLD = 0.70;
 const DEFAULT_ACTION_THRESHOLD = 0.35;        // multilabel action accuracy
 const DEFAULT_SENDNOW_RECALL_THRESHOLD = 0.10; // recall on the send_now class
+
+// M1: how far below the baseline each gate is allowed to fall before failing.
+// Wide enough to absorb normal LLM run-to-run variance, tight enough to catch a
+// real regression.
+const BASELINE_PATH = path.join(__dirname, 'baseline.json');
+const THRESHOLD_MARGIN = { pipeline: 0.10, action: 0.10, sendnow_recall: 0.15 };
 
 // Approximate USD per 1M tokens. Rough — edit to match current pricing.
 const PRICING = {
@@ -116,6 +126,10 @@ function parseArgs(argv) {
     pipelineThreshold: DEFAULT_PIPELINE_THRESHOLD,
     actionThreshold: DEFAULT_ACTION_THRESHOLD,
     sendnowRecallThreshold: DEFAULT_SENDNOW_RECALL_THRESHOLD,
+    // M1: track which thresholds the user set explicitly. Unset ones are derived
+    // dynamically from the baseline (baseline_value − margin) when a baseline
+    // exists, so the gate ratchets with the baseline instead of a fixed floor.
+    explicit: { pipeline: false, action: false, sendnowRecall: false },
     strict: false, out: DEFAULT_RESULTS_PATH,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -128,13 +142,13 @@ function parseArgs(argv) {
     else if (a === '--model') args.model = argv[++i];
     else if (a.startsWith('--model=')) args.model = a.split('=')[1];
     // --threshold is a backwards-compat alias for --pipeline-threshold.
-    else if (a === '--threshold' || a === '--pipeline-threshold') args.pipelineThreshold = parseFloat(argv[++i]);
-    else if (a.startsWith('--threshold=')) args.pipelineThreshold = parseFloat(a.split('=')[1]);
-    else if (a.startsWith('--pipeline-threshold=')) args.pipelineThreshold = parseFloat(a.split('=')[1]);
-    else if (a === '--action-threshold') args.actionThreshold = parseFloat(argv[++i]);
-    else if (a.startsWith('--action-threshold=')) args.actionThreshold = parseFloat(a.split('=')[1]);
-    else if (a === '--sendnow-recall-threshold') args.sendnowRecallThreshold = parseFloat(argv[++i]);
-    else if (a.startsWith('--sendnow-recall-threshold=')) args.sendnowRecallThreshold = parseFloat(a.split('=')[1]);
+    else if (a === '--threshold' || a === '--pipeline-threshold') { args.pipelineThreshold = parseFloat(argv[++i]); args.explicit.pipeline = true; }
+    else if (a.startsWith('--threshold=')) { args.pipelineThreshold = parseFloat(a.split('=')[1]); args.explicit.pipeline = true; }
+    else if (a.startsWith('--pipeline-threshold=')) { args.pipelineThreshold = parseFloat(a.split('=')[1]); args.explicit.pipeline = true; }
+    else if (a === '--action-threshold') { args.actionThreshold = parseFloat(argv[++i]); args.explicit.action = true; }
+    else if (a.startsWith('--action-threshold=')) { args.actionThreshold = parseFloat(a.split('=')[1]); args.explicit.action = true; }
+    else if (a === '--sendnow-recall-threshold') { args.sendnowRecallThreshold = parseFloat(argv[++i]); args.explicit.sendnowRecall = true; }
+    else if (a.startsWith('--sendnow-recall-threshold=')) { args.sendnowRecallThreshold = parseFloat(a.split('=')[1]); args.explicit.sendnowRecall = true; }
     else if (a === '--out') args.out = argv[++i];
     else if (a.startsWith('--out=')) args.out = a.split('=')[1];
     else if (a === '--help' || a === '-h') { printUsage(); process.exit(0); }
@@ -532,6 +546,71 @@ function estimateCost(model, inputTokens, outputTokens) {
   return { estimated_usd: usd != null ? round(usd, 6) : null, rate: rate || null };
 }
 
+// ── M1: baseline-derived gate thresholds ──────────────────────────────────────
+
+/** Load tests/eval/baseline.json, or null if absent/unparseable. */
+function loadBaseline() {
+  if (!fs.existsSync(BASELINE_PATH)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
+  } catch (e) {
+    console.warn(`[eval] baseline.json present but unparseable (${e.message}) — using fixed floors.`);
+    return null;
+  }
+}
+
+/**
+ * Pull a metric's value out of a baseline object, tolerant of both the current
+ * results shape (with a `gate` block) and older baselines that only carry the
+ * flat accuracy fields. Returns null when the metric can't be found.
+ */
+function baselineMetric(baseline, metric) {
+  if (!baseline) return null;
+  if (metric === 'pipeline') {
+    return baseline.gate?.pipeline?.value
+      ?? baseline.pipeline_state?.accuracy
+      ?? baseline.overall_accuracy
+      ?? null;
+  }
+  if (metric === 'action') {
+    return baseline.gate?.action?.value
+      ?? baseline.expected_action?.accuracy_multilabel
+      ?? baseline.expected_action?.accuracy
+      ?? null;
+  }
+  if (metric === 'sendnow_recall') {
+    return baseline.gate?.sendnow_recall?.value
+      ?? baseline.expected_action?.per_class?.send_now?.recall
+      ?? null;
+  }
+  return null;
+}
+
+/**
+ * Resolve the three gate thresholds. An explicitly-passed CLI threshold always
+ * wins; otherwise, when a baseline value exists, the threshold is
+ * baseline_value − margin (clamped to ≥ 0); otherwise the fixed floor.
+ * Returns { pipeline, action, sendnow_recall } where each is { value, source }.
+ */
+function resolveThresholds(args) {
+  const baseline = loadBaseline();
+  const resolve = (metric, explicit, cliValue, floor) => {
+    if (explicit) return { value: cliValue, source: 'cli' };
+    const bv = baselineMetric(baseline, metric);
+    if (bv != null) {
+      const value = Math.max(0, round(bv - THRESHOLD_MARGIN[metric], 4));
+      return { value, source: `baseline ${round(bv, 4)}−${THRESHOLD_MARGIN[metric]}` };
+    }
+    return { value: floor, source: 'fixed-floor' };
+  };
+  return {
+    baselineExists: !!baseline,
+    pipeline: resolve('pipeline', args.explicit.pipeline, args.pipelineThreshold, DEFAULT_PIPELINE_THRESHOLD),
+    action: resolve('action', args.explicit.action, args.actionThreshold, DEFAULT_ACTION_THRESHOLD),
+    sendnow_recall: resolve('sendnow_recall', args.explicit.sendnowRecall, args.sendnowRecallThreshold, DEFAULT_SENDNOW_RECALL_THRESHOLD),
+  };
+}
+
 // ── Dry-run ─────────────────────────────────────────────────────────────────
 
 function runDryRun(loaded, args) {
@@ -621,6 +700,17 @@ async function runEval(loaded, args) {
     console.warn(`[eval] ⚠ Deduped ${before - queue.length} duplicate record(s) (kept last per id).`);
   }
   if (args.limit != null) queue = queue.slice(0, args.limit);
+
+  // M1: resolve gate thresholds from the baseline (or fixed floors) and report
+  // them up-front so the run makes clear what it's gating against.
+  const resolvedThresholds = resolveThresholds(args);
+  console.log('[eval] Gate thresholds (M1 — derived from baseline unless overridden):');
+  console.log(`[eval]   pipeline accuracy   ≥ ${resolvedThresholds.pipeline.value}   (${resolvedThresholds.pipeline.source})`);
+  console.log(`[eval]   action accuracy     ≥ ${resolvedThresholds.action.value}   (${resolvedThresholds.action.source})`);
+  console.log(`[eval]   send_now recall     ≥ ${resolvedThresholds.sendnow_recall.value}   (${resolvedThresholds.sendnow_recall.source})`);
+  if (!resolvedThresholds.baselineExists) {
+    console.log('[eval]   (no baseline.json found — using fixed floors)');
+  }
 
   console.log(`[eval] Classifying ${queue.length} labeled message(s) with model "${model}"`);
   console.log(`[eval] Rate: ≥${REQUEST_INTERVAL_MS}ms/request, pause ${BATCH_DELAY_MS}ms every ${BATCH_SIZE}.`);
@@ -740,10 +830,13 @@ async function runEval(loaded, args) {
   const sendnowRecall = actionResult.per_class.send_now
     ? (actionResult.per_class.send_now.recall ?? 0)
     : 0;
+  const tPipeline = resolvedThresholds.pipeline.value;
+  const tAction = resolvedThresholds.action.value;
+  const tSendnow = resolvedThresholds.sendnow_recall.value;
   const gate = {
-    pipeline:       { value: round(pipelineAccuracy), threshold: args.pipelineThreshold, passed: pipelineAccuracy >= args.pipelineThreshold },
-    action:         { value: round(accuracyMultilabel), threshold: args.actionThreshold, passed: accuracyMultilabel >= args.actionThreshold },
-    sendnow_recall: { value: round(sendnowRecall), threshold: args.sendnowRecallThreshold, passed: sendnowRecall >= args.sendnowRecallThreshold },
+    pipeline:       { value: round(pipelineAccuracy), threshold: tPipeline, source: resolvedThresholds.pipeline.source, passed: pipelineAccuracy >= tPipeline },
+    action:         { value: round(accuracyMultilabel), threshold: tAction, source: resolvedThresholds.action.source, passed: accuracyMultilabel >= tAction },
+    sendnow_recall: { value: round(sendnowRecall), threshold: tSendnow, source: resolvedThresholds.sendnow_recall.source, passed: sendnowRecall >= tSendnow },
   };
   const overallAccuracy = pipelineAccuracy; // preserved for backwards compat
   const passed = gate.pipeline.passed && gate.action.passed && gate.sendnow_recall.passed;
@@ -756,11 +849,17 @@ async function runEval(loaded, args) {
     model,
     dataset: path.relative(path.join(__dirname, '..', '..'), DATASET_PATH),
     thresholds: {
-      pipeline: args.pipelineThreshold,
-      action: args.actionThreshold,
-      sendnow_recall: args.sendnowRecallThreshold,
+      pipeline: tPipeline,
+      action: tAction,
+      sendnow_recall: tSendnow,
+      // M1: provenance for each threshold (cli / baseline / fixed-floor).
+      source: {
+        pipeline: resolvedThresholds.pipeline.source,
+        action: resolvedThresholds.action.source,
+        sendnow_recall: resolvedThresholds.sendnow_recall.source,
+      },
     },
-    threshold: args.pipelineThreshold, // backwards-compat: old single-threshold field
+    threshold: tPipeline, // backwards-compat: old single-threshold field
     overall_accuracy: overallAccuracy,
     gate,
     passed,
@@ -838,9 +937,9 @@ async function runEval(loaded, args) {
   // ── M3: three-way gate ──
   const mark = (g) => (g.passed ? '✓' : '✗');
   console.log('\n[eval] Gate (all must pass):');
-  console.log(`[eval]   ${mark(gate.pipeline)} pipeline accuracy      ${gate.pipeline.value?.toFixed(4)} ≥ ${gate.pipeline.threshold}`);
-  console.log(`[eval]   ${mark(gate.action)} action accuracy (ML)    ${gate.action.value?.toFixed(4)} ≥ ${gate.action.threshold}`);
-  console.log(`[eval]   ${mark(gate.sendnow_recall)} send_now recall         ${gate.sendnow_recall.value?.toFixed(4)} ≥ ${gate.sendnow_recall.threshold}`);
+  console.log(`[eval]   ${mark(gate.pipeline)} pipeline accuracy      ${gate.pipeline.value?.toFixed(4)} ≥ ${gate.pipeline.threshold}  [${gate.pipeline.source}]`);
+  console.log(`[eval]   ${mark(gate.action)} action accuracy (ML)    ${gate.action.value?.toFixed(4)} ≥ ${gate.action.threshold}  [${gate.action.source}]`);
+  console.log(`[eval]   ${mark(gate.sendnow_recall)} send_now recall         ${gate.sendnow_recall.value?.toFixed(4)} ≥ ${gate.sendnow_recall.threshold}  [${gate.sendnow_recall.source}]`);
   console.log(`\n[eval] ${passed ? '✓ PASS' : '✗ FAIL'} — ${passed ? 'all gates met' : 'one or more gates failed'}`);
 
   return passed ? 0 : 1;
@@ -895,6 +994,9 @@ module.exports = {
   filterGold,
   goldStats,
   estimateCost,
+  loadBaseline,
+  baselineMetric,
+  resolveThresholds,
   PRIORITIES,
   ACTIONS,
   PIPELINE_STATES,

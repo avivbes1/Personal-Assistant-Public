@@ -15,6 +15,16 @@ console.log(`   Timezone: ${config.TIMEZONE}`);
 console.log(`   Master Group: ${config.MASTER_GROUP_NAME}`);
 console.log('');
 
+// A1: Startup timezone assertion. All date math on this box assumes a UTC host
+// (the notice/calendar window logic converts to Israel time explicitly). If the
+// host TZ has drifted from UTC, day-boundary calculations silently shift — so
+// resolve it once at boot, log it, and warn loudly on mismatch.
+const RESOLVED_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+console.log(`[Boot] Resolved timezone: ${RESOLVED_TZ}`);
+if (RESOLVED_TZ !== 'UTC') {
+  console.error(`[Boot] WARNING: Host timezone is ${RESOLVED_TZ}, expected UTC. Date calculations may be incorrect.`);
+}
+
 // 1. Initialize database
 initDB();
 

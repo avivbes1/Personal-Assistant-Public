@@ -385,6 +385,29 @@ async function _executeAction(action, senderName) {
             console.warn('[Agent] date-parse error (non-fatal):', parseErr.message);
           }
 
+          // D2: On multi-day notices, anchor relevance_date to the EARLIEST FUTURE
+          // event date rather than the posting date, so the notice surfaces in the
+          // right upcoming window. Only overrides when at least one event is today
+          // or later (Israel time); an all-past event set keeps existing behavior.
+          if (action.events && Array.isArray(action.events) && action.events.length > 0) {
+            try {
+              const todayIsrael = new Date(
+                new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' })
+              ).toISOString().slice(0, 10);
+              const minFutureDate = action.events
+                .map(e => e.date)
+                .filter(Boolean)
+                .filter(d => d >= todayIsrael)
+                .sort()[0];
+              if (minFutureDate && finalRelevanceDate !== minFutureDate) {
+                console.log(`[Agent] Multi-day notice: relevance_date → earliest future event ${minFutureDate} (was ${finalRelevanceDate || 'none'})`);
+                finalRelevanceDate = minFutureDate;
+              }
+            } catch (evErr) {
+              console.warn('[Agent] minFutureDate computation error (non-fatal):', evErr.message);
+            }
+          }
+
           noticeId = saveNotice({
             group_name:        action.group_name || 'unknown',
             content:           finalContent,

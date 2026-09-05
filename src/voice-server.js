@@ -20,7 +20,9 @@ class MessageMedia {
   }
 }
 
-const PORT = 3001;
+// Defaults to 3001 (prod). Overridable via env for isolated/test instances so a
+// throwaway server can bind a spare port without colliding with the live bot.
+const PORT = parseInt(process.env.VOICE_SERVER_PORT, 10) || 3001;
 
 const VOICES = {
   en: 'en-US-AndrewNeural',
@@ -110,6 +112,8 @@ function buildHealthPayload() {
     };
   }
   payload.init_errors = _initErrors;
+  // A1: surface the resolved host timezone so a UTC drift is observable via /health.
+  payload.resolved_timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {
     const { getMessagesPersisted5Min } = require('./message-counter');
     payload.messagesPersistedLast5Min = getMessagesPersisted5Min();
@@ -134,14 +138,19 @@ function buildHealthPayload() {
 // Shared search cascade used by both /api/notices/search and /api/notices/lookup:
 // try the date-bounded "upcoming" window first, fall back to a wider content
 // search when that yields nothing. Returns { results (≤20), matched_via }.
-function noticeSearch({ q, child, days } = {}) {
+//
+// A2: from/to are optional date bounds passed straight through to findUpcoming's
+// first leg. The cascade runs even when no query is given — an empty date window
+// still falls back to findByContent — so callers that hand us only a date range
+// never get a bare no-fallback lookup.
+function noticeSearch({ q, child, days, from, to } = {}) {
   const { NoticeRepository } = require('./notices/repository');
   const repo = new NoticeRepository();
-  let results = repo.findUpcoming({ searchText: q || null, childName: child || null });
+  let results = repo.findUpcoming({ searchText: q || null, childName: child || null, from, to });
   let matched_via = 'upcoming';
   if (!results || results.length === 0) {
     results = repo.findByContent({ searchText: q || null, childName: child || null, daysBack: days || 14 });
-    matched_via = 'content_search';
+    matched_via = 'content_fallback';
   }
   return { results: (results || []).slice(0, 20), matched_via };
 }
@@ -561,22 +570,119 @@ function createServer() {
         const child = urlObj.searchParams.get('child') || null;
         const from = urlObj.searchParams.get('from') || undefined;
         const to = urlObj.searchParams.get('to') || undefined;
-        let results, matched_via;
-        if (query) {
-          const days = parseInt(urlObj.searchParams.get('days') || '', 10) || null;
-          ({ results, matched_via } = noticeSearch({ q: query, child, days }));
-        } else {
-          const { NoticeRepository } = require('./notices/repository');
-          results = new NoticeRepository()
-            .findUpcoming({ from, to, childName: child })
-            .slice(0, 20);
-          matched_via = 'upcoming';
-        }
+        const days = parseInt(urlObj.searchParams.get('days') || '', 10) || null;
+        // A2: always route through the cascade — even a from/to-only lookup falls
+        // back to content search when the date window is empty (no bare no-fallback
+        // branch anymore).
+        const { results, matched_via } = noticeSearch({ q: query, child, days, from, to });
         const notice_ids = results.map(r => r.id);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ results, matched_via, count: results.length, notice_ids }));
       } catch (e) {
         console.error('[VoiceServer] /api/notices/lookup error:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: e.message }));
+      }
+    }
+
+    // ── B1: GET /api/context?from=<date>&to=<date>&child=<name> ────────────────
+    // Unified family view over a date range: notices (A2 cascade), calendar
+    // events (both parents, deduped by id), notice_event rows, and homework.
+    // This is the single endpoint Lipa can call to ground any schedule answer.
+    if (req.method === 'GET' && req.url.startsWith('/api/context')) {
+      try {
+        const urlObj = new URL(req.url, 'http://localhost');
+        const from = urlObj.searchParams.get('from');
+        const to = urlObj.searchParams.get('to');
+        const child = urlObj.searchParams.get('child') || null;
+        if (!from || !to) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Missing required params: from and to (YYYY-MM-DD)' }));
+        }
+        console.log(`[VoiceServer] /api/context from=${from} to=${to} child=${child || '-'}`);
+
+        // ── Notices: A2 cascade (upcoming window → content fallback) ──────────
+        const { results: noticeResults, matched_via } = noticeSearch({ child, from, to });
+        const notices = noticeResults.map(n => ({
+          ...n, notice_ids: [n.id], source_type: 'notice',
+        }));
+
+        // ── notice_event rows in the window ──────────────────────────────────
+        const { getDB } = require('./db');
+        // NOTE: notice_event has no `location` column in this schema (drift from
+        // the original spec) — select NULL AS location to keep the output field
+        // stable without erroring on a missing column.
+        let neRows = getDB().prepare(`
+          SELECT ne.id, ne.notice_id, ne.event_date, ne.event_time, ne.event_title, NULL AS location,
+                 n.group_name, n.content, n.primary_child, n.query_visible
+          FROM notice_event ne JOIN notices n ON ne.notice_id = n.id
+          WHERE n.dismissed = 0 AND n.query_visible = 1 AND ne.event_date BETWEEN ? AND ?
+          ORDER BY ne.event_date, ne.event_time
+        `).all(from, to);
+        if (child) {
+          neRows = neRows.filter(r => r.primary_child === child || (r.content && r.content.includes(child)));
+        }
+        const notice_events = neRows.map(r => ({
+          ...r, notice_ids: [r.notice_id], source_type: 'notice_event',
+        }));
+
+        // ── Calendar events: both parents (+ Liat work), deduped by id ────────
+        // Mirrors query.js fetchAllUpcomingEvents merge/dedupe, then narrows to
+        // the from/to window by event date.
+        let calendar_events = [];
+        try {
+          const config = require('./config');
+          const { getUpcomingEvents } = require('./calendar');
+          const PARENT1 = process.env.PARENT1_NAME || 'aviv';
+          const PARENT2 = process.env.PARENT2_NAME || 'liat';
+          const sources = [
+            { calendarId: config.AVIV_CALENDAR_ID, tokenPath: config.AVIV_TOKEN_PATH, owner: PARENT1 },
+            { calendarId: config.LIAT_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: PARENT2 },
+            ...(config.LIAT_WORK_CALENDAR_ID
+              ? [{ calendarId: config.LIAT_WORK_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: `${PARENT2} (work)` }]
+              : []),
+          ];
+          // Reach far enough ahead to cover the end of the `to` day, plus a buffer.
+          const toEndMs = new Date(`${to}T23:59:59Z`).getTime();
+          const hoursAhead = Math.max(24, Math.ceil((toEndMs - Date.now()) / 3600000) + 24);
+          const byId = new Map();
+          for (const { calendarId, tokenPath, owner } of sources) {
+            const list = await getUpcomingEvents(calendarId, tokenPath, hoursAhead);
+            for (const e of list) {
+              if (byId.has(e.id)) {
+                const ex = byId.get(e.id);
+                if (!ex.owners.includes(owner)) ex.owners.push(owner);
+              } else {
+                byId.set(e.id, { id: e.id, summary: e.summary, start: e.start, end: e.end, owners: [owner], source: 'calendar' });
+              }
+            }
+          }
+          calendar_events = [...byId.values()]
+            .filter(e => {
+              const d = (e.start?.dateTime || e.start?.date || '').substring(0, 10);
+              return d && d >= from && d <= to;
+            })
+            .map(e => ({ ...e, notice_ids: [], source_type: 'calendar' }));
+        } catch (calErr) {
+          console.error('[VoiceServer] /api/context calendar error:', calErr.message);
+        }
+
+        // ── Homework due within the window ───────────────────────────────────
+        let homework = [];
+        try {
+          const { getPendingHomework } = require('./db');
+          homework = getPendingHomework(from)
+            .filter(h => !h.due_date || h.due_date <= to)
+            .map(h => ({ ...h, notice_ids: [], source_type: 'homework' }));
+        } catch (hwErr) {
+          console.error('[VoiceServer] /api/context homework error:', hwErr.message);
+        }
+
+        console.log(`[VoiceServer] /api/context results: notices=${notices.length} calendar=${calendar_events.length} notice_events=${notice_events.length} homework=${homework.length} matched_via=${matched_via}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ notices, calendar_events, notice_events, homework, matched_via }));
+      } catch (e) {
+        console.error('[VoiceServer] /api/context error:', e.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: e.message }));
       }
