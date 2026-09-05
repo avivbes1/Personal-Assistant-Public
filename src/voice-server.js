@@ -114,6 +114,18 @@ function buildHealthPayload() {
   payload.init_errors = _initErrors;
   // A1: surface the resolved host timezone so a UTC drift is observable via /health.
   payload.resolved_timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // F1: surface monitored groups still missing a primary_child link. A non-zero
+  // count means new school-year groups aren't reaching child-scoped routing; warn
+  // once so it's visible in logs as well as /health.
+  try {
+    const { getUnlinkedMonitoredGroups } = require('./db');
+    const unlinked = getUnlinkedMonitoredGroups();
+    payload.unlinked_groups = unlinked.length;
+    payload.unlinked_group_names = unlinked.map(g => g.name);
+    if (unlinked.length > 0) {
+      console.warn(`[VoiceServer] ${unlinked.length} monitored group(s) have no primary_child: ${unlinked.map(g => g.name).join(', ')}`);
+    }
+  } catch (_) {}
   try {
     const { getMessagesPersisted5Min } = require('./message-counter');
     payload.messagesPersistedLast5Min = getMessagesPersisted5Min();
@@ -555,6 +567,24 @@ function createServer() {
           }
           const valid = blocked_fields.length === 0;
 
+          // E3: log every blocked field as a fabrication candidate for monitoring.
+          if (!valid) {
+            try {
+              const { logGroundingMiss } = require('./db');
+              for (const field of blocked_fields) {
+                logGroundingMiss({
+                  source: 'calendar_write',
+                  field_name: field,
+                  claimed_value: proposed[field] ?? (field === 'summary' ? summary : null),
+                  source_notice_id: Number(source_notice_id),
+                  context: `calendar/validate blocked ${field}; notice #${source_notice_id}`,
+                });
+              }
+            } catch (logErr) {
+              console.error('[VoiceServer] grounding-miss log failed:', logErr.message);
+            }
+          }
+
           console.log(`[VoiceServer] /api/calendar/validate notice #${source_notice_id} → valid=${valid}${valid ? '' : ` blocked=${blocked_fields.join(',')}`}`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify({
@@ -569,6 +599,23 @@ function createServer() {
           return res.end(JSON.stringify({ valid: false, blocked_fields: [], reason: e.message }));
         }
       });
+      return;
+    }
+
+    // E3: GET /api/grounding-misses?days=7 — recent fabrication candidates for
+    // monitoring. Returns the rows logged whenever a grounding gate blocked a field.
+    if (req.method === 'GET' && req.url.startsWith('/api/grounding-misses')) {
+      try {
+        const u = new URL(req.url, 'http://localhost');
+        const days = Number(u.searchParams.get('days') || 7);
+        const { getGroundingMisses } = require('./db');
+        const misses = getGroundingMisses(days);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, days, count: misses.length, misses }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
       return;
     }
 

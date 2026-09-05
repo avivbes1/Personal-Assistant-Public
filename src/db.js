@@ -259,6 +259,9 @@ function initDB() {
   // ── Homework & groups safe migrations ─────────────────────────────────────
   try { db.exec('ALTER TABLE homework ADD COLUMN updated_at INTEGER'); } catch (_) {}
   try { db.exec('ALTER TABLE groups ADD COLUMN primary_child TEXT'); } catch (_) {}
+  // F2: aliases holds a JSON array of a group's previous (prior-school-year) names
+  // so a renamed group can inherit last year's child link. Safe migration.
+  try { db.exec('ALTER TABLE groups ADD COLUMN aliases TEXT'); } catch (_) {}
 
   // ── Migration 007 (B7): Dedicated monitored column for groups ──────────────
   // related_to was overloaded as both type enum and free-text child name.
@@ -276,15 +279,42 @@ function initDB() {
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_hw_unique ON homework(child_name, COALESCE(due_date,\'\'), COALESCE(subject,\'\'), SUBSTR(description,1,80))');
   } catch (_) {}
 
-  // Populate primary_child from known group names
+  // F1: Populate primary_child from config/family-context.json.
+  // Was reading config/family-seed.json (which never existed → dead code path),
+  // leaving new school-year group names unlinked. family-context.json lists each
+  // child's group names under members[child].groups; we link every monitored
+  // group that still has a NULL primary_child. Idempotent: the IS NULL guard
+  // never overwrites an existing link, and unknown names simply match nothing.
   try {
-    const seedPath = require('path').join(__dirname, '../config/family-seed.json');
-    if (require('fs').existsSync(seedPath)) {
-      const seed = JSON.parse(require('fs').readFileSync(seedPath, 'utf8'));
+    const ctxPath = require('path').join(__dirname, '../config/family-context.json');
+    if (require('fs').existsSync(ctxPath)) {
+      const ctx = JSON.parse(require('fs').readFileSync(ctxPath, 'utf8'));
       const upd = db.prepare("UPDATE groups SET primary_child=? WHERE name=? AND primary_child IS NULL");
-      for (const cg of (seed.childGroups || [])) upd.run(cg.child_name_he || cg.child_name_en, cg.group_name);
+      let linked = 0;
+      for (const [child, member] of Object.entries(ctx.members || {})) {
+        for (const groupName of (member.groups || [])) {
+          const r = upd.run(child, groupName);
+          linked += r.changes;
+        }
+      }
+      if (linked > 0) console.log(`[DB] F1: linked ${linked} group(s) to a child from family-context.json`);
     }
-  } catch (_) {}
+  } catch (e) { console.warn('[DB] F1 primary_child population failed:', e.message); }
+
+  // F2: seed known school-year rename aliases so a promoted/renamed group can be
+  // matched back to last year's link. Keyed by the *current* name; each value is
+  // the JSON array of prior names. No-op for groups not present in this DB yet.
+  try {
+    const aliasMap = {
+      'הורים מרכזון ג-ד 26-27🦋': ['הורים מרכזון ג-ד 25-26🦋'],
+      'כיתה ד׳3 תשפ״ז 🌸': ['ג׳3 תשפ״ו 🧡🩵💜'],
+      'רשפים שכבה א׳ רימון תשפ"ז': ['רשפים שכבה א\' תשפ"ז'],
+    };
+    const updAlias = db.prepare('UPDATE groups SET aliases=? WHERE name=? AND aliases IS NULL');
+    for (const [name, prior] of Object.entries(aliasMap)) {
+      updAlias.run(JSON.stringify(prior), name);
+    }
+  } catch (e) { console.warn('[DB] F2 alias seeding failed:', e.message); }
 
   // OAuth tokens table
   db.exec(`
@@ -680,6 +710,25 @@ function initDB() {
       )
     `);
   } catch (_) {}
+
+  // ── E3: grounding_misses — fabrication candidate log ───────────────────────
+  // Every field a grounding gate BLOCKS (a claimed date/time/amount/summary that
+  // was absent from its source notice) is recorded here so the fabrication rate
+  // is measurable over time. See logGroundingMiss() and GET /api/grounding-misses.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS grounding_misses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT,          -- 'query_response' | 'calendar_write' | 'notice_delivery'
+        field_name TEXT,      -- 'time' | 'date' | 'amount' | 'summary'
+        claimed_value TEXT,   -- what was stated/written
+        source_notice_id INTEGER,
+        context TEXT,         -- brief context
+        created_at INTEGER DEFAULT (unixepoch() * 1000)
+      )
+    `);
+  } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_grounding_misses_created ON grounding_misses(created_at)'); } catch (_) {}
 
   console.log('[DB] Initialized at', DB_PATH);
   return db;
@@ -1967,6 +2016,88 @@ function logQueryMiss(question, reply, toolCalled = false) {
   }
 }
 
+/**
+ * E3: record a blocked/ungrounded field as a fabrication candidate.
+ * @param {{source?:string, field_name?:string, claimed_value?:*, source_notice_id?:number, context?:string}} m
+ * @returns {number|null} inserted row id, or null on failure
+ */
+function logGroundingMiss({ source, field_name, claimed_value, source_notice_id, context } = {}) {
+  try {
+    const val = claimed_value == null ? null
+      : (typeof claimed_value === 'string' ? claimed_value : JSON.stringify(claimed_value));
+    const info = getDB().prepare(
+      `INSERT INTO grounding_misses (source, field_name, claimed_value, source_notice_id, context, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(source || null, field_name || null, val, source_notice_id == null ? null : Number(source_notice_id),
+          context || null, Date.now());
+    return info.lastInsertRowid;
+  } catch (e) {
+    console.error('[DB] logGroundingMiss error:', e.message);
+    return null;
+  }
+}
+
+/**
+ * E3: recent grounding misses for monitoring. Returns rows newer than `days`.
+ * @param {number} [days=7]
+ * @returns {Array<object>}
+ */
+function getGroundingMisses(days = 7) {
+  try {
+    const cutoff = Date.now() - Number(days || 7) * 86400000;
+    return getDB().prepare(
+      'SELECT * FROM grounding_misses WHERE created_at >= ? ORDER BY created_at DESC'
+    ).all(cutoff);
+  } catch (e) {
+    console.error('[DB] getGroundingMisses error:', e.message);
+    return [];
+  }
+}
+
+/**
+ * F1: monitored groups still lacking a primary_child link — used by the health
+ * check to surface unlinked groups. Returns [{name}].
+ */
+function getUnlinkedMonitoredGroups() {
+  try {
+    return getDB().prepare(
+      'SELECT name FROM groups WHERE monitored = 1 AND primary_child IS NULL ORDER BY name'
+    ).all();
+  } catch (e) {
+    console.error('[DB] getUnlinkedMonitoredGroups error:', e.message);
+    return [];
+  }
+}
+
+/**
+ * F2: propose a child link for a group via the aliases of already-linked groups.
+ * When a new school-year group arrives with no primary_child, an existing group
+ * whose aliases include the new name (or vice-versa) implies the same child.
+ * Returns the proposed child name or null. Read-only — the caller decides.
+ * @param {string} groupName
+ * @returns {string|null}
+ */
+function proposeChildFromAliases(groupName) {
+  if (!groupName) return null;
+  try {
+    const rows = getDB().prepare(
+      'SELECT name, primary_child, aliases FROM groups WHERE aliases IS NOT NULL AND primary_child IS NOT NULL'
+    ).all();
+    for (const r of rows) {
+      let list = [];
+      try { list = JSON.parse(r.aliases) || []; } catch (_) { continue; }
+      if (Array.isArray(list) && list.includes(groupName)) return r.primary_child;
+      // Also match the other direction: the incoming name IS a current group whose
+      // alias points back at a prior name that shares this child.
+      if (r.name === groupName) return r.primary_child;
+    }
+    return null;
+  } catch (e) {
+    console.error('[DB] proposeChildFromAliases error:', e.message);
+    return null;
+  }
+}
+
 module.exports = {
   initDB,
   getDB,
@@ -1979,6 +2110,10 @@ module.exports = {
   saveNotice,
   enrichNoticeByThreadKey,
   logQueryMiss,
+  logGroundingMiss,
+  getGroundingMisses,
+  getUnlinkedMonitoredGroups,
+  proposeChildFromAliases,
   saveNoticeEvents,
   getActiveNotices,
   markNoticesShownInDigest,

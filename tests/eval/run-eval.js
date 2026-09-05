@@ -492,6 +492,55 @@ function confusion(pairs, classes) {
   return matrix;
 }
 
+// ── M2: bootstrap confidence intervals ───────────────────────────────────────
+
+// Classes with fewer than this many labeled examples are flagged low-confidence:
+// their per-class precision/recall are too noisy to read as stable estimates.
+const LOW_SUPPORT_THRESHOLD = 30;
+
+/**
+ * Bootstrap a 95% CI for a statistic over a sample. Resamples `items` with
+ * replacement `resamples` times, applies `statFn` to each resample, and returns
+ * the 2.5th/97.5th percentiles of the resampled statistics alongside the
+ * point estimate on the full sample.
+ * @param {Array} items
+ * @param {(sample:Array)=>number} statFn  computes the statistic on a resample
+ * @param {number} [resamples=1000]
+ * @returns {{point:number|null, lo:number|null, hi:number|null, n:number, resamples:number}}
+ */
+function bootstrapCI(items, statFn, resamples = 1000) {
+  const n = items.length;
+  if (n === 0) return { point: null, lo: null, hi: null, n: 0, resamples };
+  const point = statFn(items);
+  const stats = new Array(resamples);
+  for (let b = 0; b < resamples; b++) {
+    const sample = new Array(n);
+    for (let i = 0; i < n; i++) sample[i] = items[(Math.random() * n) | 0];
+    stats[b] = statFn(sample);
+  }
+  stats.sort((a, b) => a - b);
+  // Percentile bootstrap: 2.5th / 97.5th order statistics of the resamples.
+  const pick = (q) => stats[Math.min(resamples - 1, Math.max(0, Math.floor(q * resamples)))];
+  return { point: round(point), lo: round(pick(0.025)), hi: round(pick(0.975)), n, resamples };
+}
+
+/** Format a CI as "0.60 [0.48, 0.71] (95% CI, n=81)". */
+function fmtCI(ci) {
+  if (!ci || ci.point == null) return '— (no data)';
+  return `${ci.point.toFixed(2)} [${ci.lo.toFixed(2)}, ${ci.hi.toFixed(2)}] (95% CI, n=${ci.n})`;
+}
+
+/**
+ * Per-class support flags: classes with support < LOW_SUPPORT_THRESHOLD are
+ * marked low-confidence. Returns [{ class, support, low_confidence }].
+ */
+function supportFlags(prfResult, classes) {
+  return classes.map((c) => {
+    const support = prfResult.per_class[c]?.support ?? 0;
+    return { class: c, support, low_confidence: support < LOW_SUPPORT_THRESHOLD };
+  });
+}
+
 // ── Pretty printing ─────────────────────────────────────────────────────────
 
 function printConfusion(title, matrix, classes) {
@@ -841,6 +890,27 @@ async function runEval(loaded, args) {
   const overallAccuracy = pipelineAccuracy; // preserved for backwards compat
   const passed = gate.pipeline.passed && gate.action.passed && gate.sendnow_recall.passed;
 
+  // ── M2: bootstrap 95% CIs for the two headline accuracies ──
+  // action accuracy uses the multilabel definition (the gated metric): a hit is
+  // a prediction present in the row's valid-actions set. pipeline accuracy is
+  // exact-match on pipeline_state. Both resample the scored rows with replacement.
+  const multilabelStat = (rows) =>
+    rows.length ? rows.filter((r) => validActionsFor(r).includes(r.pred_action)).length / rows.length : 0;
+  const exactMatchStat = (pairs) =>
+    pairs.length ? pairs.filter((p) => p.actual === p.pred).length / pairs.length : 0;
+  const confidence = {
+    resamples: 1000,
+    action_accuracy: bootstrapCI(scored, multilabelStat, 1000),
+    pipeline_accuracy: bootstrapCI(pipelinePairs, exactMatchStat, 1000),
+    // Per-class support flags — classes below LOW_SUPPORT_THRESHOLD examples are
+    // statistically unreliable and marked so downstream readers don't over-trust them.
+    low_support_threshold: LOW_SUPPORT_THRESHOLD,
+    action_class_support: supportFlags(actionResult, ACTIONS),
+    priority_class_support: supportFlags(priorityResult, PRIORITIES),
+  };
+  const lowConfidenceActions = confidence.action_class_support.filter((s) => s.low_confidence);
+  const lowConfidencePriorities = confidence.priority_class_support.filter((s) => s.low_confidence);
+
   const totalTokens = inputTokens + outputTokens;
   const cost = estimateCost(model, inputTokens, outputTokens);
 
@@ -863,6 +933,8 @@ async function runEval(loaded, args) {
     overall_accuracy: overallAccuracy,
     gate,
     passed,
+    // M2: bootstrap 95% CIs + per-class low-support flags.
+    confidence,
     counts: {
       total_records: records.length,
       labeled: records.filter((r) => r.label).length,
@@ -920,6 +992,17 @@ async function runEval(loaded, args) {
   console.log(`\nOverall accuracy (pipeline_state vs label): ${overallAccuracy.toFixed(4)}`);
   console.log(`Action accuracy — strict: ${accuracyStrict.toFixed(4)}   multilabel: ${accuracyMultilabel.toFixed(4)} ` +
     `(${multilabelHits} hit(s), ${offPrimaryHits} on a non-primary valid action)`);
+
+  // ── M2: bootstrap 95% confidence intervals ──
+  console.log('\n[eval] Bootstrap 95% confidence intervals (1000 resamples):');
+  console.log(`[eval]   action_accuracy:   ${fmtCI(confidence.action_accuracy)}`);
+  console.log(`[eval]   pipeline_accuracy: ${fmtCI(confidence.pipeline_accuracy)}`);
+  if (lowConfidenceActions.length || lowConfidencePriorities.length) {
+    const fmtLow = (arr) => arr.map((s) => `${s.class}(n=${s.support})`).join(', ');
+    console.log(`[eval]   ⚠ low-confidence classes (support < ${LOW_SUPPORT_THRESHOLD}):`);
+    if (lowConfidenceActions.length) console.log(`[eval]       action:   ${fmtLow(lowConfidenceActions)}`);
+    if (lowConfidencePriorities.length) console.log(`[eval]       priority: ${fmtLow(lowConfidencePriorities)}`);
+  }
 
   printPRF('Priority', priorityResult, PRIORITIES);
   printConfusion('Priority confusion', results.priority.confusion_matrix, PRIORITIES);
@@ -989,6 +1072,9 @@ module.exports = {
   labelPipeline,
   prf,
   confusion,
+  bootstrapCI,
+  fmtCI,
+  supportFlags,
   analyzeDuplicates,
   dedupById,
   filterGold,
