@@ -371,14 +371,37 @@ async function _executeAction(action, senderName) {
           // Date parser integration (RC-2 fix): validate/override LLM relevance_date
           // Explicit dates in source text take precedence over LLM weekday inference
           let finalRelevanceDate = action.relevance_date || null;
+          let relevanceDateSource = finalRelevanceDate ? 'explicit' : null;
+          let relevanceDateRaw = null;
           try {
-            const { parseDate: parseDateFn } = require('./date-parse');
+            const { parseDate: parseDateFn, extractHebrewWeekday, nearestWeekdayIso } = require('./date-parse');
             const parsedDate = parseDateFn(finalContent);
+
+            if (parsedDate && parsedDate.inferred_from_weekday) {
+              // No explicit date — the date came purely from a weekday name.
+              relevanceDateSource = 'inferred';
+              if (!finalRelevanceDate) finalRelevanceDate = parsedDate.iso;
+            }
+
             if (parsedDate && dvResult.mismatch && parsedDate.iso && !parsedDate.inferred_from_weekday) {
-              // Mismatch detected AND parser found an explicit date — trust parser
-              if (finalRelevanceDate !== parsedDate.iso) {
+              // D1: the notice cites a digit date that contradicts its Hebrew
+              // weekday name. Prefer the WEEKDAY: snap relevance_date to the
+              // nearest date (±3d of the cited date) whose weekday matches the
+              // day name. weekday_mismatch stays 1 so delivery still warns, and
+              // the original cited date is preserved in relevance_date_raw.
+              const weekdayIdx = extractHebrewWeekday(finalContent);
+              const corrected = weekdayIdx != null ? nearestWeekdayIso(parsedDate.iso, weekdayIdx, 3) : null;
+              if (corrected && corrected !== parsedDate.iso) {
+                relevanceDateRaw = finalRelevanceDate || parsedDate.iso;
+                console.log(`[Agent] Weekday correction: cited ${parsedDate.iso} is weekday-mismatched; snapping to nearest matching weekday ${corrected} (raw=${relevanceDateRaw}).`);
+                finalRelevanceDate = corrected;
+                relevanceDateSource = 'weekday_corrected';
+              } else if (finalRelevanceDate !== parsedDate.iso) {
+                // No weekday name to correct toward — fall back to trusting the
+                // explicit digit date the parser found.
                 console.log(`[Agent] Date override (mismatch fix): LLM said ${finalRelevanceDate}, parser found explicit ${parsedDate.iso}. Using parser.`);
                 finalRelevanceDate = parsedDate.iso;
+                relevanceDateSource = 'explicit';
               }
             }
           } catch (parseErr) {
@@ -391,9 +414,7 @@ async function _executeAction(action, senderName) {
           // or later (Israel time); an all-past event set keeps existing behavior.
           if (action.events && Array.isArray(action.events) && action.events.length > 0) {
             try {
-              const todayIsrael = new Date(
-                new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' })
-              ).toISOString().slice(0, 10);
+              const todayIsrael = require('./timeUtils').israelDateIso();
               const minFutureDate = action.events
                 .map(e => e.date)
                 .filter(Boolean)
@@ -424,6 +445,8 @@ async function _executeAction(action, senderName) {
             validation_notes:  dvResult.notes,
             calendar_worthy:   action.calendar_worthy ? 1 : 0,
             event_type:        action.event_type || null,
+            relevance_date_source: relevanceDateSource,
+            relevance_date_raw:    relevanceDateRaw,
           });
           // Save per-event rows if provided
           if (noticeId && action.events && Array.isArray(action.events) && action.events.length > 0) {

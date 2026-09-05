@@ -506,6 +506,72 @@ function createServer() {
       return;
     }
 
+    // ── E1: POST /api/calendar/validate ──────────────────────────────────────
+    // Source-grounding gate for calendar writes. OpenClaw calls this BEFORE it
+    // creates a calendar event: every proposed field (date/time/location) must
+    // appear in the source notice, or the write is rejected as fabricated
+    // (P-015 / G1). Body: { event_data: { summary?, date?, time?, location? },
+    // source_notice_id }. Returns { valid, blocked_fields, reason }.
+    if (req.method === 'POST' && req.url === '/api/calendar/validate') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { event_data, source_notice_id } = JSON.parse(body || '{}');
+
+          if (source_notice_id == null) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ valid: false, blocked_fields: [], reason: 'source_notice_id required' }));
+          }
+
+          // Look the notice up first so a missing id is a clean 404 (spec E1.4)
+          // and so we can echo a content_preview back to the caller (E1.7).
+          const { getDB } = require('./db');
+          const notice = getDB().prepare('SELECT * FROM notices WHERE id = ?').get(Number(source_notice_id));
+          if (!notice) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ valid: false, blocked_fields: [], reason: 'notice not found' }));
+          }
+          const content = notice.content || '';
+          const source_notice = { id: notice.id, content_preview: content.slice(0, 200) };
+
+          const ev = event_data || {};
+          const summary = ev.summary || ev.title || null;
+          const proposed = {
+            date:     ev.date     || null,
+            time:     ev.time     || null,
+            location: ev.location || null,
+            summary,
+          };
+
+          // Prefer the canonical grounding check (date/time/location vs. the
+          // notice). It deliberately does NOT ground the summary, so we add that
+          // substring check ourselves to satisfy spec E1.5 (summary/title too).
+          const { validateCalendarWrite } = require('./validation/sourceValidator');
+          const check = validateCalendarWrite(source_notice_id, proposed);
+          const blocked_fields = [...(check.ungrounded_fields || [])];
+          if (summary && !content.toLowerCase().includes(String(summary).toLowerCase())) {
+            blocked_fields.push('summary');
+          }
+          const valid = blocked_fields.length === 0;
+
+          console.log(`[VoiceServer] /api/calendar/validate notice #${source_notice_id} → valid=${valid}${valid ? '' : ` blocked=${blocked_fields.join(',')}`}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            valid,
+            source_notice,
+            blocked_fields,
+            reason: valid ? null : (check.reason || `field(s) absent from source: ${blocked_fields.join(', ')}`),
+          }));
+        } catch (e) {
+          console.error('[VoiceServer] /api/calendar/validate error:', e.message);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ valid: false, blocked_fields: [], reason: e.message }));
+        }
+      });
+      return;
+    }
+
     // B8: Enum integrity check endpoint — for nightly cron or on-demand checks
     if (req.method === 'GET' && req.url === '/api/integrity/enums') {
       try {

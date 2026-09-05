@@ -397,8 +397,7 @@ async function sendAlert(message) {
 async function checkAndAlert() {
   try {
     // Skip health checks on Friday (5) and Saturday (6) — groups are quiet on Shabbat
-    const nowIsrael = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
-    const dayOfWeek = nowIsrael.getDay(); // 0=Sun, 5=Fri, 6=Sat
+    const dayOfWeek = require('./timeUtils').israelNowParts().dayOfWeek; // 0=Sun, 5=Fri, 6=Sat
     if (dayOfWeek === 5 || dayOfWeek === 6) {
       logger.info({ component: 'Health' }, 'Skipping checks — Friday/Saturday');
       return;

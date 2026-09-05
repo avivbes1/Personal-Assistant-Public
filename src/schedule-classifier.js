@@ -99,8 +99,8 @@ function classifyScheduleQuery(text) {
   const childName  = extractChildName(text);
   const parsedDate = parseDate(text);
 
-  const nowIL   = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
-  const todayIso = nowIL.toISOString().slice(0, 10);
+  const { israelDateIso, addDaysIso } = require('./timeUtils');
+  const todayIso = israelDateIso();
 
   let dateRange = null;
   let dateHint  = null;
@@ -110,25 +110,17 @@ function classifyScheduleQuery(text) {
     dateRange = { from: parsedDate.iso, to: parsedDate.iso };
     dateHint  = parsedDate.iso;
   } else if (/מחר/.test(text)) {
-    const tomorrow = new Date(nowIL);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tIso = tomorrow.toISOString().slice(0, 10);
+    const tIso = addDaysIso(todayIso, 1);
     dateRange = { from: tIso, to: tIso };
     dateHint  = 'tomorrow';
   } else if (/היום|הלילה/.test(text)) {
     dateRange = { from: todayIso, to: todayIso };
     dateHint  = 'today';
   } else if (/בשבוע הבא/.test(text)) {
-    const start = new Date(nowIL);
-    start.setDate(start.getDate() + 7);
-    const end = new Date(nowIL);
-    end.setDate(end.getDate() + 14);
-    dateRange = { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) };
+    dateRange = { from: addDaysIso(todayIso, 7), to: addDaysIso(todayIso, 14) };
     dateHint  = 'next_week';
   } else if (/השבוע|בשבוע הזה/.test(text)) {
-    const end = new Date(nowIL);
-    end.setDate(end.getDate() + 7);
-    dateRange = { from: todayIso, to: end.toISOString().slice(0, 10) };
+    dateRange = { from: todayIso, to: addDaysIso(todayIso, 7) };
     dateHint  = 'this_week';
   } else if (parsedDate) {
     // Inferred from weekday or mismatched — still use it as best effort
@@ -136,9 +128,7 @@ function classifyScheduleQuery(text) {
     dateHint  = parsedDate.iso;
   } else {
     // Default: next 7 days
-    const end = new Date(nowIL);
-    end.setDate(end.getDate() + 7);
-    dateRange = { from: todayIso, to: end.toISOString().slice(0, 10) };
+    dateRange = { from: todayIso, to: addDaysIso(todayIso, 7) };
     dateHint  = 'next_7_days';
   }
 

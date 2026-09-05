@@ -86,12 +86,12 @@ async function buildContext() {
 
   // ISSUE-013: inject week-date map so LLM doesn't compute day→date arithmetic
   const weekDays = ['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
-  const israelNow = new Date(now.toLocaleString('en-US', { timeZone: config.TIMEZONE }));
-  const israelDayOfWeek = israelNow.getDay(); // 0=Sun
+  const { israelDateIso, israelWeekday, addDaysIso } = require('./timeUtils');
+  const todayIso = israelDateIso(now);
+  const israelDayOfWeek = israelWeekday(todayIso); // 0=Sun
   const weekMap = weekDays.map((name, i) => {
-    const d = new Date(israelNow);
-    d.setDate(israelNow.getDate() - israelDayOfWeek + i);
-    return `${name}=${d.getDate()}.${d.getMonth() + 1}`;
+    const [, mm, dd] = addDaysIso(todayIso, i - israelDayOfWeek).split('-');
+    return `${name}=${Number(dd)}.${Number(mm)}`;
   });
   let ctx = `תאריך ושעה נוכחיים: ${dateStr}, ${timeStr}\nימי השבוע הנוכחי: ${weekMap.join(', ')}\n\n`;
 

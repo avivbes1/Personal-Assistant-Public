@@ -89,7 +89,7 @@ function saveBatch(sentAt, noticeCount, summaryText) {
 // ── Time helpers ───────────────────────────────────────────────────────────
 
 function israelHour() {
-  return parseInt(new Date().toLocaleString('en-US', { timeZone: ISRAEL_TZ, hour: 'numeric', hour12: false }), 10);
+  return require('./timeUtils').getIsraelHour();
 }
 
 function isQuietHours() {

@@ -34,19 +34,18 @@ class NoticeRepository {
    * @returns {Array}
    */
   findUpcoming({ from, to, childName = null, searchText = null, includeDelivered = true } = {}) {
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
-    const todayIso = now.toISOString().slice(0, 10);
-    const weekAhead = new Date(now);
-    weekAhead.setDate(weekAhead.getDate() + 7);
+    const { israelDateIso, addDaysIso } = require('../timeUtils');
+    const todayIso = israelDateIso();
 
     const fromDate = from || todayIso;
-    const toDate   = to   || weekAhead.toISOString().slice(0, 10);
+    const toDate   = to   || addDaysIso(todayIso, 7);
     // Fallback cutoff: notices from the past 7 days that have no date
     const cutoffMs = Date.now() - 7 * 86400000;
 
     let sql = `
       SELECT id, group_name, content, relevance_date, relevance_time,
-             relevant_datetime, created_at, triage_decision, query_visible, primary_child
+             relevant_datetime, created_at, triage_decision, query_visible, primary_child,
+             weekday_mismatch, validation_notes
       FROM notices
       WHERE query_visible = 1
         AND dismissed = 0
@@ -101,7 +100,8 @@ class NoticeRepository {
     let results;
     try {
       results = this.db.prepare(`
-        SELECT id, group_name, content, relevance_date, relevance_time, created_at, primary_child
+        SELECT id, group_name, content, relevance_date, relevance_time, created_at, primary_child,
+               weekday_mismatch, validation_notes
         FROM notices
         WHERE query_visible = 1
           AND dismissed = 0

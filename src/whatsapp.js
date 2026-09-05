@@ -289,8 +289,9 @@ function nextOccurrenceOf(timeOfDay) {
   // Build today at the target time in Israel TZ
   const todayStr = now.toLocaleDateString('en-CA', { timeZone: tz }); // YYYY-MM-DD
   const candidate = new Date(`${todayStr}T${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:00`);
-  // Adjust for TZ offset
-  const tzOffset = new Date(candidate.toLocaleString('en-US', { timeZone: tz })).getTime() - candidate.getTime();
+  // Adjust for TZ offset: candidate's fields are Israel wall-clock but were
+  // parsed as host-local, so shift by Israel's UTC offset to land on the real instant.
+  const tzOffset = require('./timeUtils').israelOffsetMs(candidate);
   const adjusted = new Date(candidate.getTime() - tzOffset);
   if (adjusted.getTime() <= now.getTime()) {
     // Already passed today — schedule for tomorrow

@@ -513,6 +513,11 @@ function initDB() {
   // Day/date mismatch detection (Phase 1) — warn-only, never mutates source
   try { db.exec("ALTER TABLE notices ADD COLUMN weekday_mismatch INTEGER DEFAULT 0"); } catch (_) {}
   try { db.exec("ALTER TABLE notices ADD COLUMN validation_notes TEXT"); } catch (_) {}
+  // D1: provenance of relevance_date — 'explicit' | 'inferred' | 'weekday_corrected'.
+  // relevance_date_raw preserves the pre-correction cited date when a weekday name
+  // overrode a contradicting digit date (see agent.js weekday-correction flow).
+  try { db.exec("ALTER TABLE notices ADD COLUMN relevance_date_source TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN relevance_date_raw TEXT"); } catch (_) {}
   // B4: which computeUrgencyHint rule set this notice's urgency
   // ('keyword' | 'datetime' | 'date_with_signal' | 'default'). Lets the triage
   // quiet-hours gate distinguish datetime-grounded immediates from keyword ones.
@@ -963,7 +968,7 @@ function _extractNoticeTimes(text) {
   return (text || '').match(/\b\d{1,2}:\d{2}\b/g) || [];
 }
 
-function saveNotice({ group_name, content, relevance_date, relevance_time, source_timestamp, urgency_hint, urgency_source, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until, weekday_mismatch, validation_notes, calendar_worthy, event_type }) {
+function saveNotice({ group_name, content, relevance_date, relevance_time, source_timestamp, urgency_hint, urgency_source, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until, weekday_mismatch, validation_notes, calendar_worthy, event_type, relevance_date_source, relevance_date_raw }) {
   // Deduplicate: same group + same content snippet + same relevance_date
   const snippet = (content || '').substring(0, 80);
   const existing = getDB().prepare(
@@ -985,8 +990,9 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
     `INSERT INTO notices
       (group_name, content, relevance_date, relevance_time, source_timestamp, dismissed, created_at, row_type, sources,
        urgency_hint, urgency_source, relevant_datetime, message_timestamp, delivery_status, message_sent_at, valid_until,
-       weekday_mismatch, validation_notes, normalized_content, calendar_worthy, event_type, primary_child)
-     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       weekday_mismatch, validation_notes, normalized_content, calendar_worthy, event_type, primary_child,
+       relevance_date_source, relevance_date_raw)
+     VALUES (?, ?, ?, ?, ?, 0, ?, 'original', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     group_name, content, relevance_date || null, relevance_time || null,
     source_timestamp || Date.now(), Date.now(), JSON.stringify([group_name]),
@@ -1000,7 +1006,9 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
     normalized,
     calendar_worthy ? 1 : 0,
     event_type || null,
-    primaryChild
+    primaryChild,
+    relevance_date_source || null,
+    relevance_date_raw || null
   );
   return result.lastInsertRowid;
 }

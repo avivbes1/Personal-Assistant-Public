@@ -43,7 +43,7 @@ function extractExplicitDate(text) {
   let year;
   if (!rawYear) {
     // No year given — use current Israel year; if date already passed by >60 days, use next year
-    const nowIL = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+    const nowIL = require('./timeUtils').israelNow();
     year = nowIL.getFullYear();
     const candidate = new Date(year, month - 1, day);
     if (candidate < new Date(nowIL.getTime() - 60 * 86400000)) year++;
@@ -76,7 +76,7 @@ function extractHebrewWeekday(text) {
  * @returns {{ day, month, year, iso }}
  */
 function nextOccurrence(weekdayIdx) {
-  const nowIL = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+  const nowIL = require('./timeUtils').israelNow();
   const diff = ((weekdayIdx - nowIL.getDay() + 7) % 7) || 7;
   const target = new Date(nowIL);
   target.setDate(target.getDate() + diff);
@@ -126,4 +126,30 @@ function parseDate(text) {
   return null;
 }
 
-module.exports = { parseDate, extractExplicitDate, extractHebrewWeekday, nextOccurrence };
+/**
+ * D1: Find the date nearest to `citedIso` whose weekday equals `weekdayIdx`,
+ * searching outward up to ±maxDelta days. Prefers the later date when a day
+ * ahead and a day behind are equidistant. Returns YYYY-MM-DD or null if no
+ * match within the window.
+ *
+ * Used when a notice's Hebrew weekday name contradicts the digit date it cites
+ * (weekday_mismatch): we trust the weekday NAME and snap to the real occurrence.
+ *
+ * @param {string} citedIso    YYYY-MM-DD the notice actually wrote
+ * @param {number} weekdayIdx  0=Sun … 6=Sat (from extractHebrewWeekday)
+ * @param {number} [maxDelta]  search radius in days (default 3)
+ * @returns {string|null}
+ */
+function nearestWeekdayIso(citedIso, weekdayIdx, maxDelta = 3) {
+  if (!citedIso || weekdayIdx == null) return null;
+  const { israelWeekday, addDaysIso } = require('./timeUtils');
+  for (let delta = 0; delta <= maxDelta; delta++) {
+    for (const sign of (delta === 0 ? [0] : [1, -1])) {
+      const cand = addDaysIso(citedIso, delta * sign);
+      if (israelWeekday(cand) === weekdayIdx) return cand;
+    }
+  }
+  return null;
+}
+
+module.exports = { parseDate, extractExplicitDate, extractHebrewWeekday, nextOccurrence, nearestWeekdayIso };
