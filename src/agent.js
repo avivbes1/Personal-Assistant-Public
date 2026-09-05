@@ -502,6 +502,43 @@ async function _executeAction(action, senderName) {
             }
           }
           console.log(`[Agent] Saved notice: "${finalContent.substring(0, 60)}" thread=${action.thread_key || 'none'} rel=${action.relevance_date || 'undated'}`);
+
+          // ── Phase G (Proactivity) — grounded, best-effort; never breaks ingestion ──
+          if (noticeId) {
+            try {
+              const proactive = require('./proactive');
+
+              // G1: calendar-worthy + dated + timeless → flag the missing time.
+              if (action.calendar_worthy && finalRelevanceDate && !action.relevance_time) {
+                proactive.recordMissingTimePrompt(noticeId);
+              }
+
+              // G1.4: this message supplies a time — resolve an earlier notice's
+              // pending missing_time prompt (same thread first, else same group).
+              if (action.relevance_time) {
+                await proactive.tryResolveMissingTime({
+                  groupName:       action.group_name || 'unknown',
+                  threadKey:       action.thread_key || null,
+                  time:            action.relevance_time,
+                  excludeNoticeId: noticeId,
+                });
+              }
+
+              // G3: explicit deadline in the content → schedule one T-24h nudge.
+              const deadline = proactive.detectObligationDeadline(finalContent);
+              if (deadline) {
+                let childName = null;
+                try { childName = getDB().prepare('SELECT primary_child FROM notices WHERE id=?').get(noticeId)?.primary_child || null; } catch (_) {}
+                proactive.recordObligationNudge(noticeId, {
+                  deadlineDate:  deadline.deadlineDate,
+                  obligationText: deadline.obligationText,
+                  childName,
+                });
+              }
+            } catch (proErr) {
+              console.warn('[Agent] proactive hooks error (non-fatal):', proErr.message);
+            }
+          }
         }
         return { type: 'add_notice', ok: true, content: finalContent, isSideEffect: true, noticeId };
       }
@@ -1558,6 +1595,7 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
 module.exports = {
   handleMessage,
   handleGroupEvent,
+  executeAction,
   extractActionBlocks,
   // Exposed for the eval runner (tests/eval/run-eval.js) so it scores the
   // exact production classifier: same prompt, tools, and model.

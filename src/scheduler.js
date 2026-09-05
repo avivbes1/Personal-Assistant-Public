@@ -14,6 +14,9 @@ const config = require('./config');
 const { getPendingActionItems, saveReminder, reserveReminder, releaseReminder, confirmReminderSent, claimDigestToday, saveFollowUp, getPendingFollowUps, claimFollowUp, setFollowUpBotMsgId, getDB, getPendingBotTasks, claimBotTask, saveBotTask } = require('./db');
 const { getTodayEvents, getUpcomingEvents } = require('./calendar');
 const { stanzaIdOf } = require('./baileys-client');
+// Phase G — proactive prompts. These send via guardedSendProactive internally
+// (grounded, deterministic text), so they don't use sendToMasterGroup directly.
+const { checkMissingTimePrompts, checkObligationNudges } = require('./proactive');
 
 let sendToMasterGroup = null;
 let sendWithMentions  = null;
@@ -468,6 +471,28 @@ function initScheduler(sendFn, sendWithIdFn, sendWithMentionsFn) {
   cron.schedule('*/5 * * * *', async () => {
     await pollAndFireReminders();
     await pollBotTasks();
+  }, { timezone: config.TIMEZONE });
+
+  // ── Phase G: proactive prompts ──────────────────────────────────────────────
+  // G1: sweep pending missing_time prompts every 30 min during daytime only
+  // (08:00–20:00 Israel). The daytime cron window is itself the quiet-hours
+  // guard — nothing fires 23:00–08:00.
+  cron.schedule('*/30 8-20 * * *', async () => {
+    try {
+      await checkMissingTimePrompts();
+    } catch (err) {
+      console.error('[Scheduler] checkMissingTimePrompts error:', err.message);
+    }
+  }, { timezone: config.TIMEZONE });
+
+  // G3: fire T-24h obligation nudges once daily at 19:00 — the evening before
+  // the deadline day.
+  cron.schedule('0 19 * * *', async () => {
+    try {
+      await checkObligationNudges();
+    } catch (err) {
+      console.error('[Scheduler] checkObligationNudges error:', err.message);
+    }
   }, { timezone: config.TIMEZONE });
 
   // Start poll-based follow-up system (replaces old setTimeout approach)

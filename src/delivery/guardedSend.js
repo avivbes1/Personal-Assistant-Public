@@ -18,7 +18,41 @@ const Mustache = require('mustache');
 
 const config = require('../config');
 const { validateSource, recordSent, logBlocked } = require('../validation/sourceValidator');
-const { sendMessage } = require('../../lib/voice-client');
+
+// The production voice-client (lib/voice-client) ships only on the prod box; a
+// fresh checkout / CI DB lacks it, which used to make requiring this module throw
+// (and take down anything that imported it — see notice-B1). Mirror the
+// triage-engine fallback: prefer the real client, else POST directly to the local
+// voice-server (:3001), the same contract the delivery launchers use.
+function _httpVoiceSend(jid, text) {
+  return new Promise((resolve, reject) => {
+    const http = require('http');
+    const body = JSON.stringify({ to: jid, text });
+    const req = http.request({
+      hostname: 'localhost', port: 3001, path: '/send-message',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 15000,
+    }, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        if (res.statusCode === 200) resolve(JSON.parse(data || '{}'));
+        else reject(new Error(`send-message returned ${res.statusCode}: ${data}`));
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('send-message timeout')); });
+    req.end(body);
+  });
+}
+let sendMessage;
+try {
+  sendMessage = require('../../lib/voice-client').sendMessage;
+} catch (_) {
+  console.warn('[guardedSend] lib/voice-client not found — using direct voice-server HTTP fallback');
+  sendMessage = _httpVoiceSend;
+}
 
 const MASTER_GROUP_JID = process.env.MASTER_GROUP_JID || '120363426994367917@g.us';
 const TEMPLATE_DIR = path.join(__dirname, '..', '..', 'templates');
@@ -125,4 +159,61 @@ async function guardedSend(sourceType, sourceId, opts = {}) {
   return { sent: true, text };
 }
 
-module.exports = { guardedSend };
+/**
+ * guardedSendProactive — grounded send path for Phase-G proactive prompts
+ * (missing-time nudges, obligation nudges, conflict alerts).
+ *
+ * These messages don't fit the reminder contract above: they can concern events
+ * with no time yet (missing_time) or a deadline more than 24h away (obligation),
+ * so the -2h..+24h source window would wrongly reject them. But they must still
+ * be GROUNDED — we only send about a notice that actually exists and isn't
+ * dismissed — and the text is still deterministic (built by the caller from DB
+ * fields, never authored by an LLM), preserving guardedSend's core guarantee.
+ *
+ * Send-once is the caller's responsibility via the proactive_prompts /
+ * obligation_nudges status columns; this function does not itself dedup.
+ *
+ * @param {object} opts
+ * @param {string} opts.text       fully-rendered message text (required, deterministic)
+ * @param {number} opts.noticeId   the notice this prompt is grounded in (required)
+ * @param {string} [opts.promptType] label for audit logs
+ * @param {string} [opts.to]       WhatsApp JID (default: master group)
+ * @returns {Promise<{sent:boolean, text?:string, reason?:string}>}
+ */
+async function guardedSendProactive({ text, noticeId, promptType = 'proactive', to } = {}) {
+  const target = to || MASTER_GROUP_JID;
+
+  if (!text || !String(text).trim()) {
+    return { sent: false, reason: 'empty text — refusing to send' };
+  }
+
+  // Grounding: the notice must be real and not dismissed. A prompt about a
+  // vanished/dismissed notice is stale and must never leave.
+  const id = Number(noticeId);
+  if (!Number.isInteger(id) || id <= 0) {
+    logBlocked(promptType, { notice_id: noticeId }, 'invalid notice_id');
+    return { sent: false, reason: `invalid notice_id "${noticeId}"` };
+  }
+  const { getDB } = require('../db');
+  const notice = getDB().prepare('SELECT id, dismissed FROM notices WHERE id = ?').get(id);
+  if (!notice) {
+    logBlocked(promptType, { notice_id: id }, 'no such notice');
+    return { sent: false, reason: `no notice with id=${id}` };
+  }
+  if (notice.dismissed) {
+    logBlocked(promptType, { notice_id: id }, 'notice dismissed');
+    return { sent: false, reason: `notice #${id} is dismissed` };
+  }
+
+  const body = String(text).trim();
+  try {
+    await sendMessage(target, body);
+  } catch (err) {
+    console.error(`[guardedSend] proactive ${promptType} send failed for notice #${id}:`, err.message);
+    return { sent: false, reason: `send failed: ${err.message}` };
+  }
+  console.log(`[guardedSend] Sent proactive ${promptType} for notice #${id}`);
+  return { sent: true, text: body };
+}
+
+module.exports = { guardedSend, guardedSendProactive };

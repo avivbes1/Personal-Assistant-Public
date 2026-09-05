@@ -730,6 +730,48 @@ function initDB() {
   } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_grounding_misses_created ON grounding_misses(created_at)'); } catch (_) {}
 
+  // ── Phase G (Proactivity) ──────────────────────────────────────────────────
+  // G1: proactive_prompts — one row per proactive nudge the bot decides to raise
+  // about a notice (currently 'missing_time'). status drives the send-once
+  // lifecycle: pending → sent, and pending/sent → resolved once the gap is filled.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS proactive_prompts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        notice_id INTEGER NOT NULL,
+        prompt_type TEXT NOT NULL,          -- 'missing_time' | 'obligation_nudge'
+        status TEXT DEFAULT 'pending',      -- 'pending' | 'sent' | 'resolved' | 'expired'
+        message_text TEXT,
+        sent_at INTEGER,
+        resolved_at INTEGER,
+        resolved_value TEXT,                -- the time that was eventually found
+        created_at INTEGER DEFAULT (unixepoch() * 1000)
+      )
+    `);
+  } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_proactive_prompts_status ON proactive_prompts(prompt_type, status)'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_proactive_prompts_notice ON proactive_prompts(notice_id)'); } catch (_) {}
+
+  // G3: obligation_nudges — one T-24h reminder before an explicit deadline, never
+  // repeated. UNIQUE(notice_id, deadline_date) + a pending→sent status transition
+  // guarantee at most one nudge ever fires per (notice, deadline).
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS obligation_nudges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        notice_id INTEGER NOT NULL,
+        deadline_date TEXT NOT NULL,        -- YYYY-MM-DD
+        child_name TEXT,
+        obligation_text TEXT,               -- short description of what's due
+        status TEXT DEFAULT 'pending',      -- 'pending' | 'sent' | 'skipped'
+        sent_at INTEGER,
+        created_at INTEGER DEFAULT (unixepoch() * 1000),
+        UNIQUE(notice_id, deadline_date)
+      )
+    `);
+  } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_obligation_nudges_due ON obligation_nudges(deadline_date, status)'); } catch (_) {}
+
   console.log('[DB] Initialized at', DB_PATH);
   return db;
 }

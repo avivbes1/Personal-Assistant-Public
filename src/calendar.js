@@ -482,6 +482,110 @@ async function searchCalendarEvents(query, daysAhead = 60) {
 }
 
 /**
+ * G2: List a single calendar's events for one date (YYYY-MM-DD), for a given
+ * calendarId + tokenPath. Generalises listEventsForDate (which is Aviv-only) so
+ * conflict detection can sweep both parents' calendars.
+ */
+async function listEventsForDateOn(calendarId, tokenPath, dateStr) {
+  try {
+    const auth = createAuthClient(tokenPath);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const response = await calendar.events.list({
+      calendarId,
+      timeMin: new Date(`${dateStr}T00:00:00+03:00`).toISOString(),
+      timeMax: new Date(`${dateStr}T23:59:59+03:00`).toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 30,
+      showDeleted: false,
+    });
+    return (response.data.items || []).filter(e => e.status !== 'cancelled');
+  } catch (err) {
+    console.error(`[Calendar] listEventsForDateOn error (${calendarId}):`, err.message);
+    return [];
+  }
+}
+
+/**
+ * G2: Turn an Israel wall-clock date + HH:MM into an absolute epoch (ms),
+ * DST-aware via timeUtils.israelOffsetMs. Used to compare a proposed event's
+ * time range against existing events' absolute start/end instants.
+ */
+function _israelWallToEpoch(dateStr, hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || '')) || !m) return null;
+  const [, h, min] = m;
+  const naiveUtc = new Date(`${dateStr}T${String(h).padStart(2, '0')}:${min}:00Z`).getTime();
+  if (Number.isNaN(naiveUtc)) return null;
+  const { israelOffsetMs } = require('./timeUtils');
+  const offset = israelOffsetMs(new Date(naiveUtc));
+  return naiveUtc - offset;
+}
+
+/**
+ * G2: Find calendar events that overlap a proposed time range.
+ *
+ * Sweeps both parents' calendars (+ Liat's work calendar when configured) for
+ * events on `date`, and returns any TIMED event whose [start,end) interval
+ * overlaps the proposed [start,end) — even partially. All-day events (no
+ * dateTime) are skipped: they have no time range to overlap. An existing event
+ * with no explicit end is treated as 1 hour long (matches addEvent's default).
+ *
+ * @param {{date:string, start:string, end:string}} proposed
+ *        date = YYYY-MM-DD, start/end = HH:MM (Israel wall clock)
+ * @returns {Promise<Array<{summary,start,end,owner,id}>>} overlapping events
+ */
+async function findCalendarConflicts({ date, start, end } = {}) {
+  const propStart = _israelWallToEpoch(date, start);
+  const propEnd = _israelWallToEpoch(date, end);
+  if (propStart == null || propEnd == null || propEnd <= propStart) {
+    return []; // unusable proposal → no conflict claim
+  }
+
+  const sources = [
+    { calendarId: config.AVIV_CALENDAR_ID, tokenPath: config.AVIV_TOKEN_PATH, owner: 'aviv' },
+    { calendarId: config.LIAT_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: 'liat' },
+    ...(config.LIAT_WORK_CALENDAR_ID
+      ? [{ calendarId: config.LIAT_WORK_CALENDAR_ID, tokenPath: config.LIAT_TOKEN_PATH, owner: 'liat-work' }]
+      : []),
+  ];
+
+  const conflicts = [];
+  for (const { calendarId, tokenPath, owner } of sources) {
+    const events = await listEventsForDateOn(calendarId, tokenPath, date);
+    conflicts.push(..._overlapping(events, propStart, propEnd, owner));
+  }
+  return conflicts;
+}
+
+/**
+ * G2 (pure): from a list of gcal event objects, return those whose [start,end)
+ * interval overlaps [propStart, propEnd) (epoch ms). All-day events (no
+ * start.dateTime) are skipped; an event with no end defaults to 1h long.
+ * Separated from the network fetch so the overlap decision is unit-testable.
+ */
+function _overlapping(events, propStart, propEnd, owner) {
+  const out = [];
+  for (const e of events || []) {
+    if (!e.start?.dateTime) continue; // all-day — no time range
+    const es = new Date(e.start.dateTime).getTime();
+    const ee = e.end?.dateTime ? new Date(e.end.dateTime).getTime() : es + 60 * 60 * 1000;
+    if (Number.isNaN(es)) continue;
+    // Partial overlap: existing starts before proposed ends AND ends after it starts.
+    if (es < propEnd && ee > propStart) {
+      out.push({
+        summary: (e.summary || 'אירוע').split('\n')[0].trim(),
+        start: e.start.dateTime,
+        end: e.end?.dateTime || null,
+        owner,
+        id: e.id,
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Update an existing calendar event (PATCH — partial update).
  * @param {string} calendarId
  * @param {string} tokenPath
@@ -602,6 +706,10 @@ module.exports = {
   getTodayEvents,
   listEventsForDate,
   listEventsForDateRange,
+  listEventsForDateOn,
+  findCalendarConflicts,
+  _overlapping,
+  _israelWallToEpoch,
   searchCalendarEvents,
   updateCalendarEvent,
   deleteCalendarEvent,

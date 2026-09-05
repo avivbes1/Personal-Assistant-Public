@@ -29,6 +29,18 @@ const VOICES = {
   he: 'he-IL-AvriNeural',
 };
 
+// G2: add N minutes to an "HH:MM" wall-clock string, returning "HH:MM" (24h,
+// clamped to same day). Used to default a proposed event's end time to +1h.
+function _addMinutesHHMM(hhmm, mins) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+  if (!m) return null;
+  let total = Number(m[1]) * 60 + Number(m[2]) + Number(mins || 0);
+  total = Math.min(total, 23 * 60 + 59);
+  const h = Math.floor(total / 60);
+  const mm = total % 60;
+  return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
 function generateTTS(text, lang) {
   return new Promise((resolve, reject) => {
     const voice = VOICES[lang] || VOICES.en;
@@ -524,12 +536,15 @@ function createServer() {
     // appear in the source notice, or the write is rejected as fabricated
     // (P-015 / G1). Body: { event_data: { summary?, date?, time?, location? },
     // source_notice_id }. Returns { valid, blocked_fields, reason }.
-    if (req.method === 'POST' && req.url === '/api/calendar/validate') {
+    if (req.method === 'POST' && req.url.startsWith('/api/calendar/validate')) {
       let body = '';
       req.on('data', chunk => { body += chunk; });
-      req.on('end', () => {
+      req.on('end', async () => {
         try {
           const { event_data, source_notice_id } = JSON.parse(body || '{}');
+          // G2: ?skip_conflict=true bypasses the overlap pre-check (used after the
+          // caller has already asked the user and been told to proceed anyway).
+          const skipConflict = new URL(req.url, 'http://localhost').searchParams.get('skip_conflict') === 'true';
 
           if (source_notice_id == null) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -548,6 +563,41 @@ function createServer() {
           const source_notice = { id: notice.id, content_preview: content.slice(0, 200) };
 
           const ev = event_data || {};
+
+          // ── G2: conflict pre-check (runs BEFORE source-grounding) ────────────
+          // If the proposal has a date + start time, refuse when it overlaps an
+          // existing calendar event on either parent's calendar. The caller must
+          // then ask the user and retry with ?skip_conflict=true.
+          if (!skipConflict) {
+            const propDate = ev.date || null;
+            const propStart = ev.start || ev.time || (ev.start_time ? String(ev.start_time).slice(11, 16) : null);
+            let propEnd = ev.end || ev.end_time || null;
+            if (propEnd && /T/.test(propEnd)) propEnd = String(propEnd).slice(11, 16);
+            if (propStart && !propEnd) propEnd = _addMinutesHHMM(propStart, 60); // default 1h
+            if (propDate && propStart && propEnd) {
+              try {
+                const { findCalendarConflicts } = require('./calendar');
+                const conflicts = await findCalendarConflicts({ date: propDate, start: propStart, end: propEnd });
+                if (conflicts.length > 0) {
+                  const c = conflicts[0];
+                  console.log(`[VoiceServer] /api/calendar/validate notice #${source_notice_id} → CONFLICT with "${c.summary}" (${c.owner})`);
+                  res.writeHead(200, { 'Content-Type': 'application/json' });
+                  return res.end(JSON.stringify({
+                    valid: false,
+                    conflict: {
+                      existing_event: { summary: c.summary, start: c.start, end: c.end, owner: c.owner },
+                      proposed: { summary: ev.summary || ev.title || null, start: `${propDate}T${propStart}`, end: `${propDate}T${propEnd}` },
+                    },
+                    reason: 'conflict with existing event',
+                  }));
+                }
+              } catch (conflictErr) {
+                // Conflict detection is best-effort — never block a legitimate
+                // write just because the calendar API was unreachable.
+                console.error('[VoiceServer] conflict pre-check error (non-fatal):', conflictErr.message);
+              }
+            }
+          }
           const summary = ev.summary || ev.title || null;
           const proposed = {
             date:     ev.date     || null,
@@ -599,6 +649,39 @@ function createServer() {
           return res.end(JSON.stringify({ valid: false, blocked_fields: [], reason: e.message }));
         }
       });
+      return;
+    }
+
+    // ── G2: GET /api/calendar/conflicts?date=YYYY-MM-DD&start=HH:MM&end=HH:MM ──
+    // Standalone overlap check — returns conflicting events without a full
+    // source-grounding validate. end defaults to start+1h when omitted.
+    if (req.method === 'GET' && req.url.startsWith('/api/calendar/conflicts')) {
+      (async () => {
+        try {
+          const u = new URL(req.url, 'http://localhost');
+          const date = u.searchParams.get('date');
+          const start = u.searchParams.get('start');
+          let end = u.searchParams.get('end');
+          if (!date || !start) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ ok: false, error: 'date and start are required (YYYY-MM-DD, HH:MM)' }));
+          }
+          if (!end) end = _addMinutesHHMM(start, 60);
+          const { findCalendarConflicts } = require('./calendar');
+          const conflicts = await findCalendarConflicts({ date, start, end });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ok: true,
+            date, start, end,
+            has_conflict: conflicts.length > 0,
+            conflicts,
+          }));
+        } catch (e) {
+          console.error('[VoiceServer] /api/calendar/conflicts error:', e.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: e.message }));
+        }
+      })();
       return;
     }
 
