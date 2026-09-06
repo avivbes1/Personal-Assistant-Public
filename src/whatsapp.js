@@ -35,17 +35,10 @@ function buildGroupContextQuestion(name) {
 // Rate-limited to once per hour (same pattern as agent.js alertCreditExhausted).
 let _unmatchedReplyAlertAt = 0;
 async function alertUnmatchedReply() {
-  const now = Date.now();
-  if (now - _unmatchedReplyAlertAt < 3600000) return;
-  _unmatchedReplyAlertAt = now;
-  try {
-    if (client && config.AVIV_PHONE) {
-      await client.sendMessage(`${config.AVIV_PHONE}@c.us`,
-        'לא הצלחתי להתאים את התגובה שלך לשאלה פתוחה — צריך טיפול.');
-    }
-  } catch (e) {
-    logger.error({ component: 'WhatsApp', err: e.message }, 'Failed to send unmatched-reply DM');
-  }
+  // H2: Previously DMed Aviv on unmatched quoted replies, but the message was
+  // cryptic and not actionable. Now just log — the warn log at the call-site
+  // already captures the details for debugging.
+  return;
 }
 
 const { saveMessage, saveNotice, saveEvent, saveActionItem, saveClarification, saveGroup, setGroupRelatedTo, setGroupDescription, setGroupMonitoring, getGroup, getMonitoredGroupsWithoutDescription, getAllPendingGroupQuestions, savePendingGroupQuestion, getPendingGroupQuestion, getPendingGroupQuestionByStanza, deletePendingGroupQuestion, isMessageProcessed, markMsgProcessed, getDB, addToConversationHistory, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, cancelRemindersForEvent, cancelFollowUpsForEvent, saveBotTask, getPendingBotTasks, claimBotTask, cancelRecurringGroup, isRecurringGroupActive, saveCapabilityRequest, getPendingCapabilityRequests, getRecentGroupMessages, markMessageTerminal, updateMessageMedia, setMediaStatus, updateMessageBodyByStanza, saveFeedback, getSentMessageByStanzaId } = require('./db');
