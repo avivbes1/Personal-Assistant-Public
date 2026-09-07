@@ -14,11 +14,11 @@
  * explanations). Diagnostics go to stderr; a fetch failure exits non-zero. The
  * cron job runs `node scripts/generate-digest.js` and sends stdout verbatim.
  *
- * Window: today .. today+7 days (Israel time, via src/timeUtils).
+ * Window: today only (Israel time, via src/timeUtils).
  */
 
 const http = require('http');
-const { israelDateIso, addDaysIso } = require('../src/timeUtils');
+const { israelDateIso } = require('../src/timeUtils');
 
 const TZ = 'Asia/Jerusalem';
 const PORT = process.env.VOICE_SERVER_PORT || 3001;
@@ -107,11 +107,10 @@ function ownerFlags(owners = []) {
 // ── Main ────────────────────────────────────────────────────────────────────
 (async () => {
   const today = israelDateIso();
-  const weekEnd = addDaysIso(today, 7);
 
   let ctx;
   try {
-    ctx = await fetchContext(today, weekEnd);
+    ctx = await fetchContext(today, today);
   } catch (e) {
     process.stderr.write(`[generate-digest] ${e.message}\n`);
     process.exit(1);
@@ -137,6 +136,35 @@ function ownerFlags(owners = []) {
   }
   const byStart = (a, b) => (eventStartIso(a) + eventTime(a)).localeCompare(eventStartIso(b) + eventTime(b));
   for (const list of Object.values(buckets)) list.sort(byStart);
+
+  // ── Cross-bucket dedup: same event on both calendars with different IDs ──
+  // If an event in the aviv bucket has a near-identical title+date as one in
+  // the liat bucket, merge both into the "both" bucket (remove from originals).
+  const avivUsed = new Set();
+  const liatUsed = new Set();
+  for (let ai = 0; ai < buckets.aviv.length; ai++) {
+    const ae = buckets.aviv[ai];
+    const aDate = eventStartIso(ae);
+    const aTitle = normTitle(ae.summary);
+    for (let li = 0; li < buckets.liat.length; li++) {
+      if (liatUsed.has(li)) continue;
+      const le = buckets.liat[li];
+      const lDate = eventStartIso(le);
+      const lTitle = normTitle(le.summary);
+      if (aDate === lDate && aTitle && lTitle && (aTitle.includes(lTitle) || lTitle.includes(aTitle))) {
+        // Merge into "both" — keep the one with more detail (longer summary)
+        const merged = ae.summary.length >= le.summary.length ? ae : le;
+        merged.owners = ['aviv', 'liat'];
+        buckets.both.push(merged);
+        avivUsed.add(ai);
+        liatUsed.add(li);
+        break;
+      }
+    }
+  }
+  buckets.aviv = buckets.aviv.filter((_, i) => !avivUsed.has(i));
+  buckets.liat = buckets.liat.filter((_, i) => !liatUsed.has(i));
+  buckets.both.sort(byStart);
 
   const fmtEvent = e => {
     const summary = firstLine(e.summary || 'אירוע', 60);
