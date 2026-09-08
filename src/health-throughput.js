@@ -194,11 +194,18 @@ function checkConfigStateIntegrity(db, nowMs) {
   const failures = [];
 
   const staleBefore = nowMs - 48 * HOUR_MS;
-  const stalePending = db.prepare(
-    'SELECT COUNT(*) AS c FROM pending_group_questions WHERE created_at < ?'
-  ).get(staleBefore).c;
-  if (stalePending > 0) {
-    failures.push(`${stalePending} pending group question(s) unanswered >48h`);
+  // Join to groups so the alert names the group and tells the user what to do,
+  // instead of surfacing a bare count with no actionable target.
+  const stalePendingRows = db.prepare(
+    `SELECT pgq.group_id AS group_id, g.name AS name
+       FROM pending_group_questions pgq
+       LEFT JOIN groups g ON g.id = pgq.group_id
+      WHERE pgq.created_at < ?`
+  ).all(staleBefore);
+  const stalePending = stalePendingRows.length;
+  for (const row of stalePendingRows) {
+    const label = row.name || row.group_id;
+    failures.push(`קבוצה ${label} ממתינה לסיווג — שלח "לעקוב" או "להתעלם"`);
   }
 
   const placeholders = SANCTIONED_RELATED_TO.map(() => '?').join(',');
@@ -243,8 +250,11 @@ function checkMonitoredGroupSilence(db, nowMs) {
     ...(silent.length ? { groups: silent.map(g => ({ name: g.name, lastTs: g.lastTs })) } : {}),
   });
   if (!ok) {
-    const names = silent.map(g => `"${g.name}"`).join(', ');
-    return `${silent.length} monitored group(s) silent 7+ days: ${names}`;
+    // Hebrew alert with a recommended action — the bot may simply not be in
+    // these groups anymore, so tell the user how to stop monitoring them.
+    const bullets = silent.map(g => `• ${g.name}`).join('\n');
+    return `${silent.length} קבוצות מנוטרות ללא הודעות 7+ ימים — ייתכן שהבוט לא נמצא בהן:\n${bullets}\n` +
+      `להסיר מניטור? שלח "הפסק לעקוב אחרי [שם]"`;
   }
   return null;
 }

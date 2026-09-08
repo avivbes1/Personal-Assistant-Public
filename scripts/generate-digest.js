@@ -193,8 +193,18 @@ function ownerFlags(owners = []) {
       (k.title.includes(nt) || nt.includes(k.title)));
   };
 
+  // Dedup 1b: two different notices can each spawn a notice_event with the same
+  // (date, title) — e.g. ids 2270 & 2715 both yield 'שיעור חנ״ג' on 2026-09-08.
+  // Collapse them to the first occurrence so the section shows one line.
+  const seenEventKeys = new Set();
   const attentionEvents = noticeEvents
     .filter(ne => !matchesCalendar(ne.event_date, ne.event_title))
+    .filter(ne => {
+      const key = `${ne.event_date}|${normTitle(ne.event_title)}`;
+      if (seenEventKeys.has(key)) return false;
+      seenEventKeys.add(key);
+      return true;
+    })
     .sort((a, b) => `${a.event_date}${a.event_time || ''}`.localeCompare(`${b.event_date}${b.event_time || ''}`));
 
   // Dedup 2: a notice whose id already appears as a notice_event above is
