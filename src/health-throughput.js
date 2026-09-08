@@ -240,6 +240,10 @@ function checkMonitoredGroupSilence(db, nowMs) {
   for (const g of monitored) {
     const last = db.prepare('SELECT MAX(timestamp) AS ts FROM messages WHERE group_id = ?').get(g.id);
     const lastTs = last && last.ts ? last.ts : 0;
+    // lastTs === 0 means the group never received any messages — that's a
+    // setup issue (bot added but never got traffic), not a "went silent"
+    // problem. Skip it; only alert for groups that WERE active but stopped.
+    if (lastTs === 0) continue;
     if (lastTs < sevenDaysAgo) {
       silent.push({ id: g.id, name: g.name, lastTs });
     }
