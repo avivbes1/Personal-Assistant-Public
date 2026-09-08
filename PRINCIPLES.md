@@ -316,11 +316,17 @@ grep -c "voiceSend\|/send-message" deliver-batch.js deliver-immediate.js  # Expe
 **Root cause:** the guard boundary stopped at reminder sends. Calendar writes — the other outbound factual surface — had no equivalent grounding check, so any field an agent proposed (date, time, location) was trusted verbatim.
 
 **Rule:**
+- **Calendar writes occur only via `calendarGate` (`processEventAction`) or `POST /api/calendar/propose`. No agent holds direct calendar credentials, and no code outside the sanctioned calendar-write files reaches the raw write functions.** An endpoint is a boundary only when the alternatives are removed (cf. P-013): a validated entry point that agents can route around is not a control.
 - Agent-proposed calendar writes carry a `source_notice_id`. `processEventAction()` calls `validateCalendarWrite(source_notice_id, {date, time, location, summary})` before proceeding.
 - Each non-null proposed field must be grounded in the source notice: `date` matches `relevance_date` or appears in `content`; `time` matches `relevance_time` or appears in `content`; `location` appears in `content`. A field the source never states (e.g. a time it never mentioned) is a rejection.
 - On rejection: `logBlocked('calendar_write', action, reason)` and return `{ action: 'blocked' }` — nothing is written.
 - Writes with no `source_notice_id` (e.g. a direct user request through Lipa) proceed but log a warning, so the ungrounded path stays visible.
-- `calendar-bridge.js:createCalendarForNotice()` derives its fields from the notice row itself and is not an agent proposal — it is out of scope for this guard.
+- `calendar-bridge.js:createCalendarForNotice()` derives its fields from the notice row itself and is not an agent proposal — it is out of scope for the grounding check, but still passes its notice id through the write boundary.
+
+**Mechanism (H1):**
+- `addSharedEvent()` (the raw create path) **refuses any call that omits `source_notice_id`** — an entirely-absent argument is an unsanctioned bypass and throws with a logged reason. Legitimate callers pass a notice id, or the `CALENDAR_SOURCE_USER` sentinel for a direct user request. `null` (a known-ungrounded but sanctioned write) is allowed.
+- `updateCalendarEvent()` shares the boundary but does not throw: an update may be a correction that legitimately carries no notice, so a missing `source_notice_id` is **logged, not blocked**.
+- The sanctioned callers of `addSharedEvent` are exactly `calendar.js` (definition), `calendarGate.js`, `calendar-bridge.js`, `whatsapp.js` (user confirmation/reschedule), and `voice-server.js` (agent write endpoint). `check-principles.js` fails if any other `src/` file references it.
 
 **Verification:**
 ```bash
@@ -328,6 +334,11 @@ grep -c "voiceSend\|/send-message" deliver-batch.js deliver-immediate.js  # Expe
 grep -n "function validateCalendarWrite" src/validation/sourceValidator.js
 grep -n "validateCalendarWrite" src/calendarGate.js
 # Expected: a definition in sourceValidator.js and a call in calendarGate.js
+
+# Check: addSharedEvent is not reachable outside the sanctioned calendar-write files
+grep -rn "addSharedEvent" --include=*.js src/ \
+  | grep -v "calendar.js\|calendarGate.js\|calendar-bridge.js\|whatsapp.js\|voice-server.js"
+# Expected: no output. Enforced in tests/check-principles.js under P-015.
 ```
 
 ---

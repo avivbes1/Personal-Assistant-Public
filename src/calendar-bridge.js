@@ -16,7 +16,7 @@
 
 const crypto  = require('crypto');
 const { getDB } = require('./db');
-const { addSharedEvent } = require('./calendar');
+const { addSharedEvent, updateCalendarEvent } = require('./calendar');
 const config  = require('./config');
 
 const MAX_ATTEMPTS = 3;
@@ -169,11 +169,16 @@ async function createCalendarForNotice(notice) {
   ).get(fp);
 
   if (existing) {
-    if (existing.status === 'applied') {
+    if (existing.status === 'applied' || existing.status === 'adopted') {
       // Mark the notice row too (in case it wasn't updated)
       db.prepare(
         'UPDATE notices SET calendar_status=?, calendar_event_id=? WHERE id=?'
-      ).run('applied', existing.calendar_event_id, notice.id);
+      ).run(existing.status, existing.calendar_event_id, notice.id);
+
+      // H3: Check if this notice supplies a time that the existing intent lacks
+      const correctionResult = await _tryTimeCorrection(db, existing, notice);
+      if (correctionResult) return correctionResult;
+
       return { status: 'already_applied', intentId: existing.id };
     }
     if (existing.status === 'pending' || existing.status === 'failed') {
@@ -181,6 +186,59 @@ async function createCalendarForNotice(notice) {
       const intent = db.prepare('SELECT * FROM calendar_intents WHERE id=?').get(existing.id);
       if ((intent.attempts || 0) >= MAX_ATTEMPTS) {
         return { status: 'max_attempts_reached', intentId: existing.id };
+      }
+    }
+  }
+
+  // H3: Even if fingerprint didn't match, check for existing intents on the same
+  // date. Different notices about the same event (e.g. 1839 vs 2724 about the
+  // same parents meeting) have different fingerprints but should trigger a time
+  // correction rather than creating a duplicate.
+  //
+  // Match strategy: compare notice_event rows from this notice against existing
+  // intent titles (notice_event titles are clean, like "אסיפת הורים", which
+  // match calendar event summaries much better than raw notice content).
+  if (!existing) {
+    const sameDateIntents = db.prepare(
+      "SELECT id, status, calendar_event_id, event_title FROM calendar_intents WHERE event_date = ? AND (status = 'applied' OR status = 'adopted') AND calendar_event_id IS NOT NULL"
+    ).all(notice.relevance_date);
+
+    if (sameDateIntents.length > 0) {
+      // Check notice_event rows from this notice
+      const neRows = db.prepare(
+        'SELECT event_title, event_time FROM notice_event WHERE notice_id = ? AND event_date = ?'
+      ).all(notice.id, notice.relevance_date);
+
+      for (const ne of neRows) {
+        const normNeTitle = _normalizeForFingerprint(ne.event_title);
+        if (!normNeTitle) continue;
+        for (const candidate of sameDateIntents) {
+          const normCandidate = _normalizeForFingerprint(candidate.event_title);
+          if (normCandidate && (normCandidate.includes(normNeTitle) || normNeTitle.includes(normCandidate))) {
+            // Found a matching intent via notice_event — try time correction
+            db.prepare('UPDATE notices SET calendar_status=?, calendar_event_id=? WHERE id=?')
+              .run(candidate.status, candidate.calendar_event_id, notice.id);
+            const correctionResult = await _tryTimeCorrection(db, candidate, notice);
+            if (correctionResult) return correctionResult;
+            return { status: 'already_applied', intentId: candidate.id };
+          }
+        }
+      }
+
+      // Also try raw title match (for notices without notice_event rows)
+      const payload = buildEventPayload(notice);
+      const normTitle = _normalizeForFingerprint(payload.title);
+      if (normTitle) {
+        for (const candidate of sameDateIntents) {
+          const normCandidate = _normalizeForFingerprint(candidate.event_title);
+          if (normCandidate && (normCandidate.includes(normTitle) || normTitle.includes(normCandidate))) {
+            db.prepare('UPDATE notices SET calendar_status=?, calendar_event_id=? WHERE id=?')
+              .run(candidate.status, candidate.calendar_event_id, notice.id);
+            const correctionResult = await _tryTimeCorrection(db, candidate, notice);
+            if (correctionResult) return correctionResult;
+            return { status: 'already_applied', intentId: candidate.id };
+          }
+        }
       }
     }
   }
@@ -245,7 +303,8 @@ async function _attemptCalendarCreate(intentId, noticeHint) {
         : undefined,
     };
 
-    const gcalResult = await addSharedEvent(payload, 'both');
+    // P-015 / H1: ground the write in the notice this intent came from.
+    const gcalResult = await addSharedEvent(payload, 'both', intent.notice_id ?? notice?.id ?? null);
     const gcalId = gcalResult?.id || null;
 
     // Mark success
@@ -336,6 +395,115 @@ async function sweepPendingIntents() {
 
 function _sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+/**
+ * H3: Try to correct the time on an existing calendar event when a new notice
+ * supplies an explicit time that the intent doesn't have (or differs from).
+ *
+ * Sources checked: notice.relevance_time and notice_event rows for the same date.
+ */
+async function _tryTimeCorrection(db, existingIntent, notice) {
+  // Load full intent row
+  const intent = db.prepare('SELECT * FROM calendar_intents WHERE id = ?').get(existingIntent.id);
+  if (!intent || !intent.calendar_event_id) return null;
+
+  // Only correct if current time_status is 'unknown' or time differs
+  const currentTimeStatus = intent.time_status || 'unknown';
+
+  // Collect explicit times from this notice and its notice_event rows
+  let newTime = null;
+  let timeSource = null;
+
+  // Check notice.relevance_time
+  if (notice.relevance_time && /^\d{2}:\d{2}$/.test(notice.relevance_time)) {
+    newTime = notice.relevance_time;
+    timeSource = `notice #${notice.id} relevance_time`;
+  }
+
+  // Check notice_event rows for this date
+  if (!newTime) {
+    const neRows = db.prepare(
+      'SELECT event_time, event_title, notice_id FROM notice_event WHERE event_date = ? AND event_time IS NOT NULL AND length(event_time) > 0'
+    ).all(intent.event_date);
+
+    // Find a notice_event whose title matches the intent's event
+    const normIntentTitle = _normalizeForFingerprint(intent.event_title);
+    for (const ne of neRows) {
+      const normNeTitle = _normalizeForFingerprint(ne.event_title);
+      if (normIntentTitle && normNeTitle &&
+          (normIntentTitle.includes(normNeTitle) || normNeTitle.includes(normIntentTitle))) {
+        newTime = ne.event_time;
+        timeSource = `notice_event from notice #${ne.notice_id}`;
+        break;
+      }
+    }
+  }
+
+  if (!newTime) return null;
+
+  // Check if the existing event already has the correct time
+  if (intent.event_start) {
+    const existingTime = intent.event_start.includes('T')
+      ? intent.event_start.split('T')[1].substring(0, 5)
+      : null;
+    if (existingTime === newTime && currentTimeStatus === 'known') {
+      return null; // already correct
+    }
+  }
+
+  // Patch the calendar event
+  const newStartIso = `${intent.event_date}T${newTime}:00+03:00`;
+  const endMinutes = 60; // default 1h for meetings
+  const [h, m] = newTime.split(':').map(Number);
+  const endMins = h * 60 + m + endMinutes;
+  const newEndIso = `${intent.event_date}T${String(Math.floor(endMins / 60) % 24).padStart(2, '0')}:${String(endMins % 60).padStart(2, '0')}:00+03:00`;
+
+  const oldTime = intent.event_start ? intent.event_start.split('T')[1]?.substring(0, 5) : 'unknown';
+
+  try {
+    const patch = {
+      start: { dateTime: newStartIso, timeZone: 'Asia/Jerusalem' },
+      end:   { dateTime: newEndIso, timeZone: 'Asia/Jerusalem' },
+    };
+
+    // Remove " — שעה טרם פורסמה" from title if present
+    if (intent.event_title && intent.event_title.includes('שעה טרם פורסמה')) {
+      patch.summary = intent.event_title.replace(/\s*—\s*שעה טרם פורסמה/, '').trim();
+    }
+
+    const result = await updateCalendarEvent(
+      config.AVIV_CALENDAR_ID, config.AVIV_TOKEN_PATH,
+      intent.calendar_event_id, patch, notice.id
+    );
+
+    if (result && result.ok !== false) {
+      // Update the intent
+      const now = Date.now();
+      db.prepare(`
+        UPDATE calendar_intents
+        SET event_start = ?, event_end = ?, time_status = 'known', updated_at = ?,
+            event_title = COALESCE(?, event_title)
+        WHERE id = ?
+      `).run(newStartIso, newEndIso, now, patch.summary || null, intent.id);
+
+      console.log(`[CalendarBridge] ✅ H3 TIME CORRECTED: "${intent.event_title}" ${intent.event_date} — ${oldTime} → ${newTime} (source: ${timeSource})`);
+
+      return {
+        status: 'time_corrected',
+        intentId: intent.id,
+        oldTime,
+        newTime,
+        source: timeSource,
+        // Notification text for guardedSend
+        notification: `עדכנתי — ${intent.event_title} ${intent.event_date} מ-${oldTime} ל-${newTime} (לפי הודעה מהקבוצה).`,
+      };
+    }
+  } catch (err) {
+    console.error(`[CalendarBridge] H3 time correction failed for intent #${intent.id}:`, err.message);
+  }
+
+  return null;
 }
 
 module.exports = {

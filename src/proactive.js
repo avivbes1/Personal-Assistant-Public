@@ -217,7 +217,8 @@ async function resolveMissingTime(noticeId, time) {
         end: { dateTime: new Date(endIso).toISOString(), timeZone: TZ },
       };
       // Events are created on Aviv's calendar by default (addSharedEvent).
-      const r = await updateCalendarEvent(config.AVIV_CALENDAR_ID, config.AVIV_TOKEN_PATH, notice.calendar_event_id, patch);
+      // P-015 / H1: this patch is grounded in the notice that supplied the time.
+      const r = await updateCalendarEvent(config.AVIV_CALENDAR_ID, config.AVIV_TOKEN_PATH, notice.calendar_event_id, patch, notice.id);
       patched = !!(r && r.ok !== false);
     } catch (e) {
       console.warn('[Proactive] resolveMissingTime calendar patch failed (non-fatal):', e.message);

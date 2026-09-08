@@ -47,7 +47,7 @@ const { resolveMembersInText } = require('./family-profiles');
 const { validateOutgoing, repairMessage } = require('./validate-outgoing');
 const { extractFromText, detectMissingParams, buildClarificationQuestion, resolvePartialEvent } = require('./parser');
 const { processMediaMessage, extractFromUrl, isSchoolGroup } = require('./media-parser');
-const { addEvent, addSharedEvent, searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent } = require('./calendar');
+const { addEvent, addSharedEvent, searchCalendarEvents, updateCalendarEvent, deleteCalendarEvent, CALENDAR_SOURCE_USER } = require('./calendar');
 const { scheduleRemindersForEvent, scheduleFollowUpForEvent } = require('./scheduler');
 const { answerQuery } = require('./query');
 const { handleMessage, handleGroupEvent } = require('./agent');
@@ -204,7 +204,8 @@ async function executePendingAction(pending, userId, senderName) {
       for (const event of events) {
         const owner = event.calendar_owner || 'both';
         try {
-          const gcalEvent = await addSharedEvent(event, owner);
+          // P-015 / H1: user-confirmed add — sanctioned but ungrounded in a notice.
+          const gcalEvent = await addSharedEvent(event, owner, CALENDAR_SOURCE_USER);
           if (gcalEvent) { scheduleRemindersForEvent(gcalEvent, owner); scheduleFollowUpForEvent(gcalEvent, owner); }
         } catch (e) {
           logger.error({ component: 'Confirm', err: e.message }, 'addSharedEvent error');
@@ -1430,7 +1431,8 @@ function initWhatsApp() {
               const { events: fuEvents } = await extractFromText(msg.body, masterGroupHistory.slice(-5), null, msg.timestamp ? msg.timestamp * 1000 : null);
               if (fuEvents.length > 0) {
                 for (const e of fuEvents) {
-                  const gcalEv = await addEvtFu(e, followUp.owner || 'both');
+                  // P-015 / H1: user-directed reschedule — sanctioned, ungrounded.
+                  const gcalEv = await addEvtFu(e, followUp.owner || 'both', CALENDAR_SOURCE_USER);
                   if (gcalEv) { scheduleRemindersForEvent(gcalEv, followUp.owner || 'both'); scheduleFollowUpForEvent(gcalEv, followUp.owner || 'both'); }
                 }
                 const confirmMsg = '✅ קבעתי מחדש!';

@@ -12,6 +12,13 @@ const { getToken, saveToken, setTokenError, migrateTokenFromFile, logCalendarInt
 let _credentials = null;
 const _authClients = {}; // keyed by userId ('aviv' | 'liat')
 
+// P-015 / H1 — sentinel for calendar writes that originate directly from a user
+// request (a confirmation or reschedule via Lipa) rather than a group notice.
+// Legitimate but ungrounded: it satisfies the source_notice_id boundary while
+// staying greppable as "not tied to a notice". A numeric notice id is preferred
+// wherever one exists.
+const CALENDAR_SOURCE_USER = 'user-request';
+
 function _getCredentials() {
   if (!_credentials) {
     const credentialsPath = path.resolve(config.GOOGLE_CREDENTIALS_PATH);
@@ -205,8 +212,20 @@ async function addEvent(calendarId, tokenPath, event) {
  * If an event with a similar title exists on the same day within 90 minutes,
  * updates it instead and returns the result with _wasUpdated=true.
  */
-async function addSharedEvent(event, owner = 'both') {
+async function addSharedEvent(event, owner = 'both', source_notice_id) {
   // owner: 'both' | 'aviv' | 'liat'
+  // P-015 / H1 — this is the calendar-write boundary. Every caller must declare
+  // where the write came from: a notice id, or CALENDAR_SOURCE_USER for a direct
+  // user request. A call that omits source_notice_id entirely is an unsanctioned
+  // bypass (e.g. an agent that require()'d this module directly instead of going
+  // through calendarGate) and is refused. null/CALENDAR_SOURCE_USER are allowed —
+  // they mean "ungrounded but sanctioned" and remain visible in the logs.
+  if (source_notice_id === undefined) {
+    const title = event && event.title ? event.title : 'event';
+    console.error(`[Calendar] BLOCKED addSharedEvent "${title}": missing source_notice_id (P-015 calendar-write boundary). Route calendar writes through calendarGate or POST /api/calendar/propose.`);
+    throw new Error('addSharedEvent requires a source_notice_id argument (P-015). Pass a notice id, or CALENDAR_SOURCE_USER for a direct user request.');
+  }
+
   const auth = createAuthClient(config.AVIV_TOKEN_PATH);
   const calendar = google.calendar({ version: 'v3', auth });
 
@@ -272,7 +291,7 @@ async function addSharedEvent(event, owner = 'both') {
         if (event.location != null) patch.location = event.location;
         if (event.description != null) patch.description = event.description;
 
-        const updateResult = await updateCalendarEvent(calendarId, tokenPath, existing.id, patch);
+        const updateResult = await updateCalendarEvent(calendarId, tokenPath, existing.id, patch, source_notice_id);
         if (updateResult && updateResult.ok !== false) {
           const updated = updateResult.event || updateResult;
           console.log(`[Calendar] Dedup: updated existing event "${event.title}" instead of creating new (${existing.id})`);
@@ -592,7 +611,14 @@ function _overlapping(events, propStart, propEnd, owner) {
  * @param {string} eventId
  * @param {object} patch — partial gcal event object (e.g. { start, end, summary, description })
  */
-async function updateCalendarEvent(calendarId, tokenPath, eventId, patch) {
+async function updateCalendarEvent(calendarId, tokenPath, eventId, patch, source_notice_id) {
+  // P-015 / H1 — updates share the calendar-write boundary, but unlike creates
+  // they may legitimately be corrections that carry no notice (H3). So an absent
+  // source is logged, not blocked — the ungrounded update stays visible without
+  // breaking the correction path.
+  if (source_notice_id == null) {
+    console.warn(`[Calendar] updateCalendarEvent without source_notice_id (eventId=${eventId}) — proceeding (P-015: updates may be corrections, logged not blocked).`);
+  }
   try {
     const auth = createAuthClient(tokenPath);
     const calendar = google.calendar({ version: 'v3', auth });
@@ -698,6 +724,7 @@ async function verifyCalendarAuth(tokenPath) {
 }
 
 module.exports = {
+  CALENDAR_SOURCE_USER,
   getAvivCalendar,
   getLiatCalendar,
   getUpcomingEvents,

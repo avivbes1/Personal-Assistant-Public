@@ -364,6 +364,8 @@ function initDB() {
   // records why a time is absent — 'known' (has time), 'unknown' (not yet
   // published), or 'updated' (a time arrived later and the event was patched).
   try { db.exec("ALTER TABLE calendar_intents ADD COLUMN time_status TEXT DEFAULT 'known'"); } catch (_) {}
+  // H5: time provenance tracking
+  try { db.exec("ALTER TABLE calendar_intents ADD COLUMN time_source TEXT DEFAULT 'absent'"); } catch (_) {}
 
   // Migrations — add columns that may not exist in older DBs
   try { db.exec("ALTER TABLE reminders ADD COLUMN owner TEXT DEFAULT 'both'"); } catch (_) {}

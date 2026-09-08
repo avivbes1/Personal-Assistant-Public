@@ -256,6 +256,29 @@ check('P-015', 'processEventAction validates the source before writing', () => {
   }
 });
 
+check('P-015', 'addSharedEvent is imported only by sanctioned calendar-write files', () => {
+  const srcDir = path.join(ROOT, 'src');
+  if (!fs.existsSync(srcDir)) return { skip: 'src/ not present' };
+  // The calendar-write boundary (H1). addSharedEvent is the raw create path; only
+  // these files may reach it. calendar.js defines it; calendarGate.js is the gate;
+  // calendar-bridge.js is the pipeline; whatsapp.js is the user-confirmation path;
+  // voice-server.js is the agent write endpoint. Any other file wanting a calendar
+  // write must go through calendarGate or POST /api/calendar/propose — importing
+  // addSharedEvent directly is exactly the bypass P-015/H1 exists to close.
+  const ALLOWED = new Set([
+    'calendar.js', 'calendarGate.js', 'calendar-bridge.js', 'whatsapp.js', 'voice-server.js',
+  ]);
+  const files = fs.readdirSync(srcDir).filter(f => f.endsWith('.js') && !ALLOWED.has(f));
+  const violators = [];
+  for (const f of files) {
+    const content = codeOnly(fs.readFileSync(path.join(srcDir, f), 'utf8'));
+    if (/\baddSharedEvent\b/.test(content)) violators.push(f);
+  }
+  if (violators.length > 0) {
+    return `addSharedEvent referenced outside sanctioned calendar-write files in: ${violators.join(', ')}. Route calendar writes through calendarGate or POST /api/calendar/propose (P-015 / H1).`;
+  }
+});
+
 // ── P-014 — Every Shim Field Has a Fixture Test ──────────────────────────────
 check('P-014', 'baileys shim fixture suite is present', () => {
   const runner = path.join(ROOT, 'tests/shim/run.js');

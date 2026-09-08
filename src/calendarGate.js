@@ -290,7 +290,7 @@ ${formatExistingEvents(existingEvents)}`;
 
 // ── Stage 4: Execute ──────────────────────────────────────────────────────────
 
-async function executeDecision(decision, candidate, existingEvents, sendToMasterGroup) {
+async function executeDecision(decision, candidate, existingEvents, sendToMasterGroup, sourceNoticeId) {
   const { action, match_event_id, reason } = decision;
 
   if (action === 'skip') {
@@ -327,7 +327,7 @@ async function executeDecision(decision, candidate, existingEvents, sendToMaster
     try {
       const tokenPath = config.AVIV_TOKEN_PATH;
       const calendarId = config.AVIV_CALENDAR_ID;
-      const result = await updateCalendarEvent(calendarId, tokenPath, match_event_id, patch);
+      const result = await updateCalendarEvent(calendarId, tokenPath, match_event_id, patch, sourceNoticeId);
       if (result && result.ok === false) {
         console.error(`[CalendarGate] Update failed: ${result.reason}`);
         return { action: 'error', reason: result.reason, details: { eventId: match_event_id, calendarId } };
@@ -354,7 +354,10 @@ async function executeDecision(decision, candidate, existingEvents, sendToMaster
     };
 
     try {
-      const gcalEvent = await addSharedEvent(event, candidate.owner);
+      // P-015 / H1: pass the grounding source through the write boundary. May be
+      // null for a direct user request (already warned above in processEventAction);
+      // addSharedEvent only refuses an entirely-absent argument.
+      const gcalEvent = await addSharedEvent(event, candidate.owner, sourceNoticeId ?? null);
       if (gcalEvent) {
         console.log(`[CalendarGate] CREATED "${candidate.title}" on ${candidate.date} — ${reason}`);
         return { action: 'created', gcalId: gcalEvent.id, event: gcalEvent };
@@ -428,7 +431,7 @@ async function processEventAction(action, { rawMessage, groupName, sendToMasterG
   console.log(`[CalendarGate] Decision: ${decision.action} (confidence=${decision.confidence}) — ${decision.reason}`);
 
   // Stage 4: Execute
-  const result = await executeDecision(decision, candidate, existingEvents, sendToMasterGroup);
+  const result = await executeDecision(decision, candidate, existingEvents, sendToMasterGroup, sourceNoticeId);
   return result;
 }
 
