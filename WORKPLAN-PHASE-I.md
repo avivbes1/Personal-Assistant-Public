@@ -39,9 +39,9 @@ Status tracking below.
 - [ ] Enable S3_BACKUP_BUCKET
 
 ## I5. Alert on restart rate and log silence
-- [ ] PM2 restart rate monitoring
-- [ ] Log freshness check
-- [ ] Route to existing alert path
+- [x] PM2 restart rate monitoring — infra/watchdog.sh Check 1c: delta of restart_time vs /tmp/besinsky-restart-rate.json; >3 in ~5min → /tmp/bot-stuck-alert.json
+- [x] Log freshness check — Check 1d: PM2 out-log mtime >30min during daytime (08–22 Israel) while online → /tmp/bot-stuck-alert.json
+- [x] Route to existing alert path — both add to `failures` (feeds debounced watchdog-alert.json + ntfy) and write bot-stuck-alert.json
 
 ## I6. Reduce log noise
 - [ ] Rate-limit VoiceServer primary_child spam

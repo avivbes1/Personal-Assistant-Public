@@ -66,6 +66,62 @@ try {
   }
 }
 
+// Check 1c: PM2 restart rate (I5)
+// The watchdog runs every ~5min, so comparing restart_time to the value we
+// stored last run gives a 5-minute delta. A jump of >3 restarts means the bot
+// is crash-looping — write the stuck-alert file (cleared by whatsapp.js on the
+// next successful reconnect).
+const RESTART_RATE_FILE = '/tmp/besinsky-restart-rate.json';
+const RESTART_JUMP_THRESHOLD = 3;
+const RESTART_WINDOW_MS = 6 * 60 * 1000; // tolerate a slightly-late timer tick
+try {
+  if (botStatus !== 'pm2_error' && botStatus !== 'missing') {
+    let prev = null;
+    try { prev = JSON.parse(fs.readFileSync(RESTART_RATE_FILE, 'utf8')); } catch {}
+    if (prev && typeof prev.restarts === 'number' && (tsMs - prev.ts) <= RESTART_WINDOW_MS) {
+      const delta = restarts - prev.restarts;
+      if (delta > RESTART_JUMP_THRESHOLD) {
+        failures.push('crash-loop(' + delta + '/' + Math.round((tsMs - prev.ts) / 60000) + 'min)');
+        details.push('Bot restarted ' + delta + ' times in ' + Math.round((tsMs - prev.ts) / 60000) + 'min — crash loop.');
+        fs.writeFileSync('/tmp/bot-stuck-alert.json', JSON.stringify({
+          ts: tsMs,
+          msg: 'Bot crash-loop: ' + delta + ' PM2 restarts in ' + Math.round((tsMs - prev.ts) / 60000) + 'min (restart_time=' + restarts + '). Needs investigation — check pm2 logs.'
+        }));
+      }
+    }
+    fs.writeFileSync(RESTART_RATE_FILE, JSON.stringify({ ts: tsMs, restarts }));
+  }
+} catch (e) {
+  details.push('Restart-rate check error: ' + e.message.substring(0, 80));
+}
+
+// Check 1d: Log freshness (I5)
+// A frozen/wedged process keeps its pm2 status 'online' but stops writing logs.
+// During daytime (08–22 Israel) the bot logs constantly, so a stdout log older
+// than 30min means the process is stuck. Nighttime is legitimately quiet, so
+// only check during active hours.
+const OUT_LOG = process.env.BESINSKY_OUT_LOG || '/home/ubuntu/.pm2/logs/besinsky-bot-out.log';
+const LOG_STALE_MS = 30 * 60 * 1000;
+try {
+  const israelHour = new Date(tsMs + 3 * 60 * 60 * 1000).getUTCHours(); // UTC+3
+  const isDaytime = israelHour >= 8 && israelHour < 22;
+  if (isDaytime && botStatus === 'online') {
+    const logAgeMs = tsMs - fs.statSync(OUT_LOG).mtimeMs;
+    if (logAgeMs > LOG_STALE_MS) {
+      const ageMin = Math.round(logAgeMs / 60000);
+      failures.push('log-frozen(' + ageMin + 'min)');
+      details.push('PM2 stdout log not written for ' + ageMin + 'min during daytime — process likely frozen.');
+      fs.writeFileSync('/tmp/bot-stuck-alert.json', JSON.stringify({
+        ts: tsMs,
+        msg: 'Bot process frozen: no log output for ' + ageMin + 'min during daytime (pm2 status=online). Restart may be needed.'
+      }));
+    }
+  }
+} catch (e) {
+  // Missing log file / stat error — non-fatal, note it but don't alert.
+  details.push('Log-freshness check skipped: ' + e.message.substring(0, 80));
+}
+
 // Check 2: Health probe (HTTP, no external deps)
 function httpGet(url, timeoutMs) {
   return new Promise((resolve) => {
