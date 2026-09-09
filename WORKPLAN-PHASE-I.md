@@ -49,4 +49,4 @@ Status tracking below.
 - [ ] Add logrotate for PM2 logs
 
 ## I7. Runbook
-- [ ] docs/RUNBOOK.md
+- [x] docs/RUNBOOK.md — operational playbook: system map, alert-file catalog, startup-marker (I3) reading, symptom→fix, backups/restore, disk guards, gotchas, quick-command reference
