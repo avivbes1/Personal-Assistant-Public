@@ -41,6 +41,31 @@ try {
   }
 } catch (e) { botStatus = 'pm2_error'; failures.push('bot-pm2_error'); details.push('pm2 check failed: ' + e.message.substring(0,100)); }
 
+// Check 1b: Startup-phase supervisor (I3)
+// The health probe below only works once the bot has connected. A crash or hang
+// *during* startup is invisible to it. The bot writes /tmp/besinsky-startup.json
+// with {ts, pid, phase} — 'starting' at boot, 'connected' once WhatsApp is up.
+//   - phase='starting' AND ts > 5min old  → stuck in startup
+//   - marker missing AND pm2 says 'online' → marker never written / pre-write crash
+const STARTUP_MARKER = process.env.BESINSKY_STARTUP_MARKER || '/tmp/besinsky-startup.json';
+const STARTUP_STUCK_MS = 5 * 60 * 1000;
+try {
+  const marker = JSON.parse(fs.readFileSync(STARTUP_MARKER, 'utf8'));
+  const ageMs = tsMs - (marker.ts || 0);
+  if (marker.phase === 'starting' && ageMs > STARTUP_STUCK_MS) {
+    failures.push('startup-stuck(' + Math.round(ageMs / 60000) + 'min)');
+    details.push('Bot stuck in startup for ' + Math.round(ageMs / 60000) + 'min (phase=starting).');
+  }
+} catch (e) {
+  // Marker missing/unreadable. Only a problem if pm2 thinks the bot is running:
+  // a healthy connected bot leaves the marker in place, so a missing marker while
+  // 'online' means it never got written (crashed before boot, or crash-loop).
+  if (botStatus === 'online') {
+    failures.push('startup-marker-missing');
+    details.push('Startup marker missing while pm2 status=online (bot may be crash-looping before it can write it).');
+  }
+}
+
 // Check 2: Health probe (HTTP, no external deps)
 function httpGet(url, timeoutMs) {
   return new Promise((resolve) => {

@@ -3,6 +3,13 @@
  * WhatsApp family assistant bot.
  */
 
+const startupMarker = require('./startup-marker');
+// I3: record the startup phase before any slow init runs. If the process hangs
+// or crashes below (DB init, profile load, Baileys handshake) the external
+// watchdog sees a stale phase='starting' marker and alerts — otherwise a
+// pre-connect crash-loop is invisible to it.
+startupMarker.markStarting();
+
 const config = require('./config');
 const { initDB, assertGroupMonitoringIntegrity } = require('./db');
 const { loadProfile } = require('./family-context');
@@ -78,6 +85,9 @@ setTimeout(() => {
 // 5. Graceful shutdown
 function shutdown(signal) {
   console.log(`\n[FamilyBot] Received ${signal}. Shutting down gracefully...`);
+  // I3: clear the startup marker so the external watchdog doesn't flag a stale
+  // 'starting'/'connected' file after a deliberate shutdown.
+  startupMarker.clear();
   process.exit(0);
 }
 
