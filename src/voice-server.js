@@ -89,6 +89,12 @@ let _client = null;
 let _getHealthState = null;
 const _initErrors = [];
 
+// I6: the unlinked-groups warning fires on every /health request (called
+// frequently by the monitor), flooding the log. Rate-limit it: log only when
+// the count changes or at most once per hour.
+let _unlinkedWarnLastTs = 0;
+let _unlinkedWarnLastCount = -1;
+
 /**
  * Wire in the real WhatsApp client + health state accessor.
  * Called by whatsapp.js from the 'ready' handler.
@@ -135,7 +141,14 @@ function buildHealthPayload() {
     payload.unlinked_groups = unlinked.length;
     payload.unlinked_group_names = unlinked.map(g => g.name);
     if (unlinked.length > 0) {
-      console.warn(`[VoiceServer] ${unlinked.length} monitored group(s) have no primary_child: ${unlinked.map(g => g.name).join(', ')}`);
+      // I6: only warn when the count changes or an hour has passed, so this
+      // doesn't print on essentially every request.
+      const now = Date.now();
+      if (unlinked.length !== _unlinkedWarnLastCount || now - _unlinkedWarnLastTs >= 3600_000) {
+        console.warn(`[VoiceServer] ${unlinked.length} monitored group(s) have no primary_child: ${unlinked.map(g => g.name).join(', ')}`);
+        _unlinkedWarnLastTs = now;
+        _unlinkedWarnLastCount = unlinked.length;
+      }
     }
   } catch (_) {}
   try {
