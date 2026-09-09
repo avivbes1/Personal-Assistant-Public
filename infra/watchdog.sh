@@ -43,11 +43,11 @@ try {
 
 // Check 1b: Startup-phase supervisor (I3)
 // The health probe below only works once the bot has connected. A crash or hang
-// *during* startup is invisible to it. The bot writes /tmp/besinsky-startup.json
+// *during* startup is invisible to it. The bot writes /tmp/bot-startup.json
 // with {ts, pid, phase} — 'starting' at boot, 'connected' once WhatsApp is up.
 //   - phase='starting' AND ts > 5min old  → stuck in startup
 //   - marker missing AND pm2 says 'online' → marker never written / pre-write crash
-const STARTUP_MARKER = process.env.BESINSKY_STARTUP_MARKER || '/tmp/besinsky-startup.json';
+const STARTUP_MARKER = process.env.BOT_STARTUP_MARKER || '/tmp/bot-startup.json';
 const STARTUP_STUCK_MS = 5 * 60 * 1000;
 try {
   const marker = JSON.parse(fs.readFileSync(STARTUP_MARKER, 'utf8'));
