@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 
-const MARKER_PATH = process.env.BESINSKY_STARTUP_MARKER || '/tmp/besinsky-startup.json';
+const MARKER_PATH = process.env.BOT_STARTUP_MARKER || '/tmp/bot-startup.json';
 
 function write(phase) {
   try {
