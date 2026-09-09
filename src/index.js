@@ -40,6 +40,27 @@ try {
   process.exit(1);
 }
 
+// 2b. I1 preflight: refuse to start on a nearly-full disk. Booting Baileys with
+// <1GB free risks corrupting the session/DB mid-write — better to fail loudly and
+// leave the existing session intact than to start and truncate it.
+try {
+  const { getDiskStats, sendAlertDirect } = require('./health');
+  const disk = getDiskStats();
+  const MIN_FREE_BYTES = 1024 * 1024 * 1024; // 1GB
+  if (disk && disk.free_bytes < MIN_FREE_BYTES) {
+    const freeMb = Math.round(disk.free_bytes / 1e6);
+    console.error(`[Boot] FATAL: only ${freeMb}MB free (<1GB) on disk — refusing to start to avoid corrupting the WhatsApp session/DB. Free space and restart.`);
+    // Queues to disk (WhatsApp isn't up yet) and flushes on the next healthy boot.
+    try {
+      sendAlertDirect(`🔴 הבוט לא עלה: רק ${freeMb}MB פנויים בדיסק (פחות מ-1GB). פנה מקום והפעל מחדש.`);
+    } catch (_) {}
+    process.exit(1);
+  }
+} catch (e) {
+  // A statfs failure must not itself block startup — just log and continue.
+  console.error('[Boot] Disk preflight check failed (continuing):', e.message);
+}
+
 // 3. Initialize WhatsApp client
 initWhatsApp();
 

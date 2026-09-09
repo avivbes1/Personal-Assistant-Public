@@ -10,7 +10,7 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const { getDB, clearExpiredPendingActions } = require('./db');
 const { verifyCalendarAuth, generateAuthUrl } = require('./calendar');
-const { runThroughputChecks } = require('./health-throughput');
+const { runThroughputChecks, emitMetric } = require('./health-throughput');
 const config = require('./config');
 const logger = require('./logger');
 
@@ -36,6 +36,77 @@ let _lastThroughputCheckMs = 0;
 // Rate-limit OpenClaw channel auto-reconnect to at most once per 30 min
 let lastChannelReconnectMs = 0;
 const HEALTH_STATE_PATH = path.join(__dirname, '../data/health-state.json');
+
+// ── I1: Disk monitoring ──────────────────────────────────────────────────────
+// A full disk silently corrupts the Baileys session and the SQLite DB. Monitor
+// the partition the app lives on: warn at 80% used, alert at 85%, and DM Aviv
+// immediately above 90%. Uses fs.statfsSync (no `df` subprocess) so it's cheap
+// enough for both the periodic check and the /health endpoint / preflight guard.
+const DISK_MONITOR_PATH = process.env.FAMILYBOT_DISK_PATH || __dirname;
+const DISK_WARN_USED_PCT = 80;
+const DISK_ALERT_USED_PCT = 85;
+const DISK_CRITICAL_USED_PCT = 90;
+// Critical DMs bypass the 24h cooldown but are still rate-limited to hourly so a
+// sustained full disk doesn't spam Aviv every 5-min cycle.
+const DISK_CRITICAL_COOLDOWN_MS = 60 * 60 * 1000;
+let _lastDiskCriticalAlertMs = 0;
+
+/**
+ * Read disk usage for the partition holding the app. Synchronous (statfsSync is
+ * cheap) so the /health endpoint and the startup preflight can both call it.
+ * Returns { total_bytes, free_bytes, free_pct, used_pct } or null on error.
+ */
+function getDiskStats() {
+  try {
+    const s = fs.statfsSync(DISK_MONITOR_PATH);
+    const total = s.blocks * s.bsize;
+    const free = s.bavail * s.bsize; // bytes available to unprivileged users
+    if (!total) return null;
+    const freePct = (free / total) * 100;
+    return {
+      total_bytes: total,
+      free_bytes: free,
+      free_pct: Math.round(freePct * 10) / 10,
+      used_pct: Math.round((100 - freePct) * 10) / 10,
+    };
+  } catch (e) {
+    logger.warn({ component: 'Health', err: e.message }, 'statfs failed — cannot read disk usage');
+    return null;
+  }
+}
+
+/**
+ * Disk-space health check. Pushes a failure string onto `failures` at warn/alert/
+ * critical thresholds, DMs Aviv immediately when critical, and logs a metric row.
+ */
+async function checkDiskSpace(failures, disk = getDiskStats(), notify = sendAlertDirect) {
+  if (!disk) return;
+  const used = disk.used_pct;
+  const freeGb = (disk.free_bytes / 1e9).toFixed(2);
+
+  emitMetric('disk_space', used < DISK_WARN_USED_PCT, {
+    used_pct: used,
+    free_pct: disk.free_pct,
+    free_gb: Number(freeGb),
+  });
+
+  if (used > DISK_CRITICAL_USED_PCT) {
+    const msg = `🔴 Disk critical: ${used}% used, only ${freeGb}GB free. Free space now — a full disk corrupts the WhatsApp session and DB.`;
+    failures.push(`Disk critical: ${used}% used (${freeGb}GB free)`);
+    const now = Date.now();
+    if (now - _lastDiskCriticalAlertMs > DISK_CRITICAL_COOLDOWN_MS) {
+      _lastDiskCriticalAlertMs = now;
+      await notify(msg);
+      logger.error({ component: 'Health', usedPct: used, freeGb }, 'Disk critical — immediate alert sent');
+    }
+  } else if (used >= DISK_ALERT_USED_PCT) {
+    failures.push(`Disk alert: ${used}% used (${freeGb}GB free)`);
+    logger.warn({ component: 'Health', usedPct: used, freeGb }, 'Disk usage past alert threshold');
+  } else if (used >= DISK_WARN_USED_PCT) {
+    failures.push(`Disk warning: ${used}% used (${freeGb}GB free)`);
+    logger.warn({ component: 'Health', usedPct: used, freeGb }, 'Disk usage past warn threshold');
+  }
+}
 
 function loadHealthState() {
   try {
@@ -315,6 +386,13 @@ async function runChecks() {
     }
   }
 
+  // 7. Disk space (I1) — warn 80% used, alert 85%, critical >90% (immediate DM).
+  try {
+    await checkDiskSpace(failures);
+  } catch (e) {
+    logger.error({ component: 'Health', err: e.message }, 'Disk check error');
+  }
+
   return failures;
 }
 
@@ -500,4 +578,4 @@ function getLastOpenClawChannelResult() {
   return _lastChannelResult;
 }
 
-module.exports = { initHealth, runChecks, checkAndAlert, startHealthMonitor, sendAlertDirect, checkOpenClawChannel, getLastOpenClawChannelResult };
+module.exports = { initHealth, runChecks, checkAndAlert, startHealthMonitor, sendAlertDirect, checkOpenClawChannel, getLastOpenClawChannelResult, getDiskStats, checkDiskSpace };
