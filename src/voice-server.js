@@ -155,6 +155,17 @@ function buildHealthPayload() {
   } catch (_) {
     payload.openclaw_channel = { ok: null, error: 'check unavailable' };
   }
+  // I1: surface disk usage so a filling disk is observable via /health, not only
+  // in the periodic alert. statfsSync is cheap enough to read per request.
+  try {
+    const { getDiskStats } = require('./health');
+    const disk = getDiskStats();
+    if (disk) {
+      payload.disk_free_pct = disk.free_pct;
+      payload.disk_used_pct = disk.used_pct;
+      payload.disk_free_gb = Math.round(disk.free_bytes / 1e8) / 10;
+    }
+  } catch (_) {}
   return payload;
 }
 

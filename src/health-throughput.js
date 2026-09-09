@@ -19,6 +19,12 @@ const { getIsraelHour } = require('./timeUtils');
 const logger = require('./logger');
 
 const METRICS_PATH = path.join(__dirname, '../data/health-metrics.jsonl');
+// Resolve the write target at call time so tests can isolate it via
+// FAMILYBOT_METRICS_PATH (same convention as FAMILYBOT_DB_PATH) and never append
+// to the live trend file.
+function metricsWritePath() {
+  return process.env.FAMILYBOT_METRICS_PATH || METRICS_PATH;
+}
 
 // The master group is the bot's own output channel, not an ingestion source —
 // exclude it from ingestion/silence math (same JID the outage check excludes).
@@ -36,9 +42,10 @@ const DAY_MS = 24 * HOUR_MS;
  */
 function emitMetric(check, ok, data = {}) {
   const row = { ts: Date.now(), check, ok, ...data };
+  const p = metricsWritePath();
   try {
-    fs.mkdirSync(path.dirname(METRICS_PATH), { recursive: true });
-    fs.appendFileSync(METRICS_PATH, JSON.stringify(row) + '\n');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, JSON.stringify(row) + '\n');
   } catch (e) {
     logger.warn({ component: 'HealthThroughput', err: e.message }, 'Could not write health metric');
   }

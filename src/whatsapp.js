@@ -101,13 +101,35 @@ let _disconnectedSinceMs = 0;  // non-zero while bot is offline
 let _reconnectAttempts = 0;
 let _reconnectTimer = null;     // active reconnect setTimeout
 let _watchdogStarted = false;   // prevent duplicate watchdog intervals
+// I2: true while a QR is being shown and no session is established. Set in the
+// 'qr' handler, cleared on 'ready'. Drives whatsapp_state = 'awaiting_qr'.
+let _awaitingQr = false;
+// I2: guard so a session-invalidated DM fires once per invalidation, not on
+// every QR refresh (the 'qr' event re-fires every ~20s until scanned).
+let _qrInvalidationAlerted = false;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_BASE_DELAY_MS = 30_000; // 30s initial delay
 const getHealthState = () => {
   let watchdogState = null;
   try { watchdogState = require('./watchdog').getState(); } catch (_) {}
+
+  // I2: whatsapp_connected must reflect real liveness, not just "a client object
+  // exists" (client.info is always populated once constructed). client.isReady is
+  // a getter returning a boolean on BaileysClient; if a client shape without it is
+  // ever used, `undefined` falls back to "ready". Derivation lives in the pure,
+  // unit-tested whatsapp-state module.
+  const rawReady = client ? client.isReady : undefined;
+  const isReady = !!(client && client.info) && (rawReady === undefined ? true : !!rawReady);
+  const { whatsapp_connected, whatsapp_state } = require('./whatsapp-state').deriveConnectionState({
+    hasClient: !!(client && client.info),
+    isReady,
+    awaitingQr: _awaitingQr,
+    watchdogState,
+  });
+
   return {
-    whatsapp_connected: !!(client && client.info),
+    whatsapp_connected,
+    whatsapp_state,
     last_activity_ms: _lastActivityMs,
     ready_failure_count: _readyFailureCount,
     uptime_s: Math.round(process.uptime()),
@@ -980,6 +1002,28 @@ function initWhatsApp() {
         if (!err) logger.info({ component: 'WhatsApp' }, 'QR image saved to /tmp/whatsapp-qr.png');
       });
     } catch (_) {}
+
+    // I2: a QR is being shown → we are not connected and need a scan.
+    _awaitingQr = true;
+
+    // I2: if a session already existed on disk, this QR means the session was
+    // invalidated (logged out / creds rotated) rather than a first-time pairing.
+    // That needs a human to re-scan, so alert Aviv immediately (once per event).
+    try {
+      const credsPath = path.join(__dirname, '..', '.baileys_auth', 'creds.json');
+      const hadSession = fs.existsSync(credsPath);
+      if (hadSession && !_qrInvalidationAlerted) {
+        _qrInvalidationAlerted = true;
+        logger.error({ component: 'WhatsApp' }, 'QR requested but a session already existed — session invalidated, re-pair required');
+        try {
+          require('./health').sendAlertDirect(
+            '🔴 חיבור הוואטסאפ נותק (ה-session נמחק). צריך לסרוק QR מחדש: פתח וואטסאפ בטלפון של הבוט → מכשירים מקושרים → סרוק את הקוד.'
+          );
+        } catch (e) {
+          logger.error({ component: 'WhatsApp', err: e.message }, 'Failed to send session-invalidated alert');
+        }
+      }
+    } catch (_) {}
   });
 
   const { startReconciliation } = require('./groupReconciliation');
@@ -1000,6 +1044,9 @@ function initWhatsApp() {
     // ISSUE-021: reset reconnect state on successful ready
     _disconnectedSinceMs = 0;
     _reconnectAttempts = 0;
+    // I2: session is live again — clear QR/invalidation state
+    _awaitingQr = false;
+    _qrInvalidationAlerted = false;
     if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
     // Remove stale stuck-alert file if we successfully reconnected
     try { require('fs').unlinkSync('/tmp/bot-stuck-alert.json'); } catch (_) {}
