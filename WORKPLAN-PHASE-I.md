@@ -27,8 +27,8 @@ Status tracking below.
 - [x] QR on existing session = session-invalidated alert + DM (once per invalidation)
 
 ## I3. Make watchdog act on what it knows
-- [ ] Fix: watchdog only supervises connections that already succeeded
-- [ ] Add startup-phase supervisor with timeout
+- [x] Fix: watchdog only supervises connections that already succeeded
+- [x] Add startup-phase supervisor with timeout — src/startup-marker.js writes /tmp/besinsky-startup.json (phase starting→connected), cleared on clean shutdown; infra/watchdog.sh Check 1b alerts on stuck-startup (>5min) or missing-marker-while-online
 
 ## I4. Fix backup script silent failure
 - [ ] pipefail + remove 2>/dev/null

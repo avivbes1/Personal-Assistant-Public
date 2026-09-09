@@ -1050,6 +1050,9 @@ function initWhatsApp() {
     if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
     // Remove stale stuck-alert file if we successfully reconnected
     try { require('fs').unlinkSync('/tmp/bot-stuck-alert.json'); } catch (_) {}
+    // I3: startup completed — flip the startup marker to 'connected' so the
+    // external watchdog stops treating this process as still-booting.
+    try { require('./startup-marker').markConnected(); } catch (_) {}
     logger.info({ component: 'WhatsApp' }, 'Client connected and ready');
     try {
       await resolveMasterGroup();
@@ -1339,6 +1342,8 @@ function initWhatsApp() {
   // Graceful shutdown
   const shutdown = async () => {
     logger.info({ component: 'FamilyBot' }, 'Received SIGINT. Shutting down gracefully...');
+    // I3: clear the startup marker so the watchdog doesn't flag a stale file.
+    try { require('./startup-marker').clear(); } catch (_) {}
     try { await client.destroy(); } catch (_) {}
     process.exit(0);
   };
