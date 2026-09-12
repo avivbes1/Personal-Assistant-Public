@@ -1,0 +1,45 @@
+{
+  "$comment": "K3: Authoritative list of scheduled jobs. Any delivery topology change updates this file in the same PR. scripts/verify-cron.js checks for drift.",
+  "jobs": [
+    {
+      "name": "Notice triage — main classification (every 15min)",
+      "command": "node src/triage-engine.js",
+      "schedule": "*/15 * * * *",
+      "expectedIntervalMs": 900000,
+      "heartbeatName": "runTriage",
+      "owner": "triage-engine.js"
+    },
+    {
+      "name": "Notice delivery — immediate (every 5min)",
+      "command": "node deliver-immediate.js",
+      "schedule": "every 5min",
+      "expectedIntervalMs": 300000,
+      "heartbeatName": "runImmediate",
+      "owner": "deliver-immediate.js"
+    },
+    {
+      "name": "Notice delivery — batch (4x/day)",
+      "command": "node deliver-batch.js",
+      "schedule": "0 7,12,16,20 * * * (Israel)",
+      "expectedIntervalMs": 28800000,
+      "heartbeatName": "runDigest",
+      "owner": "deliver-batch.js"
+    },
+    {
+      "name": "Morning Digest",
+      "command": "node scripts/generate-digest.js",
+      "schedule": "0 7 * * * (Israel)",
+      "expectedIntervalMs": 86400000,
+      "heartbeatName": null,
+      "owner": "generate-digest.js"
+    },
+    {
+      "name": "GitHub CI monitor + public sync",
+      "command": "CI check + sync-public.sh",
+      "schedule": "every 30min",
+      "expectedIntervalMs": 1800000,
+      "heartbeatName": null,
+      "owner": "OpenClaw cron"
+    }
+  ]
+}

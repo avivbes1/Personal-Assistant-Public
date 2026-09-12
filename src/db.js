@@ -635,6 +635,17 @@ function initDB() {
   try { db.exec('ALTER TABLE notice_event ADD COLUMN event_date_source TEXT'); } catch (_) {}
   try { db.exec('ALTER TABLE notice_event ADD COLUMN event_date_raw TEXT'); } catch (_) {}
 
+  // K1: Job heartbeats — dead-man's-switch for scheduled jobs (P-021).
+  // Every scheduled entry point writes here on completion. Absence of a heartbeat
+  // is the alert — catches "job was never scheduled" which error monitoring cannot see.
+  try { db.exec(`CREATE TABLE IF NOT EXISTS job_runs (
+    job_name TEXT PRIMARY KEY,
+    last_success_ms INTEGER NOT NULL,
+    last_result TEXT,
+    consecutive_empty INTEGER DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  )`); } catch (_) {}
+
   // ISSUE-015: unique index to prevent duplicate messages regardless of call path
   try {
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(group_id, timestamp, body)`);
@@ -2183,9 +2194,34 @@ function proposeChildFromAliases(groupName) {
   }
 }
 
+// K1 / P-021: Job heartbeat writer. Every scheduled entry point calls this.
+// result = 'ok' | 'empty' | 'error' | custom string.
+function recordJobHeartbeat(jobName, result = 'ok') {
+  const now = Date.now();
+  const isEmpty = result === 'empty';
+  try {
+    const existing = getDB().prepare('SELECT consecutive_empty FROM job_runs WHERE job_name = ?').get(jobName);
+    const consEmpty = isEmpty ? ((existing?.consecutive_empty || 0) + 1) : 0;
+    getDB().prepare(`INSERT INTO job_runs (job_name, last_success_ms, last_result, consecutive_empty, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(job_name) DO UPDATE SET last_success_ms=?, last_result=?, consecutive_empty=?, updated_at=?`
+    ).run(jobName, now, result, consEmpty, now, now, result, consEmpty, now);
+  } catch (e) {
+    console.warn('[DB] recordJobHeartbeat error (non-fatal):', e.message);
+  }
+}
+
+function getJobHeartbeats() {
+  try {
+    return getDB().prepare('SELECT * FROM job_runs ORDER BY last_success_ms DESC').all();
+  } catch (_) { return []; }
+}
+
 module.exports = {
   initDB,
   getDB,
+  recordJobHeartbeat,
+  getJobHeartbeats,
   saveFeedback,
   getFeedbackStats,
   getSentMessageByStanzaId,
