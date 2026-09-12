@@ -629,6 +629,11 @@ function initDB() {
   )`); } catch (_) {}
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_notice_event_date ON notice_event(event_date)"); } catch (_) {}
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_notice_event_expires ON notice_event(expires_at)"); } catch (_) {}
+  // J2: mirror the notice-level weekday-correction provenance onto events.
+  // event_date_source ∈ {null,'weekday_corrected'}; event_date_raw preserves the
+  // literal date the message cited before the corrector snapped it to a weekday.
+  try { db.exec('ALTER TABLE notice_event ADD COLUMN event_date_source TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE notice_event ADD COLUMN event_date_raw TEXT'); } catch (_) {}
 
   // ISSUE-015: unique index to prevent duplicate messages regardless of call path
   try {
@@ -1202,10 +1207,12 @@ function enrichNoticeByThreadKey(newNoticeId, threadKey, fields, newSource) {
 }
 
 function saveNoticeEvents(noticeId, events) {
-  // events = [{date: 'YYYY-MM-DD', time: 'HH:MM'|null, title: 'string'}]
+  // events = [{date, time, title, date_source?, date_raw?}]
+  // J2: date_source/date_raw carry the weekday-correction provenance the agent
+  // attaches when it snaps an event's literal date to its asserted weekday.
   if (!events || events.length === 0) return;
   const stmt = getDB().prepare(
-    'INSERT OR IGNORE INTO notice_event (notice_id, event_date, event_time, event_title, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT OR IGNORE INTO notice_event (notice_id, event_date, event_time, event_title, expires_at, created_at, event_date_source, event_date_raw) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
   );
   const now = Date.now();
   for (const ev of events) {
@@ -1221,7 +1228,7 @@ function saveNoticeEvents(noticeId, events) {
       // End of day in Israel time
       expiresAt = new Date(`${ev.date}T23:59:59+03:00`).getTime();
     }
-    stmt.run(noticeId, ev.date, ev.time || null, ev.title, expiresAt, now);
+    stmt.run(noticeId, ev.date, ev.time || null, ev.title, expiresAt, now, ev.date_source || null, ev.date_raw || null);
   }
 }
 

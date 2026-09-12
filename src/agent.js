@@ -171,6 +171,64 @@ function stripActionBlocks(text, blocks) {
  * ('keyword' | 'datetime' | 'date_with_signal' | 'default') so downstream
  * consumers (B4 quiet-hours gate) can tell WHY a notice is immediate.
  */
+/**
+ * J2: weekday correction on per-event dates. The parent notice's relevance_date
+ * is snapped to its asserted weekday elsewhere; events carry their own literal
+ * dates and are corrected here. Mutates each event in place — sets ev.date_raw
+ * (the original) and ev.date (the corrected value) and ev.date_source when a
+ * correction fires. Returns the human-readable log lines for the caller to emit.
+ *
+ * Two paths, both deterministic (P-016 — weekday_he is advisory input, never a
+ * stored authority; nearestWeekdayIso decides):
+ *   1. event.weekday_he present → snap ev.date to the nearest matching weekday.
+ *   2. no weekday, but the parent was weekday_corrected and the event shares the
+ *      parent's raw date → inherit the parent's raw→corrected delta.
+ *
+ * @param {Array} events
+ * @param {{relevanceDateSource:string|null, relevanceDateRaw:string|null, relevanceDate:string|null}} parent
+ * @returns {string[]} log lines describing each applied correction
+ */
+function applyEventWeekdayCorrections(events, { relevanceDateSource, relevanceDateRaw, relevanceDate }) {
+  const logs = [];
+  if (!Array.isArray(events) || events.length === 0) return logs;
+  const { extractHebrewWeekday, nearestWeekdayIso } = require('./date-parse');
+  const { addDaysIso } = require('./timeUtils');
+
+  // Parent correction delta in days (raw → corrected), for inheritance.
+  let parentDelta = null;
+  if (relevanceDateSource === 'weekday_corrected' && relevanceDateRaw && relevanceDate) {
+    const [ry, rm, rd] = relevanceDateRaw.split('-').map(Number);
+    const [fy, fm, fd] = relevanceDate.split('-').map(Number);
+    parentDelta = Math.round((Date.UTC(fy, fm - 1, fd) - Date.UTC(ry, rm - 1, rd)) / 86400000);
+  }
+
+  for (const ev of events) {
+    if (!ev.date) continue;
+    let corrected = null, reason = null;
+    if (ev.weekday_he) {
+      const weekdayIdx = extractHebrewWeekday(ev.weekday_he);
+      const snapped = weekdayIdx != null ? nearestWeekdayIso(ev.date, weekdayIdx, 3) : null;
+      if (snapped && snapped !== ev.date) {
+        corrected = snapped;
+        reason = `weekday_he=${ev.weekday_he} → nearest ${snapped}`;
+      }
+    } else if (parentDelta && parentDelta !== 0 && ev.date === relevanceDateRaw) {
+      const shifted = addDaysIso(ev.date, parentDelta);
+      if (shifted && shifted !== ev.date) {
+        corrected = shifted;
+        reason = `inherit parent delta ${parentDelta}d → ${shifted}`;
+      }
+    }
+    if (corrected) {
+      logs.push(`[Agent] Event weekday correction: '${ev.title}' ${ev.date} → ${corrected} (${reason}); raw preserved.`);
+      ev.date_raw = ev.date;
+      ev.date = corrected;
+      ev.date_source = 'weekday_corrected';
+    }
+  }
+  return logs;
+}
+
 function computeUrgencyHint(action, nowMs) {
   const content = action.content || '';
   const ISRAEL_TZ = 'Asia/Jerusalem';
@@ -406,6 +464,28 @@ async function _executeAction(action, senderName) {
             }
           } catch (parseErr) {
             console.warn('[Agent] date-parse error (non-fatal):', parseErr.message);
+          }
+
+          // J2: weekday correction on per-event dates. The parent notice gets its
+          // relevance_date snapped via nearestWeekdayIso() above, but events carry
+          // their own literal dates. Correct each event, storing the original in
+          // ev.date_raw and the corrected value in ev.date. Two paths:
+          //   - event carries weekday_he: advisory input to nearestWeekdayIso(),
+          //     the deterministic corrector decides (P-016).
+          //   - event has no weekday: inherit the parent's correction delta when
+          //     the parent was weekday_corrected and the event shares its raw date.
+          // Runs BEFORE D2 so minFutureDate anchors on corrected dates.
+          if (action.events && Array.isArray(action.events) && action.events.length > 0) {
+            try {
+              const corrLogs = applyEventWeekdayCorrections(action.events, {
+                relevanceDateSource,
+                relevanceDateRaw,
+                relevanceDate: finalRelevanceDate,
+              });
+              for (const line of corrLogs) console.log(line);
+            } catch (evCorrErr) {
+              console.warn('[Agent] event weekday correction error (non-fatal):', evCorrErr.message);
+            }
           }
 
           // D2: On multi-day notices, anchor relevance_date to the EARLIEST FUTURE
@@ -1084,7 +1164,8 @@ const GROUP_TOOLS = [
             properties: {
               date:  { type: 'string', description: 'YYYY-MM-DD' },
               time:  { type: ['string', 'null'], description: 'HH:MM או null' },
-              title: { type: 'string', description: 'שם האירוע' }
+              title: { type: 'string', description: 'שם האירוע' },
+              weekday_he: { type: ['string', 'null'], description: 'יום בשבוע בעברית כפי שנכתב בהודעה (ראשון/שני/שלישי...) או null' }
             },
             required: ['date', 'title']
           }
@@ -1633,4 +1714,7 @@ module.exports = {
   // Exposed for the eval runner so it scores the SAME deterministic urgency the
   // production pipeline stores (computeUrgencyHint overwrites the LLM's guess).
   computeUrgencyHint,
+  // Exposed for the J2 regression test so it pins the exact per-event
+  // weekday-correction decision the handler runs.
+  applyEventWeekdayCorrections,
 };
