@@ -237,6 +237,7 @@ function getPendingNotices(db) {
     WHERE dismissed = 0
       AND posted_to_master = 0
       AND triage_decision IS NULL
+      AND delivery_status = 'pending'
       AND (send_attempted_at IS NULL OR send_attempted_at < datetime('now', '-5 minutes'))
       AND (thread_key IS NULL OR thread_key NOT IN (
         SELECT thread_key FROM notice_threads WHERE dismissed = 1
@@ -277,10 +278,15 @@ function computeDeadline(notice, now = new Date()) {
     if (!isNaN(dt.getTime())) {
       // Sanity check: if relevance_date exists and is AFTER relevant_datetime,
       // the datetime is stale metadata — skip it.
+      // K5: use Israel midnight, not UTC midnight. Israel is UTC+2/+3, so
+      // UTC midnight is 2–3 hours late. An event at 00:30 Israel would be
+      // incorrectly discarded with a UTC boundary.
       if (notice.relevance_date) {
-        const relDateMs = new Date(`${notice.relevance_date}T00:00:00Z`).getTime();
-        if (dt.getTime() < relDateMs) {
-          // relevant_datetime is before the event date — ignore it
+        const { israelOffsetMs } = require('./timeUtils');
+        const utcMidnight = new Date(`${notice.relevance_date}T00:00:00Z`).getTime();
+        const israelMidnight = utcMidnight - israelOffsetMs(new Date(utcMidnight));
+        if (dt.getTime() < israelMidnight) {
+          // relevant_datetime is before the event date in Israel time — ignore it
         } else {
           return dt;
         }
@@ -802,6 +808,8 @@ async function runTriage() {
   if (pending.length === 0) {
     console.log('[Triage] Nothing pending. Done.');
     console.timeEnd('total');
+    const { recordJobHeartbeat } = require('./db');
+    recordJobHeartbeat('runTriage', 'empty');
     return;
   }
   console.log(`[Triage] ${pending.length} pending notice(s)`);
@@ -1107,6 +1115,8 @@ async function runTriage() {
   }
 
   console.timeEnd('total');
+  const { recordJobHeartbeat: rjh1 } = require('./db');
+  rjh1('runTriage', 'ok');
   console.log('[Triage] Done.');
 }
 
@@ -1152,6 +1162,8 @@ async function runDigest() {
 
   const deferred = getDeferredNotices(db);
   if (deferred.length === 0) {
+    const { recordJobHeartbeat: rjhDE } = require('./db');
+    rjhDE('runDigest', 'empty');
     console.log('[Triage:digest] No deferred notices to drain. Done.');
     return;
   }
@@ -1211,6 +1223,8 @@ async function runDigest() {
   } catch (e) {
     console.error('[Triage:digest] Send failed:', e.message);
   }
+  const { recordJobHeartbeat: rjh2 } = require('./db');
+  rjh2('runDigest', 'ok');
   console.log('[Triage:digest] Done.');
 }
 
@@ -1252,6 +1266,8 @@ async function runImmediate() {
   const { selectImmediate, deliverImmediate, afterDeliveryHook } = require('./noticeDelivery');
   const urgent = selectImmediate(candidates);
   if (urgent.length === 0) {
+    const { recordJobHeartbeat: rjhIE } = require('./db');
+    rjhIE('runImmediate', 'empty');
     console.log('[Triage:immediate] Nothing urgent. Done.');
     return;
   }
@@ -1314,6 +1330,8 @@ async function runImmediate() {
       db.prepare(`UPDATE notices SET send_attempted_at=NULL WHERE id=?`).run(n.id);
     }
   }
+  const { recordJobHeartbeat: rjh3 } = require('./db');
+  rjh3('runImmediate', 'ok');
   console.log('[Triage:immediate] Done.');
 }
 

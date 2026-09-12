@@ -179,6 +179,26 @@ function buildHealthPayload() {
       payload.disk_free_gb = Math.round(disk.free_bytes / 1e8) / 10;
     }
   } catch (_) {}
+  // K1/K2: delivery pipeline health — job heartbeats + pending backlog
+  try {
+    const { getJobHeartbeats } = require('./db');
+    const hbs = getJobHeartbeats();
+    payload.job_heartbeats = {};
+    for (const hb of hbs) {
+      payload.job_heartbeats[hb.job_name] = {
+        last_success: new Date(hb.last_success_ms).toISOString(),
+        last_result: hb.last_result,
+        consecutive_empty: hb.consecutive_empty,
+      };
+    }
+  } catch (_) {}
+  try {
+    const { getDB } = require('./db');
+    const pending = getDB().prepare(
+      "SELECT COUNT(*) as cnt FROM notices WHERE delivery_status='pending' AND dismissed=0"
+    ).get();
+    payload.delivery_pending = pending.cnt;
+  } catch (_) {}
   return payload;
 }
 

@@ -408,6 +408,10 @@ async function _executeAction(action, senderName) {
           // Rules-based urgency classifier - deterministic, no LLM guessing
           const urgencyHint = computeUrgencyHint(action, Date.now());
           // Parse relevant_datetime to epoch ms
+          // K4: validate that relevant_datetime is the EVENT time, not the
+          // message posting time. If it falls before the start of relevance_date
+          // in Israel time, discard it — the LLM defaulted to the message
+          // timestamp, which poisons computeDeadline and urgency checks.
           let relevantDatetime = null;
           if (action.relevant_datetime && action.relevant_datetime !== 'null') {
             const parsed = Date.parse(action.relevant_datetime);
@@ -415,9 +419,22 @@ async function _executeAction(action, senderName) {
           } else if (action.relevance_date && action.relevance_time) {
             const parsed = Date.parse(`${action.relevance_date}T${action.relevance_time}:00`);
             if (!isNaN(parsed)) relevantDatetime = parsed;
-          } else if (action.relevance_date) {
-            const parsed = Date.parse(`${action.relevance_date}T00:00:00`);
-            if (!isNaN(parsed)) relevantDatetime = parsed;
+          }
+          // K4: Do NOT synthesize relevant_datetime from relevance_date alone.
+          // The old code did `Date.parse(relevance_date + 'T00:00:00')` which
+          // set it to midnight UTC — almost always wrong and always before the
+          // actual event. Only set it when we have a real time.
+
+          // K4: Sanity check — discard if relevant_datetime precedes relevance_date
+          if (relevantDatetime && finalRelevanceDate) {
+            const { israelOffsetMs } = require('./timeUtils');
+            const relDateStart = new Date(`${finalRelevanceDate}T00:00:00Z`).getTime();
+            // Adjust to Israel midnight: subtract the Israel offset
+            const israelMidnight = relDateStart - israelOffsetMs(new Date(relDateStart));
+            if (relevantDatetime < israelMidnight) {
+              console.log(`[Agent] K4: discarding relevant_datetime ${new Date(relevantDatetime).toISOString()} — precedes relevance_date ${finalRelevanceDate} Israel midnight (${new Date(israelMidnight).toISOString()})`);
+              relevantDatetime = null;
+            }
           }
           // Day/date mismatch detection (warn-only — never mutates content)
           const { validateNoticeDate } = require('./dateValidator');
@@ -1153,7 +1170,7 @@ const GROUP_TOOLS = [
         relevance_date:    { type: 'string',  description: 'YYYY-MM-DD בלבד. חישוב מהתאריכים שבsystem prompt. חובה.' },
         relevance_time:    { type: ['string', 'null'], description: 'HH:MM רק אם שעה מפורשת בטקסט. אחרת null.' },
         urgency_signal:    { type: 'string',  enum: ['immediate', 'time_sensitive', 'routine'], description: 'סימון רמת דחיפות מייעצת בלבד — ייבדק ויוחלף על ידי מערכת חוקים. immediate: האירוע היום / שינוי ברגע האחרון. time_sensitive: ימים קרובים. routine: ברירת מחדל.' },
-        relevant_datetime: { type: ['string', 'null'], description: 'ISO datetime של מתי האירוע קורה, או null.' },
+        relevant_datetime: { type: ['string', 'null'], description: 'ISO datetime של מתי האירוע עצמו קורה (לא מתי ההודעה נשלחה!). אם אין שעה מפורשת — null. דוגמה: אסיפת הורים ב-14.9 ב-18:00 → "2026-09-14T18:00:00". אם יש רק תאריך בלי שעה → null.' },
         calendar_worthy:   { type: 'boolean', description: 'האם ההודעה מכילה אירוע שראוי להיכנס ליומן? true עבור: אסיפות הורים, טקסים, ימי הולדת, טיולים, חוגים, אימונים, מבחנים, חיסונים, חופשות, מועדי הרשמה. false לעדכונים שוטפים.' },
         event_type:        { type: ['string', 'null'], enum: ['birthday', 'ceremony', 'trip', 'school_event', 'meeting', 'class', 'holiday', 'exam', 'health', 'deadline', 'appointment', null], description: 'סוג האירוע אם calendar_worthy=true, אחרת null.' },
         events: {

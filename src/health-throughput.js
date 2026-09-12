@@ -275,6 +275,131 @@ function checkMonitoredGroupSilence(db, nowMs) {
  * (empty = all healthy). Each check emits its own metric line regardless.
  * @param {number} [nowMs] injectable clock for tests
  */
+// ── K1: Job heartbeat dead-man's-switch ──────────────────────────────────
+// P-021: Absence of a heartbeat is an alert. "Nothing to do" ≠ "ran successfully."
+
+const JOB_EXPECTED_INTERVALS = {
+  runTriage:    { maxMs: 30 * 60 * 1000, maxEmpty: 48 },  // every 15min, alert at 30min; 48 empty = 12h
+  runImmediate: { maxMs: 15 * 60 * 1000, maxEmpty: 96 },  // every 5min, alert at 15min; 96 empty = 8h
+  runDigest:    { maxMs: 8 * HOUR_MS,    maxEmpty: 20 },   // 4x/day, alert at 8h; 20 empty = 5 days
+};
+
+/**
+ * K1: Check that all registered jobs have recent heartbeats.
+ * Alerts on: (a) no heartbeat ever, (b) last heartbeat too old, (c) too many
+ * consecutive empty runs.
+ */
+function checkJobHeartbeats(db, nowMs) {
+  const hour = getIsraelHour(nowMs);
+  if (hour < 7 || hour >= 23) return null; // quiet hours
+
+  let heartbeats;
+  try {
+    heartbeats = db.prepare('SELECT * FROM job_runs').all();
+  } catch (_) {
+    // Table doesn't exist yet — first run after migration
+    return null;
+  }
+  const byName = new Map(heartbeats.map(h => [h.job_name, h]));
+  const issues = [];
+
+  for (const [job, { maxMs, maxEmpty }] of Object.entries(JOB_EXPECTED_INTERVALS)) {
+    const hb = byName.get(job);
+    if (!hb) {
+      issues.push(`${job}: no heartbeat ever recorded`);
+      continue;
+    }
+    const age = nowMs - hb.last_success_ms;
+    if (age > maxMs) {
+      issues.push(`${job}: last heartbeat ${Math.round(age / 60000)}min ago (max ${Math.round(maxMs / 60000)}min)`);
+    }
+    if (hb.consecutive_empty >= maxEmpty) {
+      issues.push(`${job}: ${hb.consecutive_empty} consecutive empty runs (max ${maxEmpty})`);
+    }
+  }
+
+  const ok = issues.length === 0;
+  emitMetric('job_heartbeats', ok, { issues });
+  return ok ? null : `job_heartbeats: ${issues.join('; ')}`;
+}
+
+// ── K2: Delivery throughput checks ──────────────────────────────────────────
+// These catch the Sept 2–12 outage class: notices flow IN but nothing goes OUT.
+
+/**
+ * K2.1 Stale pending — notices stuck pending for > 2h during daytime.
+ * A non-zero count means the delivery pipeline isn't draining.
+ */
+function checkStalePending(db, nowMs) {
+  const hour = getIsraelHour(nowMs);
+  if (hour < 8 || hour >= 23) return null; // quiet hours
+  const cutoff = nowMs - 2 * HOUR_MS;
+  const row = db.prepare(
+    `SELECT COUNT(*) as cnt, MIN(created_at) as oldest FROM notices
+     WHERE delivery_status = 'pending' AND dismissed = 0 AND created_at < ?`
+  ).get(cutoff);
+  const ok = row.cnt <= 3; // small threshold — a few stragglers are normal
+  const oldestAge = row.oldest ? Math.round((nowMs - row.oldest) / HOUR_MS) : 0;
+  emitMetric('stale_pending', ok, { count: row.cnt, oldest_age_h: oldestAge });
+  if (!ok) {
+    return `stale_pending: ${row.cnt} notice(s) pending for >${oldestAge}h (oldest created_at=${row.oldest})`;
+  }
+  return null;
+}
+
+/**
+ * K2.2 Created-vs-delivered ratio — over 24h, notices created vs delivered.
+ * A ratio near zero with non-zero creation is the exact outage signature.
+ */
+function checkDeliveryRatio(db, nowMs) {
+  const hour = getIsraelHour(nowMs);
+  if (hour < 10 || hour >= 23) return null; // need a full day window
+  const cutoff = nowMs - DAY_MS;
+  const created = db.prepare(
+    'SELECT COUNT(*) as cnt FROM notices WHERE created_at > ?'
+  ).get(cutoff).cnt;
+  const delivered = db.prepare(
+    `SELECT COUNT(*) as cnt FROM notices
+     WHERE delivered_at > ? AND delivery_status IN ('delivered_batch','delivered_immediate')`
+  ).get(cutoff).cnt;
+  if (created < 3) {
+    emitMetric('delivery_ratio', true, { created, delivered, ratio: null, note: 'too_few_to_judge' });
+    return null; // not enough data
+  }
+  const ratio = delivered / created;
+  const ok = ratio > 0.05; // at least 5% delivered
+  emitMetric('delivery_ratio', ok, { created, delivered, ratio: Math.round(ratio * 100) / 100 });
+  if (!ok) {
+    return `delivery_ratio: ${delivered}/${created} notices delivered in 24h (ratio=${(ratio * 100).toFixed(1)}%)`;
+  }
+  return null;
+}
+
+/**
+ * K2.3 Untriaged age — oldest notice with no triage_decision during daytime.
+ * This is the single number that would have caught the runTriage gap on day 1.
+ */
+function checkUntriagedAge(db, nowMs) {
+  const hour = getIsraelHour(nowMs);
+  if (hour < 8 || hour >= 23) return null;
+  const row = db.prepare(
+    `SELECT MIN(created_at) as oldest, COUNT(*) as cnt FROM notices
+     WHERE triage_decision IS NULL AND dismissed = 0 AND posted_to_master = 0
+     AND delivery_status = 'pending'`
+  ).get();
+  if (!row.oldest || row.cnt === 0) {
+    emitMetric('untriaged_age', true, { count: 0 });
+    return null;
+  }
+  const ageH = Math.round((nowMs - row.oldest) / HOUR_MS);
+  const ok = ageH < 4; // 4 hours max — runTriage should fire every 15 min
+  emitMetric('untriaged_age', ok, { count: row.cnt, oldest_age_h: ageH });
+  if (!ok) {
+    return `untriaged_age: ${row.cnt} untriaged notice(s), oldest ${ageH}h ago`;
+  }
+  return null;
+}
+
 function runThroughputChecks(nowMs = Date.now()) {
   const db = getDB();
   const checks = [
@@ -284,6 +409,10 @@ function runThroughputChecks(nowMs = Date.now()) {
     checkDeliveryDuplicates,
     checkConfigStateIntegrity,
     checkMonitoredGroupSilence,
+    checkJobHeartbeats,
+    checkStalePending,
+    checkDeliveryRatio,
+    checkUntriagedAge,
   ];
   const failures = [];
   for (const check of checks) {
@@ -315,4 +444,8 @@ module.exports = {
   checkDeliveryDuplicates,
   checkConfigStateIntegrity,
   checkMonitoredGroupSilence,
+  checkJobHeartbeats,
+  checkStalePending,
+  checkDeliveryRatio,
+  checkUntriagedAge,
 };
