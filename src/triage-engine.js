@@ -266,12 +266,28 @@ function getPendingNotices(db) {
  *   4. No date fields — returns far-future (never stale)
  */
 function computeDeadline(notice, now = new Date()) {
-  // 1. relevant_datetime — most precise
+  // 1. relevant_datetime — most precise, BUT only when it's consistent with
+  //    relevance_date. The LLM sometimes sets relevant_datetime to the message
+  //    creation time instead of the event time, producing a deadline that's
+  //    before the event date. When that happens, fall through to relevance_date.
   if (notice.relevant_datetime) {
     const dt = typeof notice.relevant_datetime === 'number'
       ? new Date(notice.relevant_datetime)
       : new Date(notice.relevant_datetime);
-    if (!isNaN(dt.getTime())) return dt;
+    if (!isNaN(dt.getTime())) {
+      // Sanity check: if relevance_date exists and is AFTER relevant_datetime,
+      // the datetime is stale metadata — skip it.
+      if (notice.relevance_date) {
+        const relDateMs = new Date(`${notice.relevance_date}T00:00:00Z`).getTime();
+        if (dt.getTime() < relDateMs) {
+          // relevant_datetime is before the event date — ignore it
+        } else {
+          return dt;
+        }
+      } else {
+        return dt;
+      }
+    }
   }
 
   // 2 & 3. relevance_date (YYYY-MM-DD string)
