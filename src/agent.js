@@ -503,6 +503,31 @@ async function _executeAction(action, senderName) {
           }
           console.log(`[Agent] Saved notice: "${finalContent.substring(0, 60)}" thread=${action.thread_key || 'none'} rel=${action.relevance_date || 'undated'}`);
 
+          // J3: image-only notice guard. An image caption with no scheduling
+          // signal (date, time, deadline, form, link) is documentation, not
+          // actionable info — suppress it from queries/digests. Derived here,
+          // never predicted by the model (see J3 step 6). Keywords mirror the
+          // backfill SQL so live and historical rows stay consistent.
+          if (noticeId && /^\[תמונה:/.test(finalContent)) {
+            const hasSchedulingSignal =
+              /\d\d\.\d/.test(finalContent) ||          // date-like 12.9
+              /\d\d:\d/.test(finalContent) ||           // time-like 08:30
+              /בשעה/.test(finalContent) ||
+              /deadline/i.test(finalContent) ||
+              /\bdue\b/i.test(finalContent) ||
+              /טופס/.test(finalContent) ||              // form
+              /קישור/.test(finalContent) ||             // link
+              /https/i.test(finalContent);
+            if (!hasSchedulingSignal) {
+              try {
+                getDB().prepare('UPDATE notices SET query_visible = 0 WHERE id = ?').run(noticeId);
+                console.log(`[Agent] J3: image-only notice ${noticeId} has no scheduling signal → query_visible=0`);
+              } catch (e) {
+                console.warn('[Agent] J3 image-only guard failed:', e.message);
+              }
+            }
+          }
+
           // ── Phase G (Proactivity) — grounded, best-effort; never breaks ingestion ──
           if (noticeId) {
             try {
@@ -1261,7 +1286,8 @@ ${JSON.stringify(slice, null, 2)}
     console.warn('[Agent] Family context slice failed:', e.message);
   }
 
-  const imageCtx = isImageMsg ? `\n**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, קרא ל-download_image מכל שולח (הורה, מורה, מנהל) אם יש סיכוי שהתמונה מכילה הזמנה לאירוע, לוח זמנים, אישור נוכחות, או מידע לוגיסטי. אחרת no_action.` : '';
+  const imageCtx = isImageMsg ? `\n**תמונה (ISSUE-021):** בקבוצות כיתה/הורים, קרא ל-download_image מכל שולח (הורה, מורה, מנהל) אם יש סיכוי שהתמונה מכילה הזמנה לאירוע, לוח זמנים, אישור נוכחות, או מידע לוגיסטי. אחרת no_action.
+**תמונה (J3) — הבחנה בין תיעוד לבין מידע:** תמונות של פעילות בכיתה (ילדים משחקים, יושבים, Kahoot, יצירה, טיול, מסיבה שכבר קרתה) ללא תאריך/שעה/דד-ליין הן **no_action** — זהו תיעוד, לא מידע לפעולה. קרא ל-add_notice **רק** אם התמונה מכילה תאריך, שעה, דד-ליין, טופס, קישור, או הוראה מפורשת. אם יש ספק והתמונה היא רק תיעוד — no_action.` : '';
 
   const dynamicSuffix = `
 ## הקשר נוכחי

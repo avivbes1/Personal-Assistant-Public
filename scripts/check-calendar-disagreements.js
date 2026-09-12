@@ -14,7 +14,7 @@
  * Exit: 0 = no issues, 1 = disagreements found (for health check integration).
  */
 
-const { initDB, getDB } = require('../src/db');
+const { initDB, getDB, getVisibleNoticeEvents } = require('../src/db');
 const { listEventsForDateRange } = require('../src/calendar');
 
 function normalizeTitle(str) {
@@ -46,17 +46,12 @@ function normalizeTitle(str) {
   for (const intent of intents) {
     if (!intent.notice_id) continue;
 
-    // Get notice_event rows for this notice + date
-    const neRows = db.prepare(
-      'SELECT event_title, event_time, event_date FROM notice_event WHERE notice_id = ? AND event_date = ?'
-    ).all(intent.notice_id, intent.event_date);
+    // Get notice_event rows for this notice + date (P-020/J6: visibility-joined)
+    const neRows = getVisibleNoticeEvents({ noticeId: intent.notice_id, from: intent.event_date, to: intent.event_date });
 
     // Also check other notices that reference the same date with matching titles
-    const relatedNe = db.prepare(`
-      SELECT ne.event_title, ne.event_time, ne.event_date, ne.notice_id
-      FROM notice_event ne
-      WHERE ne.event_date = ? AND ne.event_time IS NOT NULL AND length(ne.event_time) > 0
-    `).all(intent.event_date);
+    const relatedNe = getVisibleNoticeEvents({ from: intent.event_date, to: intent.event_date })
+      .filter(ne => ne.event_time && ne.event_time.length > 0);
 
     // Find matching notice_events by title similarity
     const normIntentTitle = normalizeTitle(intent.event_title);

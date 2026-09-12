@@ -15,7 +15,7 @@
 'use strict';
 
 const crypto  = require('crypto');
-const { getDB } = require('./db');
+const { getDB, getVisibleNoticeEvents } = require('./db');
 const { addSharedEvent, updateCalendarEvent } = require('./calendar');
 const config  = require('./config');
 
@@ -204,10 +204,8 @@ async function createCalendarForNotice(notice) {
     ).all(notice.relevance_date);
 
     if (sameDateIntents.length > 0) {
-      // Check notice_event rows from this notice
-      const neRows = db.prepare(
-        'SELECT event_title, event_time FROM notice_event WHERE notice_id = ? AND event_date = ?'
-      ).all(notice.id, notice.relevance_date);
+      // Check notice_event rows from this notice (P-020/J6: visibility-joined)
+      const neRows = getVisibleNoticeEvents({ noticeId: notice.id, from: notice.relevance_date, to: notice.relevance_date });
 
       for (const ne of neRows) {
         const normNeTitle = _normalizeForFingerprint(ne.event_title);
@@ -421,11 +419,10 @@ async function _tryTimeCorrection(db, existingIntent, notice) {
     timeSource = `notice #${notice.id} relevance_time`;
   }
 
-  // Check notice_event rows for this date
+  // Check notice_event rows for this date (P-020/J6: visibility-joined)
   if (!newTime) {
-    const neRows = db.prepare(
-      'SELECT event_time, event_title, notice_id FROM notice_event WHERE event_date = ? AND event_time IS NOT NULL AND length(event_time) > 0'
-    ).all(intent.event_date);
+    const neRows = getVisibleNoticeEvents({ from: intent.event_date, to: intent.event_date })
+      .filter(ne => ne.event_time && ne.event_time.length > 0);
 
     // Find a notice_event whose title matches the intent's event
     const normIntentTitle = _normalizeForFingerprint(intent.event_title);

@@ -13,7 +13,7 @@
  * object for the caller's convenience, but source_type is `calendar_intents`.
  */
 
-const { getDB } = require('../db');
+const { getDB, getVisibleNoticeEvents } = require('../db');
 
 // Same Israel-time anchor convention used across the codebase.
 function toIsraelMs(dateStr, timeStr) {
@@ -45,9 +45,9 @@ function getUpcomingEvents(hoursAhead = 6) {
 
   const notice_events = [];
   const todayIsrael = new Date(now).toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' });
-  const neRows = db.prepare(
-    'SELECT id, event_date, event_time, event_title FROM notice_event WHERE event_date >= ? ORDER BY event_date ASC'
-  ).all(todayIsrael);
+  // P-020/J6: only surface events whose parent notice is visible and not
+  // dismissed — otherwise reminders fire for image-only/dismissed notices.
+  const neRows = getVisibleNoticeEvents({ from: todayIsrael });
   for (const r of neRows) {
     const ms = toIsraelMs(r.event_date, r.event_time);
     if (ms == null || ms < windowStart || ms > windowEnd) continue;

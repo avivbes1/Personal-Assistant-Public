@@ -210,7 +210,24 @@ function ownerFlags(owners = []) {
   // Dedup 2: a notice whose id already appears as a notice_event above is
   // redundant — its dated events are shown, so skip the parent notice.
   const surfacedNoticeIds = new Set(noticeEvents.map(ne => ne.notice_id));
-  const attentionNotices = notices.filter(n => !surfacedNoticeIds.has(n.id));
+  const dedupedNotices = notices.filter(n => !surfacedNoticeIds.has(n.id));
+
+  // J4: digest date discipline (P-019). The digest defends its own window
+  // regardless of what upstream retrieval hands back — keep only notices that
+  // belong to today: a relevance_date of exactly `today`, or a null
+  // relevance_date that was created recently (last 3 days). created_at is epoch
+  // ms (see WORKPLAN §0). Anything else is out-of-window drift; count and log
+  // the drops to stderr rather than rendering them.
+  const RECENT_MS = 3 * 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+  const attentionNotices = dedupedNotices.filter(n => {
+    if (n.relevance_date) return n.relevance_date >= today && n.relevance_date <= today;
+    return n.created_at != null && (nowMs - n.created_at) <= RECENT_MS;
+  });
+  const droppedCount = dedupedNotices.length - attentionNotices.length;
+  if (droppedCount > 0) {
+    process.stderr.write(`[generate-digest] J4: dropped ${droppedCount} out-of-window notice(s) from לתשומת לב (window=${today})\n`);
+  }
 
   const attentionLines = [];
   for (const ne of attentionEvents) {
