@@ -1219,14 +1219,26 @@ function saveNoticeEvents(noticeId, events) {
     if (!ev.date || !ev.title) continue;
     // expires_at = end of that day (23:59 Israel time) in ms
     // If time given, expires 2h after that time
+    // J5: use dynamic Israel offset instead of hardcoded +03:00 (UTC+2 in winter)
+    const { israelOffsetMs } = require('./timeUtils');
     let expiresAt;
     if (ev.time) {
       const [h, m] = ev.time.split(':').map(Number);
-      const d = new Date(`${ev.date}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00+03:00`);
-      expiresAt = d.getTime() + 2 * 3600000;
+      // Build a UTC date, then shift by the Israel offset for that day
+      const utcMs = Date.UTC(
+        ...ev.date.split('-').map((v, i) => i === 1 ? Number(v) - 1 : Number(v)),
+        h, m, 0
+      );
+      const offsetMs = israelOffsetMs(new Date(utcMs));
+      expiresAt = utcMs - offsetMs + 2 * 3600000;
     } else {
       // End of day in Israel time
-      expiresAt = new Date(`${ev.date}T23:59:59+03:00`).getTime();
+      const utcMs = Date.UTC(
+        ...ev.date.split('-').map((v, i) => i === 1 ? Number(v) - 1 : Number(v)),
+        23, 59, 59
+      );
+      const offsetMs = israelOffsetMs(new Date(utcMs));
+      expiresAt = utcMs - offsetMs;
     }
     stmt.run(noticeId, ev.date, ev.time || null, ev.title, expiresAt, now, ev.date_source || null, ev.date_raw || null);
   }
