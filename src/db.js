@@ -1225,6 +1225,28 @@ function saveNoticeEvents(noticeId, events) {
   }
 }
 
+// P-020: notice_event is never queried without joining notices for visibility.
+// Every notice_event reader outside voice-server.js used to skip this join, so
+// query_visible=0 / dismissed=1 notices still reached reminders, calendar
+// enrichment, and the reconciliation scripts. Route them all through here.
+//
+// Filters: from/to bound event_date inclusively; noticeId scopes to one notice.
+// Any combination may be omitted. Returns the common column set the callers use.
+function getVisibleNoticeEvents({ from = null, to = null, noticeId = null } = {}) {
+  const conds = ['n.query_visible = 1', 'n.dismissed = 0'];
+  const params = [];
+  if (noticeId != null) { conds.push('ne.notice_id = ?'); params.push(noticeId); }
+  if (from != null)     { conds.push('ne.event_date >= ?'); params.push(from); }
+  if (to != null)       { conds.push('ne.event_date <= ?'); params.push(to); }
+  return getDB().prepare(
+    `SELECT ne.id, ne.notice_id, ne.event_date, ne.event_time, ne.event_title
+     FROM notice_event ne
+     JOIN notices n ON ne.notice_id = n.id
+     WHERE ${conds.join(' AND ')}
+     ORDER BY ne.event_date ASC`
+  ).all(...params);
+}
+
 function getActiveNotices(todayStr) {
   // Returns notices that are still relevant and haven't been shown yet (or are due today for re-show)
   const nowMs = Date.now();
@@ -2159,6 +2181,7 @@ module.exports = {
   getUnlinkedMonitoredGroups,
   proposeChildFromAliases,
   saveNoticeEvents,
+  getVisibleNoticeEvents,
   getActiveNotices,
   markNoticesShownInDigest,
   saveEvent,

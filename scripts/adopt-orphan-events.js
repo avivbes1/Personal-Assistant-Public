@@ -16,7 +16,7 @@
  * Schedule: daily via health check or cron.
  */
 
-const { initDB, getDB } = require('../src/db');
+const { initDB, getDB, getVisibleNoticeEvents } = require('../src/db');
 const { listEventsForDateRange } = require('../src/calendar');
 const crypto = require('crypto');
 
@@ -106,10 +106,8 @@ function fingerprint(date, contentPrefix) {
       'SELECT id, content, relevance_date, relevance_time FROM notices WHERE relevance_date = ? AND dismissed = 0'
     ).all(eventDate);
 
-    // Also check notice_event rows
-    const neRows = db.prepare(
-      'SELECT notice_id, event_title, event_time FROM notice_event WHERE event_date = ?'
-    ).all(eventDate);
+    // Also check notice_event rows (P-020/J6: visibility-joined)
+    const neRows = getVisibleNoticeEvents({ from: eventDate, to: eventDate });
 
     let matchedNoticeId = null;
     let matchedTimeStatus = 'unknown';

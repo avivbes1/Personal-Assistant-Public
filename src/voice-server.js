@@ -183,22 +183,49 @@ function buildHealthPayload() {
 }
 
 // ── Q1/Q3: Notices query path ────────────────────────────────────────────────
-// Shared search cascade used by both /api/notices/search and /api/notices/lookup:
-// try the date-bounded "upcoming" window first, fall back to a wider content
-// search when that yields nothing. Returns { results (≤20), matched_via }.
+// Shared search used by /api/notices/search, /api/notices/lookup and /api/context.
+// The fallback is gated on the caller's declared intent, not on the first leg
+// coming back empty (P-019):
 //
-// A2: from/to are optional date bounds passed straight through to findUpcoming's
-// first leg. The cascade runs even when no query is given — an empty date window
-// still falls back to findByContent — so callers that hand us only a date range
-// never get a bare no-fallback lookup.
-function noticeSearch({ q, child, days, from, to } = {}) {
+//   mode='question' (default): the caller is answering a user question. Try the
+//     date-bounded "upcoming" window first, then cascade to a wider content
+//     search when that leg is empty AND a query term is present. This is the
+//     ISSUE-024 behaviour — a child-scoped question with no date window must
+//     still surface a notice dated outside the default window.
+//
+//   mode='digest': the caller asked for a specific date window. That window IS
+//     the answer, so an empty window is valid — DO NOT cascade. Return
+//     matched_via='upcoming_empty'.
+//
+// Both DB legs are wrapped: a locked or corrupt DB must surface as
+// matched_via='error' (with the message), never masquerade as an empty window —
+// otherwise a failure renders a confident "nothing scheduled" (J1). Returns
+// { results (≤20), matched_via, error? }.
+function noticeSearch({ q, child, days, from, to, mode = 'question' } = {}) {
   const { NoticeRepository } = require('./notices/repository');
   const repo = new NoticeRepository();
-  let results = repo.findUpcoming({ searchText: q || null, childName: child || null, from, to });
+
+  let results;
+  try {
+    results = repo.findUpcoming({ searchText: q || null, childName: child || null, from, to });
+  } catch (e) {
+    console.error('[VoiceServer] noticeSearch findUpcoming error:', e.message);
+    return { results: [], matched_via: 'error', error: e.message };
+  }
+
   let matched_via = 'upcoming';
   if (!results || results.length === 0) {
-    results = repo.findByContent({ searchText: q || null, childName: child || null, daysBack: days || 14 });
-    matched_via = 'content_fallback';
+    if (mode === 'question' && q) {
+      try {
+        results = repo.findByContent({ searchText: q || null, childName: child || null, daysBack: days || 14 });
+      } catch (e) {
+        console.error('[VoiceServer] noticeSearch findByContent error:', e.message);
+        return { results: [], matched_via: 'error', error: e.message };
+      }
+      matched_via = 'content_fallback';
+    } else {
+      matched_via = 'upcoming_empty';
+    }
   }
   return { results: (results || []).slice(0, 20), matched_via };
 }
@@ -815,14 +842,16 @@ function createServer() {
         const from = urlObj.searchParams.get('from');
         const to = urlObj.searchParams.get('to');
         const child = urlObj.searchParams.get('child') || null;
+        const mode = urlObj.searchParams.get('mode') || 'question';
         if (!from || !to) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify({ error: 'Missing required params: from and to (YYYY-MM-DD)' }));
         }
-        console.log(`[VoiceServer] /api/context from=${from} to=${to} child=${child || '-'}`);
+        console.log(`[VoiceServer] /api/context from=${from} to=${to} child=${child || '-'} mode=${mode}`);
 
-        // ── Notices: A2 cascade (upcoming window → content fallback) ──────────
-        const { results: noticeResults, matched_via } = noticeSearch({ child, from, to });
+        // ── Notices: intent-gated retrieval (P-019) — digest mode returns the
+        // date window as-is; question mode cascades to content search ─────────
+        const { results: noticeResults, matched_via } = noticeSearch({ child, from, to, mode });
         const notices = noticeResults.map(n => ({
           ...n, notice_ids: [n.id], source_type: 'notice',
         }));
@@ -1004,7 +1033,10 @@ function startServer() {
   return _server;
 }
 
-startServer();
+// VOICE_SERVER_NO_LISTEN lets a test require this module for its exported pure
+// functions (e.g. noticeSearch) without binding the port. Prod never sets it —
+// whatsapp.js requires this module expressly for the side-effect start.
+if (!process.env.VOICE_SERVER_NO_LISTEN) startServer();
 
 /**
  * Backward-compatible entry point. Older code called startVoiceServer(client,
@@ -1016,4 +1048,4 @@ function startVoiceServer(client, getHealthState) {
   return _server;
 }
 
-module.exports = { startVoiceServer, setClient, addInitError };
+module.exports = { startVoiceServer, setClient, addInitError, noticeSearch };
