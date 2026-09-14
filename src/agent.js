@@ -425,6 +425,11 @@ async function _executeAction(action, senderName) {
           // set it to midnight UTC — almost always wrong and always before the
           // actual event. Only set it when we have a real time.
 
+          // Date parser integration (RC-2 fix): validate/override LLM relevance_date
+          // Explicit dates in source text take precedence over LLM weekday inference
+          // NOTE: Must be declared before K4 sanity check which references it
+          let finalRelevanceDate = action.relevance_date || null;
+
           // K4: Sanity check — discard if relevant_datetime precedes relevance_date
           if (relevantDatetime && finalRelevanceDate) {
             const { israelOffsetMs } = require('./timeUtils');
@@ -442,10 +447,6 @@ async function _executeAction(action, senderName) {
           if (dvResult.mismatch) {
             console.warn('[Agent] Day/date mismatch detected:', dvResult.notes);
           }
-
-          // Date parser integration (RC-2 fix): validate/override LLM relevance_date
-          // Explicit dates in source text take precedence over LLM weekday inference
-          let finalRelevanceDate = action.relevance_date || null;
           let relevanceDateSource = finalRelevanceDate ? 'explicit' : null;
           let relevanceDateRaw = null;
           try {
