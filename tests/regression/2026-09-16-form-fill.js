@@ -16,8 +16,20 @@ const os = require('os');
 const FORM_FILLER = path.join(__dirname, '../../src/form-filler.py');
 const FIXTURE_PDF = path.join(__dirname, '../fixtures/forms/soccer-registration.pdf');
 
+// Skip entirely in CI if PyMuPDF is not installed (CI doesn't have Python PDF libs)
+try {
+  execSync('python3 -c "import pymupdf"', { timeout: 5000, stdio: 'pipe' });
+} catch (_) {
+  console.log('⏭️  Skipping form-fill regression: PyMuPDF not installed');
+  console.log('\n────────────────────────────────────────');
+  console.log('Form fill regression: SKIPPED (no PyMuPDF)');
+  process.exit(0);
+}
+
 let passed = 0;
 let failed = 0;
+
+function runTests() {
 
 function assert(condition, msg) {
   if (condition) {
@@ -167,3 +179,11 @@ doc.close()
 console.log(`\n${'─'.repeat(40)}`);
 console.log(`Form fill regression: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
+return { pass: failed === 0, message: `${passed} passed, ${failed} failed` };
+}
+
+module.exports = {
+  async run() {
+    return runTests();
+  }
+};
