@@ -913,6 +913,73 @@ async function sendToMasterGroup(text) {
   }
 }
 
+// M2: allowed document mimetypes, keyed by lowercased file extension. Anything
+// not in this map is rejected before we read the file off disk.
+const DOCUMENT_MIME_TYPES = {
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+};
+const MAX_DOCUMENT_BYTES = 15 * 1024 * 1024; // WhatsApp caps documents at 15MB.
+
+/**
+ * Send a document (PDF, DOCX, XLSX, PNG, JPG) to any WhatsApp chat.
+ * @param {string} jid — target chat JID; defaults to the master group when omitted.
+ * @param {string} filePath — absolute path to the file on disk.
+ * @param {string} [fileName] — display name shown in WhatsApp (defaults to the basename).
+ * @param {string} [caption] — optional caption text.
+ * @returns {{ ok: true, jid: string, fileName: string }}
+ * @throws if the client isn't ready, the file is missing, the type is disallowed,
+ *   or the file exceeds the 15MB cap.
+ */
+async function sendDocumentToChat(jid, filePath, fileName, caption) {
+  if (!client) {
+    throw new Error('WhatsApp client not initialized');
+  }
+
+  // Default the target to the master group, resolving it if we haven't yet.
+  let targetJid = jid;
+  if (!targetJid) {
+    if (!masterGroupId) await resolveMasterGroup();
+    targetJid = masterGroupId;
+  }
+  if (!targetJid) {
+    throw new Error('No target chat (master group not resolved)');
+  }
+
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error(`File not found: ${filePath}`);
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  const mimetype = DOCUMENT_MIME_TYPES[ext];
+  if (!mimetype) {
+    throw new Error(`Unsupported file type: ${ext || '(none)'} (allowed: ${Object.keys(DOCUMENT_MIME_TYPES).join(', ')})`);
+  }
+
+  const stat = fs.statSync(filePath);
+  if (stat.size > MAX_DOCUMENT_BYTES) {
+    throw new Error(`File too large: ${(stat.size / 1024 / 1024).toFixed(1)}MB (max 15MB)`);
+  }
+
+  const resolvedName = fileName || path.basename(filePath);
+  const mediaObj = {
+    data: fs.readFileSync(filePath).toString('base64'),
+    mimetype,
+    filename: resolvedName,
+  };
+
+  await client.sendMessage(targetJid, mediaObj, { caption: caption || '' });
+  logger.info(
+    { component: 'WhatsApp', jid: targetJid, fileName: resolvedName, mimetype, bytes: stat.size },
+    'Sent document'
+  );
+  return { ok: true, jid: targetJid, fileName: resolvedName };
+}
+
 /**
  * Send a message to the master group and return the WhatsApp message ID.
  * Used by the scheduler for follow-up tracking.
@@ -1818,6 +1885,7 @@ function initWhatsApp() {
 module.exports = {
   initWhatsApp,
   sendToMasterGroup,
+  sendDocumentToChat,
   sendToMasterGroupWithId,
   sendToMasterGroupWithMentions,
   getGroups,
