@@ -127,6 +127,10 @@ function initDB() {
   try { getDB().prepare('ALTER TABLE bot_tasks ADD COLUMN target_phone TEXT').run(); } catch (_) {}
   try { getDB().prepare("ALTER TABLE bot_tasks ADD COLUMN task_type TEXT DEFAULT 'check_in'").run(); } catch (_) {}
   try { getDB().prepare('ALTER TABLE bot_tasks ADD COLUMN retry_count INTEGER DEFAULT 0').run(); } catch (_) {}
+  // M4: artifact promise tracking
+  try { getDB().prepare('ALTER TABLE bot_tasks ADD COLUMN artifact_path TEXT DEFAULT NULL').run(); } catch (_) {}
+  try { getDB().prepare('ALTER TABLE bot_tasks ADD COLUMN delivered_at INTEGER DEFAULT NULL').run(); } catch (_) {}
+  try { getDB().prepare('ALTER TABLE bot_tasks ADD COLUMN acknowledged_at INTEGER DEFAULT NULL').run(); } catch (_) {}
 
 
   // Capability requests — new features requested via chat, pending development
@@ -1615,6 +1619,60 @@ function isRecurringGroupActive(group_key) {
   return !!row;
 }
 
+// ── M4: Artifact promise tracking ──────────────────────────────────────────────
+
+/**
+ * Record an artifact promise (e.g., "I'll fill this PDF for you").
+ * task_type = 'artifact_promise'. Status goes pending → delivered → acknowledged.
+ */
+function saveArtifactPromise({ description, deliverable, target_phone = null }) {
+  return saveBotTask({
+    description,
+    check_in_message: `הבטחתי לך ${deliverable} ולא סיפקתי — רוצה שאנסה שוב?`,
+    run_at: Date.now() + 4 * 3600000, // resurface after 4 hours if undelivered
+    task_type: 'artifact_promise',
+    target_phone,
+  });
+}
+
+/**
+ * Mark an artifact promise as delivered (file sent).
+ */
+function markArtifactDelivered(taskId, artifactPath) {
+  return getDB().prepare(
+    "UPDATE bot_tasks SET artifact_path = ?, delivered_at = ?, status = 'delivered' WHERE id = ? AND task_type = 'artifact_promise'"
+  ).run(artifactPath, Date.now(), taskId).changes > 0;
+}
+
+/**
+ * Mark an artifact promise as acknowledged (user confirmed receipt).
+ */
+function markArtifactAcknowledged(taskId) {
+  return getDB().prepare(
+    "UPDATE bot_tasks SET acknowledged_at = ?, status = 'done' WHERE id = ? AND task_type = 'artifact_promise'"
+  ).run(Date.now(), taskId).changes > 0;
+}
+
+/**
+ * Get undelivered artifact promises older than `hours` hours.
+ */
+function getStaleArtifactPromises(hours = 4) {
+  const cutoff = Date.now() - hours * 3600000;
+  return getDB().prepare(
+    "SELECT * FROM bot_tasks WHERE task_type = 'artifact_promise' AND status = 'pending' AND created_at < ? ORDER BY created_at ASC"
+  ).all(cutoff);
+}
+
+/**
+ * Get delivered but unacknowledged artifact promises older than `hours` hours.
+ */
+function getUnacknowledgedArtifacts(hours = 4) {
+  const cutoff = Date.now() - hours * 3600000;
+  return getDB().prepare(
+    "SELECT * FROM bot_tasks WHERE task_type = 'artifact_promise' AND status = 'delivered' AND delivered_at < ? AND acknowledged_at IS NULL ORDER BY delivered_at ASC"
+  ).all(cutoff);
+}
+
 function cancelFollowUpsForEvent(eventId) {
   const result = getDB().prepare(
     "UPDATE follow_ups SET status = 'cancelled' WHERE event_id = ? AND status IN ('pending', 'asked')"
@@ -2282,6 +2340,12 @@ module.exports = {
   claimBotTask,
   cancelRecurringGroup,
   isRecurringGroupActive,
+  // M4: artifact promise tracking
+  saveArtifactPromise,
+  markArtifactDelivered,
+  markArtifactAcknowledged,
+  getStaleArtifactPromises,
+  getUnacknowledgedArtifacts,
   saveOrGetThread,
   dismissThread,
   linkNoticeToThread,
