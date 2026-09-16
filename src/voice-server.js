@@ -991,6 +991,39 @@ function createServer() {
       return;
     }
 
+    // M2: send a document (PDF, DOCX, XLSX, PNG, JPG) to a WhatsApp chat.
+    // Body: { jid?, filePath, fileName?, caption? }. jid defaults to the master
+    // group inside sendDocumentToChat when omitted.
+    if (req.method === 'POST' && req.url === '/send-document') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const { jid, filePath, fileName, caption } = JSON.parse(body || '{}');
+          if (!filePath) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'Missing filePath' }));
+          }
+          if (!_client) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'WhatsApp client not ready' }));
+          }
+          // Lazy require avoids the load-time circular dep (whatsapp.js requires
+          // this module at top level); by request time whatsapp.js is fully loaded.
+          const { sendDocumentToChat } = require('./whatsapp');
+          const result = await sendDocumentToChat(jid, filePath, fileName, caption);
+          console.log(`[VoiceServer] Document sent to ${result.jid}: ${result.fileName}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, fileName: result.fileName }));
+        } catch (err) {
+          console.error('[VoiceServer] send-document error:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
     if (req.method !== 'POST' || req.url !== '/voice') {
       res.writeHead(404);
       return res.end('Not found');

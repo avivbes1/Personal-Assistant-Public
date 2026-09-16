@@ -676,6 +676,7 @@ class BaileysClient extends EventEmitter {
           document: buffer,
           mimetype: content.mimetype,
           fileName: content.filename || 'file',
+          caption: options.caption || undefined,
         };
       }
     } else {

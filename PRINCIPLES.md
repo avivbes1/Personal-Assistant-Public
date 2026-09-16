@@ -328,6 +328,13 @@ grep -c "voiceSend\|/send-message" deliver-batch.js deliver-immediate.js  # Expe
 - `updateCalendarEvent()` shares the boundary but does not throw: an update may be a correction that legitimately carries no notice, so a missing `source_notice_id` is **logged, not blocked**.
 - The sanctioned callers of `addSharedEvent` are exactly `calendar.js` (definition), `calendarGate.js`, `calendar-bridge.js`, `whatsapp.js` (user confirmation/reschedule), and `voice-server.js` (agent write endpoint). `check-principles.js` fails if any other `src/` file references it.
 
+**Extension (PHASE-M, 2026-09-16): Capability claims are factual claims.**
+A negative claim about capability ("I can't fill PDFs", "I can't send documents") is a factual assertion and falls under the same discipline. Before asserting an inability:
+- Attempt it, or check installed tools / codebase for the capability.
+- State what was tried and what specifically failed.
+- Log the denial to `grounding_misses` with `source: 'capability_claim'`.
+A false capability denial is the same class of error as a fabricated time — it prevents the user from getting a result they were entitled to, and the user has no way to independently verify it.
+
 **Verification:**
 ```bash
 # Check: the grounding validator exists and calendarGate calls it before writing
