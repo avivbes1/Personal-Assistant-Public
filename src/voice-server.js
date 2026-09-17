@@ -991,6 +991,67 @@ function createServer() {
       return;
     }
 
+    // M3: fill a PDF form via form-filler.py.
+    // Body: { inputPdf, fields, outputPdf?, previewPng? }. Writes fields to a
+    // temp JSON, spawns python3 src/form-filler.py, and returns the parsed
+    // provenance report alongside the output/preview paths.
+    if (req.method === 'POST' && req.url === '/fill-form') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        let tmpFieldsPath = null;
+        try {
+          const { inputPdf, fields, outputPdf, previewPng } = JSON.parse(body || '{}');
+          if (!inputPdf) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'Missing inputPdf' }));
+          }
+          if (!fs.existsSync(inputPdf)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: `inputPdf not found: ${inputPdf}` }));
+          }
+          if (!fields || typeof fields !== 'object') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'Missing fields object' }));
+          }
+          const ts = Date.now();
+          const output = outputPdf || `/tmp/filled-form-${ts}.pdf`;
+          const preview = previewPng || `/tmp/filled-form-${ts}-preview.png`;
+          tmpFieldsPath = `/tmp/fill-form-fields-${ts}.json`;
+          fs.writeFileSync(tmpFieldsPath, JSON.stringify(fields));
+
+          const { spawnSync } = require('child_process');
+          const script = path.join(__dirname, 'form-filler.py');
+          const result = spawnSync('python3', [script, inputPdf, tmpFieldsPath, output, '--preview', preview], {
+            timeout: 30000, encoding: 'utf8', cwd: path.join(__dirname, '..')
+          });
+          if (result.status !== 0) {
+            throw new Error(`form-filler.py exited ${result.status}: ${(result.stderr || '').slice(0, 500)}`);
+          }
+          const stdout = result.stdout;
+
+          let report;
+          try {
+            report = JSON.parse(stdout);
+          } catch (parseErr) {
+            throw new Error(`Failed to parse form-filler output: ${parseErr.message}; stdout: ${stdout.slice(0, 500)}`);
+          }
+          console.log(`[VoiceServer] Form filled: ${output} (preview: ${preview})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, output, preview, report }));
+        } catch (err) {
+          console.error('[VoiceServer] fill-form error:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        } finally {
+          if (tmpFieldsPath) {
+            try { fs.unlinkSync(tmpFieldsPath); } catch (_) { /* best-effort cleanup */ }
+          }
+        }
+      });
+      return;
+    }
+
     // M2: send a document (PDF, DOCX, XLSX, PNG, JPG) to a WhatsApp chat.
     // Body: { jid?, filePath, fileName?, caption? }. jid defaults to the master
     // group inside sendDocumentToChat when omitted.
