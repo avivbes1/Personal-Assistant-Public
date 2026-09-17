@@ -872,12 +872,31 @@ function createServer() {
         // ── Notices: intent-gated retrieval (P-019) — digest mode returns the
         // date window as-is; question mode cascades to content search ─────────
         const { results: noticeResults, matched_via } = noticeSearch({ child, from, to, mode });
+        const { getDB } = require('./db');
+
+        // O8: findUpcoming/findByContent select explicit column lists that omit the
+        // media columns, so fetch media_path/media_type for the returned notice ids
+        // and fold them onto the notice objects the UI receives.
+        let mediaById = {};
+        try {
+          const ids = noticeResults.map(n => n.id).filter(id => id != null);
+          if (ids.length) {
+            const rows = getDB().prepare(
+              `SELECT id, media_path, media_type FROM notices WHERE id IN (${ids.map(() => '?').join(',')})`
+            ).all(...ids);
+            for (const r of rows) mediaById[r.id] = r;
+          }
+        } catch (mErr) {
+          console.error('[VoiceServer] /api/context media enrich error:', mErr.message);
+        }
         const notices = noticeResults.map(n => ({
-          ...n, notice_ids: [n.id], source_type: 'notice',
+          ...n,
+          media_path: (mediaById[n.id] || {}).media_path || null,
+          media_type: (mediaById[n.id] || {}).media_type || null,
+          notice_ids: [n.id], source_type: 'notice',
         }));
 
         // ── notice_event rows in the window ──────────────────────────────────
-        const { getDB } = require('./db');
         // NOTE: notice_event has no `location` column in this schema (drift from
         // the original spec) — select NULL AS location to keep the output field
         // stable without erroring on a missing column.

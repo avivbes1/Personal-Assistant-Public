@@ -596,6 +596,13 @@ function initDB() {
     `);
   } catch (_) {}
 
+  // O8: link the archived media artifact to the notice it produced, so the UI can
+  // show "the letter" alongside the notice text. saveNotice() copies these from the
+  // source message on insert; backfillNoticeMedia() (below) populates historical rows.
+  // Idempotent ALTER — silently no-ops if the column already exists.
+  try { db.exec("ALTER TABLE notices ADD COLUMN media_path TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE notices ADD COLUMN media_type TEXT"); } catch (_) {}
+
   // group_alerts — one row per "I joined a new/unknown group" alert we sent to
   // the master group, so batched triage doesn't re-alert about the same group.
   try {
@@ -793,6 +800,9 @@ function initDB() {
     `);
   } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_obligation_nudges_due ON obligation_nudges(deadline_date, status)'); } catch (_) {}
+
+  // O8: populate media_path/media_type on historical notices from their sources.
+  backfillNoticeMedia();
 
   console.log('[DB] Initialized at', DB_PATH);
   return db;
@@ -1123,7 +1133,44 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
     relevance_date_source || null,
     relevance_date_raw || null
   );
+
+  // O8: if the source message carried a media artifact (archived attachment), copy
+  // its path/type onto the new notice. The source message is identified by group +
+  // timestamp, the same pair the image-notice UPDATE path (whatsapp.js) matches on.
+  try {
+    const srcTs = message_timestamp || source_timestamp;
+    if (srcTs) {
+      const media = getDB().prepare(
+        `SELECT m.media_path, m.media_type
+           FROM messages m JOIN groups g ON g.id = m.group_id
+          WHERE g.name = ? AND m.timestamp = ? AND m.media_path IS NOT NULL
+          ORDER BY m.id DESC LIMIT 1`
+      ).get(group_name, srcTs);
+      if (media && media.media_path) {
+        getDB().prepare('UPDATE notices SET media_path = ?, media_type = ? WHERE id = ?')
+          .run(media.media_path, media.media_type || null, result.lastInsertRowid);
+      }
+    }
+  } catch (_) {}
+
   return result.lastInsertRowid;
+}
+
+/**
+ * O8: backfill media_path/media_type onto historical notices from their source
+ * messages. A notice's source_message_ids stores the contributing message id(s);
+ * for each notice still missing media, copy the first source message that has an
+ * archived artifact. Idempotent — only touches notices where media_path IS NULL.
+ */
+function backfillNoticeMedia() {
+  try {
+    getDB().exec(`
+      UPDATE notices SET media_path = m.media_path, media_type = m.media_type
+      FROM messages m
+      WHERE notices.source_message_ids LIKE '%' || m.id || '%'
+        AND m.media_path IS NOT NULL AND notices.media_path IS NULL
+    `);
+  } catch (_) {}
 }
 
 /**
@@ -2287,6 +2334,7 @@ module.exports = {
   getRecentGroupMessages,
   markMessageProcessed,
   saveNotice,
+  backfillNoticeMedia,
   enrichNoticeByThreadKey,
   logQueryMiss,
   logGroundingMiss,
