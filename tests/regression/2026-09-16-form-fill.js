@@ -16,14 +16,20 @@ const os = require('os');
 const FORM_FILLER = path.join(__dirname, '../../src/form-filler.py');
 const FIXTURE_PDF = path.join(__dirname, '../fixtures/forms/soccer-registration.pdf');
 
-// Skip entirely in CI if PyMuPDF is not installed (CI doesn't have Python PDF libs)
+// N4: PyMuPDF is REQUIRED — do not skip silently.
 try {
   execSync('python3 -c "import pymupdf"', { timeout: 5000, stdio: 'pipe' });
 } catch (_) {
-  console.log('⏭️  Skipping form-fill regression: PyMuPDF not installed');
-  console.log('\n────────────────────────────────────────');
-  console.log('Form fill regression: SKIPPED (no PyMuPDF)');
-  process.exit(0);
+  console.error('❌ FAIL: PyMuPDF is not installed. Form-fill tests require it.');
+  console.error('   Install: pip3 install PyMuPDF');
+  // In CI, this is a hard failure. The test should never silently skip.
+  if (process.env.CI) {
+    process.exit(1);
+  }
+  // Locally, still fail but don't crash the suite.
+  module.exports = { async run() { return { pass: false, message: 'PyMuPDF not installed' }; } };
+  // Early return to prevent the rest of the file from executing
+  return;
 }
 
 let passed = 0;
