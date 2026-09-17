@@ -992,7 +992,10 @@ function createServer() {
     }
 
     // N3: send an image (inline in chat, not as document attachment).
-    // Body: { jid?, filePath, caption? }
+    // Body: { jid?, filePath, caption? }. jid defaults to the master group.
+    // Note: _client is the Baileys adapter — its sendMessage() builds a WhatsApp
+    // image only from a MessageMedia-like object ({ mimetype, data(base64), filename });
+    // a raw { image: Buffer } falls through to the text fallback, so use the shim.
     if (req.method === 'POST' && req.url === '/send-image') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
@@ -1003,30 +1006,49 @@ function createServer() {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             return res.end(JSON.stringify({ error: 'Missing filePath' }));
           }
-          if (!fs.existsSync(filePath)) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            return res.end(JSON.stringify({ error: `File not found: ${filePath}` }));
-          }
-          const ext = path.extname(filePath).toLowerCase();
-          if (!['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            return res.end(JSON.stringify({ error: `Unsupported image type: ${ext}` }));
-          }
           if (!_client) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
             return res.end(JSON.stringify({ error: 'WhatsApp client not ready' }));
           }
-          const chatId = jid;
-          if (!chatId) {
+          if (!fs.existsSync(filePath)) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'Missing jid (target chat)' }));
+            return res.end(JSON.stringify({ error: `File not found: ${filePath}` }));
           }
-          const imageData = fs.readFileSync(filePath);
-          const sentMsg = await _client.sendMessage(chatId, {
-            image: imageData, caption: caption || ''
-          });
-          const msgId = sentMsg?.key?.id || null;
-          console.log(`[VoiceServer] Image sent to ${chatId}: ${path.basename(filePath)}`);
+          const IMAGE_MIME_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
+          const ext = path.extname(filePath).toLowerCase();
+          const mimetype = IMAGE_MIME_TYPES[ext];
+          if (!mimetype) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({
+              error: `Unsupported image type: ${ext || '(none)'} (allowed: ${Object.keys(IMAGE_MIME_TYPES).join(', ')})`,
+            }));
+          }
+
+          // Resolve the target chat. An explicit jid must already be a full JID
+          // (@g.us / @c.us); otherwise default to the master group. resolveMasterGroup
+          // lives in whatsapp.js and isn't exported, so mirror its logic here:
+          // config JID fast path, then fall back to a by-name lookup over getChats().
+          let chatId = jid;
+          if (!chatId) {
+            const config = require('./config');
+            chatId = config.MASTER_GROUP_JID;
+            if (!chatId) {
+              const masterName = config.MASTER_GROUP_NAME;
+              const chats = await _client.getChats();
+              const master = chats.find(c => c.isGroup && c.name === masterName);
+              chatId = master ? (master.id && master.id._serialized ? master.id._serialized : master.id) : null;
+            }
+          }
+          if (!chatId) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'No target chat (master group not resolved)' }));
+          }
+
+          const base64 = fs.readFileSync(filePath).toString('base64');
+          const media = new MessageMedia(mimetype, base64, path.basename(filePath));
+          const sentMsg = await _client.sendMessage(chatId, media, { caption: caption || '' });
+          const msgId = sentMsg && sentMsg.id ? sentMsg.id._serialized : null;
+          console.log(`[VoiceServer] Image sent to ${chatId}: ${path.basename(filePath)}${msgId ? ' (id: ' + msgId.substring(0, 40) + ')' : ''}`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msgId }));
         } catch (err) {
@@ -1128,9 +1150,16 @@ function createServer() {
           } catch (parseErr) {
             throw new Error(`Failed to parse form-filler output: ${parseErr.message}; stdout: ${stdout.slice(0, 500)}`);
           }
-          console.log(`[VoiceServer] Form filled: ${output} (preview: ${preview})`);
+          // O6: collision gate — report collisions but still return the result
+          const collisions = report.collisions || [];
+          const hasCollisions = collisions.length > 0;
+          if (hasCollisions) {
+            console.warn(`[VoiceServer] Form filled WITH ${collisions.length} collision(s): ${output}`);
+          } else {
+            console.log(`[VoiceServer] Form filled cleanly: ${output} (preview: ${preview})`);
+          }
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, output, preview, report }));
+          res.end(JSON.stringify({ ok: true, output, preview, report, hasCollisions }));
         } catch (err) {
           console.error('[VoiceServer] fill-form error:', err.message);
           res.writeHead(500, { 'Content-Type': 'application/json' });
