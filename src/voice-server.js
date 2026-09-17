@@ -991,6 +991,53 @@ function createServer() {
       return;
     }
 
+    // N3: send an image (inline in chat, not as document attachment).
+    // Body: { jid?, filePath, caption? }
+    if (req.method === 'POST' && req.url === '/send-image') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const { jid, filePath, caption } = JSON.parse(body || '{}');
+          if (!filePath) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'Missing filePath' }));
+          }
+          if (!fs.existsSync(filePath)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: `File not found: ${filePath}` }));
+          }
+          const ext = path.extname(filePath).toLowerCase();
+          if (!['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: `Unsupported image type: ${ext}` }));
+          }
+          if (!_client) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'WhatsApp client not ready' }));
+          }
+          const chatId = jid;
+          if (!chatId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'Missing jid (target chat)' }));
+          }
+          const imageData = fs.readFileSync(filePath);
+          const sentMsg = await _client.sendMessage(chatId, {
+            image: imageData, caption: caption || ''
+          });
+          const msgId = sentMsg?.key?.id || null;
+          console.log(`[VoiceServer] Image sent to ${chatId}: ${path.basename(filePath)}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msgId }));
+        } catch (err) {
+          console.error('[VoiceServer] send-image error:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
     // M4: record an artifact promise (e.g., "I'll fill this PDF for you").
     // Body: { description, deliverable, target_phone? }. Returns the new taskId.
     if (req.method === 'POST' && req.url === '/artifact-promise') {
