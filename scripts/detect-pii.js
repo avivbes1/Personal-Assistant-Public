@@ -26,6 +26,14 @@ const PATTERNS = [
   { name: 'Anthropic API key',         re: /sk-ant-[A-Za-z0-9_-]{20,}/g },
   { name: 'OpenAI API key',            re: /sk-[A-Za-z0-9]{40,}/g },
 
+  // Israeli ID numbers (9-digit, common format)
+  { name: 'Israeli ID number',         re: /(?<![0-9])\d{9}(?![0-9])/g,
+    validate: (match, line) => {
+      // Only flag if it looks like an ID context (near ת.ז, ID, תעודת זהות)
+      return /ת\.?ז|תעודת.?זהות|id.?number/i.test(line);
+    }
+  },
+
   // ── Family-specific patterns (customize for your family) ─────────────────
   // Replace these with your own family name and member names
   { name: 'Family surname',            re: /besinsky|בסינסקי/gi },
@@ -69,12 +77,14 @@ function scanFile(filePath) {
   catch (_) { return []; }
 
   const findings = [];
-  for (const { name, re } of PATTERNS) {
+  const lines = content.split('\n');
+  for (const { name, re, validate } of PATTERNS) {
     re.lastIndex = 0;
     let match;
     while ((match = re.exec(content)) !== null) {
-      // Get line number
       const lineNo = content.slice(0, match.index).split('\n').length;
+      // If the pattern has a validate function, only flag when it returns true
+      if (validate && !validate(match[0], lines[lineNo - 1] || '')) continue;
       findings.push({ pattern: name, match: match[0], line: lineNo });
     }
   }

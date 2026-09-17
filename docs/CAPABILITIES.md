@@ -72,14 +72,32 @@ unknown)
 - /health-probe
 - /health/pipeline
 - /media/retry
+- /artifact-promise
+- /artifact-promises/stale
+- /fill-form
 - /send-document
+- /send-image
 - /send-message
 - /system-inbox
 - /voice
+
+## Package Install Policy (N5)
+Agents MAY install system packages (`apt install`) under these conditions:
+1. **Notify master group** before installing: "🔧 מתקין [package] — נדרש ל[reason]"
+2. **Check disk space first** — abort if `disk_free_gb < 2`
+3. **Log the install** to the daily memory file
+
+No allowlist — any package is permitted if the above conditions are met.
+Source: Aviv decision 2026-09-17 (Phase N5, option C).
+
+## PII Handling Policy (N6)
+- **National ID numbers**: re-request each time. Do NOT store for reuse.
+- **Artifact files** (filled forms with PII): subject to retention policy (auto-delete after 30 days).
+Source: Aviv decision 2026-09-17 (Phase N6).
 
 ## Known Limitations
 - `pdf2docx` is incompatible with PyMuPDF ≥1.26.5 (Rect.get_area removed)
 - `page.insert_text()` does NOT handle Hebrew bidi — use `TextWriter.append(right_to_left=True)`
 - Base-14 PDF fonts lack Hebrew glyphs — must use an explicit Hebrew font (e.g., system Arial, David, or embedded)
-- LibreOffice is NOT installed — cannot convert DOCX↔PDF server-side
+- LibreOffice IS installed (libreoffice-writer-nogui) — can convert DOCX↔PDF but prefer /fill-form for form filling
 - No `pdftk` available
