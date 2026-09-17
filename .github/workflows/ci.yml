@@ -84,6 +84,8 @@ jobs:
       # src/baileys-client.js. Pure fixtures — no API calls, no secrets.
       - name: Run Baileys shim fixture suite
         run: node tests/shim/run.js
+      - name: Install PyMuPDF for form-fill tests
+        run: pip3 install PyMuPDF
       - name: Run regression tests
         run: node tests/run-all.js
         env:
