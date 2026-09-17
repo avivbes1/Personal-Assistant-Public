@@ -991,6 +991,51 @@ function createServer() {
       return;
     }
 
+    // M4: record an artifact promise (e.g., "I'll fill this PDF for you").
+    // Body: { description, deliverable, target_phone? }. Returns the new taskId.
+    if (req.method === 'POST' && req.url === '/artifact-promise') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { description, deliverable, target_phone } = JSON.parse(body || '{}');
+          if (!description || !deliverable) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'Missing description or deliverable' }));
+          }
+          const { saveArtifactPromise } = require('./db');
+          const taskId = saveArtifactPromise({ description, deliverable, target_phone: target_phone || null });
+          console.log(`[VoiceServer] Artifact promise recorded (task ${taskId})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, taskId }));
+        } catch (err) {
+          console.error('[VoiceServer] artifact-promise error:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // M4: list undelivered artifact promises older than 1 hour.
+    if (req.method === 'GET' && req.url === '/artifact-promises/stale') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { getStaleArtifactPromises } = require('./db');
+          const promises = getStaleArtifactPromises(1);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, promises }));
+        } catch (err) {
+          console.error('[VoiceServer] artifact-promises/stale error:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
     // M3: fill a PDF form via form-filler.py.
     // Body: { inputPdf, fields, outputPdf?, previewPng? }. Writes fields to a
     // temp JSON, spawns python3 src/form-filler.py, and returns the parsed

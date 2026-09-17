@@ -977,6 +977,25 @@ async function sendDocumentToChat(jid, filePath, fileName, caption) {
     { component: 'WhatsApp', jid: targetJid, fileName: resolvedName, mimetype, bytes: stat.size },
     'Sent document'
   );
+
+  // M4: best-effort auto-mark any matching pending artifact promise as delivered.
+  // Lazy require to avoid circular deps; never let this break the send flow.
+  try {
+    const { getDB, markArtifactDelivered } = require('./db');
+    const rows = getDB().prepare(
+      "SELECT id, description FROM bot_tasks WHERE task_type = 'artifact_promise' AND status = 'pending'"
+    ).all();
+    const match = rows.find(r =>
+      r.description && (r.description.includes(resolvedName) || r.description.includes(filePath))
+    );
+    if (match) {
+      markArtifactDelivered(match.id, filePath);
+      console.log('[WhatsApp] Artifact promise auto-marked delivered:', match.id);
+    }
+  } catch (err) {
+    logger.warn({ component: 'WhatsApp', err: err.message }, 'Artifact promise auto-mark failed');
+  }
+
   return { ok: true, jid: targetJid, fileName: resolvedName };
 }
 
