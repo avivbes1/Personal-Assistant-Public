@@ -38,17 +38,41 @@ PREVIEW_DPI = 150
 
 
 def find_blank_regions(page):
-    """Locate ___ blank runs and their adjacent labels."""
+    """Locate blank regions: underscore text tokens AND drawn horizontal lines."""
     words = page.get_text("words")
     blanks = []
     labels = []
 
     for w in words:
         x0, y0, x1, y1, text, block, line, word_n = w
-        if "___" in text:
+        # O3: match any token containing underscores (not just ___)
+        if "_" in text and text.replace("_", "").replace(" ", "") == "":
+            blanks.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": text})
+        elif "___" in text:
             blanks.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": text})
         else:
             labels.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": text})
+
+    # O3: also detect drawn horizontal lines as blank regions
+    try:
+        drawings = page.get_drawings()
+        for d in drawings:
+            for item in d.get("items", []):
+                if item[0] == "l":  # line
+                    p1, p2 = item[1], item[2]
+                    if abs(p1.y - p2.y) < 2 and abs(p1.x - p2.x) > 20:
+                        x0 = min(p1.x, p2.x)
+                        x1 = max(p1.x, p2.x)
+                        y_mid = (p1.y + p2.y) / 2
+                        # Check this line isn't already covered by a text blank
+                        already = any(abs(b["y0"] - y_mid) < 5 and
+                                     abs(b["x0"] - x0) < 10 for b in blanks)
+                        if not already:
+                            blanks.append({"x0": x0, "y0": y_mid - 5,
+                                          "x1": x1, "y1": y_mid + 5,
+                                          "text": "[line]"})
+    except Exception:
+        pass  # get_drawings may not be available in all PyMuPDF versions
 
     return blanks, labels
 
@@ -76,11 +100,21 @@ def match_label_to_blank(label_text, blanks, labels):
 
         if label_text in line_text:
             matching_line_y = sorted_words[0]["y0"]
-            # Find the rightmost label word to anchor from
-            for w in sorted_words:
-                if any(part in w["text"] for part in label_text.split()):
-                    matching_label_x0 = w["x0"]
+            # Find the exact position of the label in the line by matching
+            # consecutive words that form the label text
+            label_words = label_text.split()
+            for i in range(len(sorted_words) - len(label_words) + 1):
+                candidate = " ".join(sorted_words[i + j]["text"] for j in range(len(label_words)))
+                if candidate == label_text:
+                    # Use the rightmost word of this match (first in RTL order)
+                    matching_label_x0 = sorted_words[i]["x0"]
                     break
+            if matching_label_x0 is None:
+                # Fallback: use the first word that matches any part
+                for w in sorted_words:
+                    if w["text"] in label_words:
+                        matching_label_x0 = w["x0"]
+                        break
             if matching_label_x0 is None:
                 matching_label_x0 = sorted_words[0]["x0"]
             break
@@ -102,15 +136,38 @@ def match_label_to_blank(label_text, blanks, labels):
     if not same_line_blanks:
         return None
 
-    # For RTL: the blank to the LEFT of the label (lower x)
+    # O4: For RTL, find the blank immediately left of the label,
+    # bounded by the next label to the left (prevent cross-field stealing)
     if matching_label_x0 is not None:
-        left_blanks = [b for b in same_line_blanks if b["x1"] <= matching_label_x0 + 5]
+        # Find words that are part of the matched label (to exclude from boundary)
+        label_parts = set(label_text.split())
+        same_line_labels = [lb for lb in labels if abs(lb["y0"] - matching_line_y) < 8]
+
+        # The matched label occupies a range — find the leftmost part of it
+        matched_label_words = [lb for lb in same_line_labels
+                              if lb["text"].rstrip(":") in label_parts or lb["text"] == ":"]
+        # Label's left edge = min x0 of its component words
+        label_left_edge = matching_label_x0
+        for mlw in matched_label_words:
+            if mlw["x0"] < matching_label_x0 and mlw["x0"] > matching_label_x0 - 100:
+                label_left_edge = min(label_left_edge, mlw["x0"])
+
+        # Find the nearest OTHER label to the left
+        left_boundary = 0  # page left edge
+        for lb in same_line_labels:
+            # Skip colons and words that are part of our label
+            if lb["text"] == ":" or lb["text"].rstrip(":") in label_parts:
+                continue
+            if lb["x1"] < label_left_edge - 2:
+                left_boundary = max(left_boundary, lb["x1"])
+
+        left_blanks = [b for b in same_line_blanks
+                      if b["x1"] <= label_left_edge + 5 and b["x0"] >= left_boundary - 5]
         if left_blanks:
-            # Closest to the label
             return max(left_blanks, key=lambda b: b["x0"])
 
-    # Fallback: any blank on the same line
-    return same_line_blanks[0]
+    # No bounded blank found — do NOT fall back to "any blank on the same line"
+    return None
 
 
 def find_text_region(page, search_text):
@@ -174,21 +231,39 @@ def fill_form(input_path, fields_json, output_path, preview_path=None):
 
             blank = match_label_to_blank(label, blanks, labels)
             if blank:
-                mid_x = (blank["x0"] + blank["x1"]) / 2
-                text_y = blank["y0"] + 2
-
                 is_hebrew = any("\u0590" <= c <= "\u05FF" for c in value)
                 fontsize = field_spec.get("fontsize", DEFAULT_FONTSIZE)
 
+                # O1: anchor by direction — RTL from right edge, LTR from left edge
+                if is_hebrew:
+                    anchor_x = blank["x1"]  # right edge, text flows left
+                else:
+                    anchor_x = blank["x0"]  # left edge, text flows right
+
+                # O2: use bottom of blank (baseline) instead of top
+                text_y = blank["y1"] - 2
+
+                # O5: check if text fits in blank width, shrink if needed
+                text_width = font.text_length(value, fontsize)
+                blank_width = blank["x1"] - blank["x0"]
+                if text_width > blank_width and blank_width > 0:
+                    fitted_size = fontsize * (blank_width / text_width) * 0.95
+                    if fitted_size >= 6:
+                        fontsize = fitted_size
+                    else:
+                        report["errors"].append({
+                            "field": label, "error": f"text too wide ({text_width:.0f}pt) for blank ({blank_width:.0f}pt), min font would be <6pt"
+                        })
+
                 try:
                     tw.append(
-                        (mid_x, text_y), value, font=font,
+                        (anchor_x, text_y), value, font=font,
                         fontsize=fontsize, right_to_left=is_hebrew
                     )
                     report["filled"].append({
                         "field": label, "value": value, "source": source,
                         "method": "overlay",
-                        "position": {"x": round(mid_x, 1), "y": round(text_y, 1)}
+                        "position": {"x": round(anchor_x, 1), "y": round(text_y, 1)}
                     })
                 except Exception as e:
                     report["errors"].append({
@@ -244,6 +319,41 @@ def fill_form(input_path, fields_json, output_path, preview_path=None):
                 report["errors"].append({
                     "field": ft.get("label", "freetext"), "error": str(e)
                 })
+
+        # O5: collision detection — check overlaid text against existing page words
+        original_words = page.get_text("words")
+        original_bboxes = [pymupdf.Rect(w[0], w[1], w[2], w[3]) for w in original_words
+                          if not ("_" in w[4] and w[4].replace("_", "").replace(" ", "") == "")]
+        for entry in report["filled"]:
+            if entry["method"] in ("overlay",):
+                pos = entry.get("position", {})
+                px, py = pos.get("x", 0), pos.get("y", 0)
+                val = entry["value"]
+                fs = DEFAULT_FONTSIZE
+                tw_len = font.text_length(val, fs)
+                # Approximate the text rect
+                if any("\u0590" <= c <= "\u05FF" for c in val):
+                    text_rect = pymupdf.Rect(px - tw_len, py - fs, px, py + 2)
+                else:
+                    text_rect = pymupdf.Rect(px, py - fs, px + tw_len, py + 2)
+                for ob in original_bboxes:
+                    if text_rect.intersects(ob):
+                        # Find what word it collides with
+                        colliding_word = next(
+                            (w[4] for w in original_words
+                             if abs(w[0] - ob.x0) < 1 and abs(w[1] - ob.y0) < 1),
+                            "?"
+                        )
+                        report.setdefault("collisions", []).append({
+                            "field": entry["field"],
+                            "value": val,
+                            "collides_with": colliding_word,
+                            "text_rect": [round(text_rect.x0, 1), round(text_rect.y0, 1),
+                                         round(text_rect.x1, 1), round(text_rect.y1, 1)],
+                            "word_rect": [round(ob.x0, 1), round(ob.y0, 1),
+                                         round(ob.x1, 1), round(ob.y1, 1)]
+                        })
+                        break
 
         tw.write_text(page)
 
