@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "updated_at": "2026-06-25",
+  "schema_version": 2,
+  "updated_at": "2026-09-17",
   "family": "Besinsky",
   "members": {
     "שגב": {
@@ -24,7 +24,7 @@
       ]
     },
     "נבו": {
-      "grade": "3",
+      "grade": "4",
       "school": "רימון",
       "teachers": [
         "שיראל (maternity leave)",
@@ -41,7 +41,8 @@
       ],
       "current_notes": [
         "Moved up to ד'-ו' football team (May 2026)"
-      ]
+      ],
+      "dob": "16.3.2017"
     },
     "נטע": {
       "grade": "1",
@@ -91,5 +92,22 @@
       "text": "Nevo football season final weeks",
       "expires": "2026-07-01"
     }
-  ]
+  ],
+  "parents": {
+    "אב": {
+      "name": "אביב בסינסקי",
+      "phone": "0504606660",
+      "email": "avivbes1@gmail.com"
+    },
+    "אם": {
+      "name": "ליאת",
+      "phone": "0509244401",
+      "email": "liat.elm@gmail.com"
+    }
+  },
+  "address": {
+    "street": "רשפים",
+    "city": "רשפים"
+  },
+  "pii_note": "No national IDs stored. IDs are re-requested per N6 policy (2026-09-17)."
 }
