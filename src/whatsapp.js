@@ -607,6 +607,23 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
 
     const agentResult = await handleGroupEvent(body, chat.name, sender, groupDescription, recentMessages, msg.timestamp * 1000, isImageMsg, msgIsBacklog, groupRecord?.primary_child || null, messageId);
 
+    // O9: deliver form-fill offers to the master group immediately
+    if (agentResult.sideEffects) {
+      for (const se of agentResult.sideEffects) {
+        if (se.type === 'offer_form_fill' && se.ok && se.message) {
+          try {
+            if (!masterGroupId) await resolveMasterGroup();
+            if (masterGroupId) {
+              await client.sendMessage(masterGroupId, se.message);
+              logger.info({ component: 'WhatsApp', group: chat.name, child: se.child }, 'Form-fill offer sent to master group');
+            }
+          } catch (offerErr) {
+            logger.warn({ component: 'WhatsApp', err: offerErr.message }, 'Form-fill offer delivery failed');
+          }
+        }
+      }
+    }
+
     // If agent decided this image is worth reading, run vision now and upsert the notice
     if (isImageMsg && agentResult.downloadImage) {
       logger.info({ component: 'WhatsApp', group: chat.name, sender }, 'Agent requested image download');

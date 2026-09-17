@@ -1259,6 +1259,25 @@ const GROUP_TOOLS = [
         source_quote: { type: 'string', description: 'The exact text that triggered this' }
       },
       required: ['observation']
+    }
+  },
+  {
+    name: 'offer_form_fill',
+    description: 'O7/O9: כשמסמך (טופס PDF/Word) מגיע לקבוצה, והוא טופס למילוי (הרשמה, אישור, הצהרת בריאות). קרא גם ל-add_notice לתיעוד התוכן, וגם ל-offer_form_fill כדי להציע למשפחה שאפשר למלא את הטופס.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        document_kind: { type: 'string', enum: ['form', 'permission_slip', 'health_declaration', 'invoice', 'info'], description: 'סוג המסמך' },
+        child:         { type: 'string', description: 'שם הילד שהטופס קשור אליו (לפי הקבוצה)' },
+        summary:       { type: 'string', description: 'תיאור קצר של הטופס' },
+        fields_visible: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'שמות השדות שנראים בטופס (שם, ת.ז, כתובת, טלפון, אימייל...)'
+        },
+        deadline:      { type: ['string', 'null'], description: 'YYYY-MM-DD אם יש מועד אחרון להגשה' }
+      },
+      required: ['document_kind', 'summary', 'fields_visible']
     },
     // C1: Prompt caching — cache_control on the last tool caches the entire tools array
     cache_control: { type: 'ephemeral' }
@@ -1670,6 +1689,53 @@ async function handleGroupEvent(body, groupName, sender, groupDescription = null
             if (tool.name === 'log_profile_contradiction') {
               // ISSUE-020: log-only, no state change
               console.log(`[FamilyCtx] CONTRADICTION in "${groupName}": ${input.observation || ''} | quote: "${input.source_quote || ''}"`)
+              continue;
+            }
+
+            // O7/O9: offer to fill a form that arrived in a group
+            if (tool.name === 'offer_form_fill') {
+              const childName = input.child || primaryChild || null;
+              const docKind = input.document_kind || 'form';
+              const visibleFields = input.fields_visible || [];
+              const summary = input.summary || '';
+              const deadline = input.deadline || null;
+
+              // Determine what we already know vs what we need to ask
+              const familyCtx = (() => { try { return require('../config/family-context.json'); } catch(_) { return null; } })();
+              const knownFields = [];
+              const missingFields = [];
+              if (familyCtx) {
+                const parents = familyCtx.parents || {};
+                const addr = familyCtx.address || {};
+                const child = childName ? familyCtx.members?.[childName] : null;
+                const fieldMap = {
+                  'שם': true, 'שם משפחה': true, 'שם פרטי': !!childName,
+                  'כתובת': !!addr.street, 'ישוב': !!addr.city,
+                  'טלפון': !!(parents['אב']?.phone), 'נייד': !!(parents['אב']?.phone),
+                  'e-mail': !!(parents['אב']?.email), 'אימייל': !!(parents['אב']?.email),
+                  'תאריך לידה': !!(child?.dob),
+                  'ת.ז': false, 'תעודת זהות': false, // NEVER stored per N6
+                  'חתימה': true, // just the name
+                };
+                for (const f of visibleFields) {
+                  const fLower = f.toLowerCase();
+                  const known = Object.entries(fieldMap).some(([k, v]) => fLower.includes(k) && v);
+                  if (known) knownFields.push(f);
+                  else missingFields.push(f);
+                }
+              }
+
+              console.log(`[Agent] FORM OFFER in "${groupName}": ${docKind} for ${childName || '?'} — known: ${knownFields.length}, missing: ${missingFields.length}`);
+
+              // Build the offer message for the master group
+              const childLabel = childName ? ` של ${childName}` : '';
+              const knownStr = knownFields.length > 0 ? `יש לי: ${knownFields.join(', ')}` : 'אין לי פרטים';
+              const missingStr = missingFields.length > 0 ? `חסר: ${missingFields.join(', ')}` : 'יש לי הכל';
+              const deadlineStr = deadline ? `\n⏰ מועד אחרון: ${deadline}` : '';
+
+              const offerMsg = `📋 הגיע טופס ${docKind === 'form' ? 'הרשמה' : 'למילוי'}${childLabel} מקבוצת *${groupName}*:\n${summary}\n\n${knownStr}\n${missingStr}${deadlineStr}\n\nרוצה שאמלא?`;
+
+              sideEffects.push({ type: 'offer_form_fill', ok: true, message: offerMsg, child: childName, document_kind: docKind, fields_visible: visibleFields, known: knownFields, missing: missingFields });
               continue;
             }
 
