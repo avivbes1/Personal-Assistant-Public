@@ -30,6 +30,12 @@ function metricsWritePath() {
 // exclude it from ingestion/silence math (same JID the outage check excludes).
 const MASTER_GROUP_ID = '120363426994367917@g.us';
 
+// Groups to exclude from silence alerts (still tracked/monitored, just no noise
+// when they go quiet). Per Aviv, 2026-09-20.
+const SILENCE_ALERT_EXEMPT = new Set([
+  'גיל הרך - הורים',
+]);
+
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
@@ -251,7 +257,7 @@ function checkMonitoredGroupSilence(db, nowMs) {
     // setup issue (bot added but never got traffic), not a "went silent"
     // problem. Skip it; only alert for groups that WERE active but stopped.
     if (lastTs === 0) continue;
-    if (lastTs < sevenDaysAgo) {
+    if (lastTs < sevenDaysAgo && !SILENCE_ALERT_EXEMPT.has(g.name)) {
       silent.push({ id: g.id, name: g.name, lastTs });
     }
   }
