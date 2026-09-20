@@ -510,4 +510,7 @@ module.exports = {
   buildEventPayload,
   fingerprint,
   classifyEvent,
+  // Q2: exported so obligation_nudge keying can reuse the same content
+  // normalization the calendar fingerprint uses.
+  _normalizeForFingerprint,
 };

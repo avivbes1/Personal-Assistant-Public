@@ -152,4 +152,58 @@ function nearestWeekdayIso(citedIso, weekdayIdx, maxDelta = 3) {
   return null;
 }
 
-module.exports = { parseDate, extractExplicitDate, extractHebrewWeekday, nextOccurrence, nearestWeekdayIso };
+/**
+ * Q1: Canonical date resolver for a notice row. Returns the highest-confidence
+ * date already established for the notice — preferring weekday-corrected values
+ * that earlier pipeline stages (D1/J2) computed over anything re-parsed from raw
+ * text. This is the single source of truth every downstream caller should use so
+ * a weekday correction made once is honoured everywhere (see the obligation-nudge
+ * bug where three notices re-parsed 'עד יום שישי 20.9' instead of trusting the
+ * stored 18.9 correction).
+ *
+ * Resolution order (highest confidence first):
+ *   1. a notice_event whose event_date_source = 'weekday_corrected'
+ *   2. notice.relevance_date when relevance_date_source = 'weekday_corrected'
+ *   3. notice.relevance_date when it's an explicit date with no weekday mismatch
+ * Returns { iso, source } or null when nothing structured is available (the
+ * caller then falls back to parsing the content directly).
+ *
+ * @param {object} notice a full notices row (needs id / relevance_date /
+ *                        relevance_date_source / weekday_mismatch)
+ * @returns {{iso:string, source:string}|null}
+ */
+function resolveNoticeDate(notice) {
+  if (!notice || typeof notice !== 'object') return null;
+
+  // 1. A weekday-corrected notice_event is the strongest signal — the corrector
+  //    snapped a contradicting digit date to its asserted Hebrew weekday.
+  if (notice.id != null) {
+    try {
+      const { getDB } = require('./db');
+      const ev = getDB().prepare(
+        `SELECT event_date FROM notice_event
+          WHERE notice_id = ? AND event_date_source = 'weekday_corrected'
+            AND event_date IS NOT NULL
+          ORDER BY event_date ASC LIMIT 1`
+      ).get(notice.id);
+      if (ev && ev.event_date) return { iso: ev.event_date, source: 'event_weekday_corrected' };
+    } catch (_) { /* DB unavailable (pure-unit context) — fall through */ }
+  }
+
+  // 2. Notice-level weekday correction.
+  if (notice.relevance_date && notice.relevance_date_source === 'weekday_corrected') {
+    return { iso: notice.relevance_date, source: 'relevance_weekday_corrected' };
+  }
+
+  // 3. An explicit relevance_date that the parser did not flag as mismatched.
+  //    'inferred' dates (weekday-only, no digit date) are lower confidence and
+  //    left to the content-parsing fallback.
+  if (notice.relevance_date && !notice.weekday_mismatch &&
+      notice.relevance_date_source !== 'inferred') {
+    return { iso: notice.relevance_date, source: 'relevance_explicit' };
+  }
+
+  return null;
+}
+
+module.exports = { parseDate, extractExplicitDate, extractHebrewWeekday, nextOccurrence, nearestWeekdayIso, resolveNoticeDate };

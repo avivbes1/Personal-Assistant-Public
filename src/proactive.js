@@ -12,11 +12,15 @@
  * deterministic (built from DB fields) — never authored by an LLM.
  */
 
+const crypto = require('crypto');
 const config = require('./config');
 const { getDB } = require('./db');
-const { guardedSendProactive } = require('./delivery/guardedSend');
+// Referenced through the module object (not destructured) so tests can stub the
+// grounded send path without a live voice-server. The grounding guarantee lives
+// inside guardedSendProactive; callers here still build deterministic text.
+const guardedSend = require('./delivery/guardedSend');
 const { israelDateIso, addDaysIso } = require('./timeUtils');
-const { extractExplicitDate, extractHebrewWeekday, nextOccurrence } = require('./date-parse');
+const { extractExplicitDate, extractHebrewWeekday, nextOccurrence, resolveNoticeDate } = require('./date-parse');
 
 const TZ = config.TIMEZONE || 'Asia/Jerusalem';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -56,16 +60,24 @@ const DEADLINE_TRIGGERS = [
 ];
 
 /**
- * Detect an explicit deadline in notice content and extract its date + a short
- * obligation description. Returns { deadlineDate:'YYYY-MM-DD', obligationText }
- * or null when there's no deadline-like phrasing with a parseable date.
+ * Detect an explicit deadline in a notice and extract its date + a short
+ * obligation description. Returns { deadlineDate:'YYYY-MM-DD', obligationText,
+ * deadlineSource } or null when there's no deadline-like phrasing.
  *
- * The date is parsed from the text AFTER the trigger phrase (so "החזרת ספרים עד
- * 7.9" reads the 7.9, not some earlier date), preferring an explicit digit date
- * and falling back to a Hebrew weekday name's next occurrence.
+ * Q1: accepts the full notice row (a bare content string is still tolerated for
+ * unit tests). The deadline PHRASING is always detected from the content — not
+ * every dated notice is an obligation — but the DATE itself is resolved through
+ * resolveNoticeDate() first, so a weekday correction already stored on the notice
+ * (or its notice_event) wins over re-parsing the raw text. Only when nothing
+ * structured is available do we fall back to parsing the date from the text
+ * after the trigger phrase (so "החזרת ספרים עד 7.9" reads the 7.9), preferring
+ * an explicit digit date and then a Hebrew weekday name's next occurrence.
+ *
+ * @param {object|string} notice a notices row, or (legacy) raw content
  */
-function detectObligationDeadline(content) {
-  const text = String(content || '');
+function detectObligationDeadline(notice) {
+  const isRow = notice && typeof notice === 'object';
+  const text = String((isRow ? notice.content : notice) || '');
   if (!text) return null;
 
   // Find the earliest trigger, plus a generic "עד <digit-date>" fallback.
@@ -80,19 +92,47 @@ function detectObligationDeadline(content) {
   }
   if (triggerIdx === -1) return null;
 
-  // Parse a date from the trigger onward; fall back to whole text if needed.
-  const tail = text.slice(triggerIdx);
+  // Q1: prefer the notice's already-resolved date (weekday corrections included).
   let deadlineDate = null;
-  const explicit = extractExplicitDate(tail) || extractExplicitDate(text);
-  if (explicit) {
-    deadlineDate = explicit.iso;
-  } else {
-    const wd = extractHebrewWeekday(tail);
-    if (wd != null) deadlineDate = nextOccurrence(wd).iso;
+  let deadlineSource = null;
+  if (isRow) {
+    const resolved = resolveNoticeDate(notice);
+    if (resolved && resolved.iso) { deadlineDate = resolved.iso; deadlineSource = resolved.source; }
+  }
+
+  // Fallback: parse a date from the trigger onward; fall back to whole text.
+  if (!deadlineDate) {
+    const tail = text.slice(triggerIdx);
+    const explicit = extractExplicitDate(tail) || extractExplicitDate(text);
+    if (explicit) {
+      deadlineDate = explicit.iso;
+      deadlineSource = 'content_explicit';
+    } else {
+      const wd = extractHebrewWeekday(tail);
+      if (wd != null) { deadlineDate = nextOccurrence(wd).iso; deadlineSource = 'content_weekday'; }
+    }
   }
   if (!deadlineDate) return null;
 
-  return { deadlineDate, obligationText: summarize(text, 80) };
+  return { deadlineDate, obligationText: summarize(text, 80), deadlineSource };
+}
+
+/**
+ * Q2: stable key identifying the OBLIGATION a nudge is about, so three notices
+ * describing the same task (different notice_ids, even different thread_keys)
+ * dedup to one nudge. Prefers the thread_key when present; otherwise a sha1 of
+ * (child, deadline, normalized obligation text) using the same content
+ * normalization the calendar fingerprint uses.
+ */
+function computeObligationKey({ threadKey, childName, deadlineDate, obligationText } = {}) {
+  if (threadKey) return String(threadKey);
+  const { _normalizeForFingerprint } = require('./calendar-bridge');
+  const raw = [
+    childName || '',
+    deadlineDate || '',
+    _normalizeForFingerprint(obligationText || ''),
+  ].join('|');
+  return crypto.createHash('sha1').update(raw).digest('hex').substring(0, 16);
 }
 
 // ── Recording (called from agent.js after saveNotice) ─────────────────────────
@@ -116,21 +156,52 @@ function recordMissingTimePrompt(noticeId) {
 }
 
 /**
- * G3: record a T-24h obligation nudge. UNIQUE(notice_id, deadline_date) +
- * INSERT OR IGNORE make this idempotent — at most one row per (notice, deadline).
+ * G3/Q2: record a T-24h obligation nudge, deduped by OBLIGATION rather than by
+ * notice. UNIQUE(obligation_key, deadline_date) + INSERT OR IGNORE make this
+ * idempotent — at most one row per (obligation, deadline). When a second notice
+ * about the same obligation lands, we don't create a new nudge; we append its id
+ * to the existing row's notice_ids for traceability.
  */
-function recordObligationNudge(noticeId, { deadlineDate, obligationText, childName } = {}) {
+function recordObligationNudge(noticeId, { deadlineDate, obligationText, childName, deadlineSource } = {}) {
   if (!noticeId || !deadlineDate) return null;
   const db = getDB();
+
+  let threadKey = null;
+  try { threadKey = db.prepare('SELECT thread_key FROM notices WHERE id=?').get(noticeId)?.thread_key || null; } catch (_) {}
+  const obligationKey = computeObligationKey({ threadKey, childName, deadlineDate, obligationText });
+
   const r = db.prepare(
-    `INSERT OR IGNORE INTO obligation_nudges (notice_id, deadline_date, child_name, obligation_text, status)
-     VALUES (?, ?, ?, ?, 'pending')`
-  ).run(noticeId, deadlineDate, childName || null, obligationText || null);
+    `INSERT OR IGNORE INTO obligation_nudges
+       (notice_id, notice_ids, obligation_key, deadline_date, deadline_source, child_name, obligation_text, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`
+  ).run(noticeId, JSON.stringify([noticeId]), obligationKey, deadlineDate, deadlineSource || null, childName || null, obligationText || null);
+
   if (r.changes > 0) {
-    console.log(`[Proactive] Recorded obligation nudge for notice #${noticeId} due ${deadlineDate}`);
+    console.log(`[Proactive] Recorded obligation nudge for notice #${noticeId} due ${deadlineDate} (key=${obligationKey}, source=${deadlineSource || 'content'})`);
     return r.lastInsertRowid;
   }
+
+  // Q2: collision — same obligation+deadline already tracked. Record this notice
+  // as a contributor so the row stays traceable to every source.
+  const existing = db.prepare(
+    'SELECT id, notice_ids FROM obligation_nudges WHERE obligation_key = ? AND deadline_date = ?'
+  ).get(obligationKey, deadlineDate);
+  if (existing) {
+    _addContributingNotice(db, existing, noticeId);
+    console.log(`[Proactive] Obligation nudge #${existing.id} already tracks ${deadlineDate} (key=${obligationKey}); linked notice #${noticeId}`);
+  }
   return null;
+}
+
+/** Append noticeId to a nudge row's notice_ids JSON array (idempotent). */
+function _addContributingNotice(db, row, noticeId) {
+  let ids = [];
+  try { ids = JSON.parse(row.notice_ids || '[]'); } catch (_) { ids = []; }
+  if (!Array.isArray(ids)) ids = [];
+  if (!ids.includes(noticeId)) {
+    ids.push(noticeId);
+    db.prepare('UPDATE obligation_nudges SET notice_ids=? WHERE id=?').run(JSON.stringify(ids), row.id);
+  }
 }
 
 // ── G1: missing_time send + resolve ───────────────────────────────────────────
@@ -170,7 +241,7 @@ async function checkMissingTimePrompts() {
     const who = row.primary_child || row.group_name || 'עדכון';
     const text = `📋 ${who}: ${summarize(row.content)} ב-${formatHebrewDate(row.relevance_date)} — שעה טרם פורסמה. אעדכן כשתתפרסם.`;
 
-    const result = await guardedSendProactive({ text, noticeId: row.notice_id, promptType: 'missing_time' });
+    const result = await guardedSend.guardedSendProactive({ text, noticeId: row.notice_id, promptType: 'missing_time' });
     if (result.sent) {
       db.prepare(
         "UPDATE proactive_prompts SET status='sent', sent_at=?, message_text=? WHERE id=?"
@@ -268,42 +339,95 @@ async function tryResolveMissingTime({ groupName, threadKey, time, excludeNotice
 // ── G3: obligation nudge send ─────────────────────────────────────────────────
 
 /**
- * Send obligation nudges whose deadline is tomorrow (Israel time) and still
- * pending. One nudge per notice ever — the UNIQUE constraint prevents duplicate
- * rows and the pending→sent transition prevents re-sends. Returns { checked, sent }.
+ * Send obligation nudges that are due within the T-24h window and still pending.
+ *
+ * Q4: the window is [today, tomorrow], not just "tomorrow" — so a sweep that was
+ * skipped for a day still fires a (late) nudge on the deadline day rather than
+ * losing it forever. Deadlines that have already fully passed (< today) are
+ * marked 'missed' with a logged count instead of firing stale reminders.
+ *
+ * Q3: immediately before sending, each nudge's deadline is re-resolved from the
+ * current notice state (via the Q1 resolver). If a correction landed after the
+ * nudge was recorded, the row is updated and re-evaluated — send now, leave
+ * pending for a future day, or cancel if the corrected deadline is already past.
+ *
+ * Returns { checked, sent, rescheduled, cancelled, missed }.
  */
 async function checkObligationNudges() {
   const db = getDB();
-  const tomorrow = addDaysIso(israelDateIso(), 1);
-  const rows = db.prepare(
-    `SELECT o.id AS nudge_id, o.notice_id, o.obligation_text, o.child_name, n.dismissed
-       FROM obligation_nudges o
-       JOIN notices n ON n.id = o.notice_id
-      WHERE o.deadline_date = ? AND o.status = 'pending'
-      ORDER BY o.created_at ASC`
-  ).all(tomorrow);
+  const today = israelDateIso();
+  const tomorrow = addDaysIso(today, 1);
 
-  let sent = 0;
+  // Q4: sweep away deadlines that already lapsed while still pending.
+  const overdue = db.prepare(
+    "UPDATE obligation_nudges SET status='missed' WHERE status='pending' AND deadline_date < ?"
+  ).run(today);
+  if (overdue.changes > 0) {
+    console.log(`[Proactive] obligation_nudge: marked ${overdue.changes} overdue nudge(s) as missed`);
+  }
+
+  const rows = db.prepare(
+    `SELECT o.id AS nudge_id, o.notice_id, o.deadline_date, o.obligation_text, o.child_name, o.deadline_source
+       FROM obligation_nudges o
+      WHERE o.deadline_date >= ? AND o.deadline_date <= ? AND o.status = 'pending'
+      ORDER BY o.created_at ASC`
+  ).all(today, tomorrow);
+
+  let sent = 0, rescheduled = 0, cancelled = 0;
   for (const row of rows) {
-    if (row.dismissed) {
+    const notice = db.prepare('SELECT * FROM notices WHERE id = ?').get(row.notice_id);
+    if (!notice || notice.dismissed) {
       db.prepare("UPDATE obligation_nudges SET status='skipped' WHERE id=?").run(row.nudge_id);
       continue;
     }
+
+    // Q3: re-resolve the deadline from the current notice state and persist any
+    // change before deciding whether to send.
+    let effectiveDeadline = row.deadline_date;
+    try {
+      const redetected = detectObligationDeadline(notice);
+      if (redetected && redetected.deadlineDate && redetected.deadlineDate !== row.deadline_date) {
+        console.log(`[Proactive] obligation_nudge #${row.nudge_id}: deadline ${row.deadline_date} → ${redetected.deadlineDate} (source: ${redetected.deadlineSource || 'content'})`);
+        db.prepare('UPDATE obligation_nudges SET deadline_date=?, deadline_source=? WHERE id=?')
+          .run(redetected.deadlineDate, redetected.deadlineSource || null, row.nudge_id);
+        effectiveDeadline = redetected.deadlineDate;
+      }
+    } catch (e) {
+      console.warn('[Proactive] obligation re-resolve failed (non-fatal):', e.message);
+    }
+
+    // Q3: re-evaluate T-24h against the (possibly corrected) deadline.
+    if (effectiveDeadline < today) {
+      db.prepare("UPDATE obligation_nudges SET status='missed' WHERE id=?").run(row.nudge_id);
+      console.log(`[Proactive] obligation_nudge #${row.nudge_id}: corrected deadline ${effectiveDeadline} already past → missed`);
+      cancelled++;
+      continue;
+    }
+    if (effectiveDeadline > tomorrow) {
+      // Correction pushed it out — not yet in the window; leave pending.
+      rescheduled++;
+      continue;
+    }
+
     const childSuffix = row.child_name ? ` (${row.child_name})` : '';
-    const text = `⏰ תזכורת: מחר מועד אחרון — ${row.obligation_text || 'משימה'}${childSuffix}`;
-    const result = await guardedSendProactive({ text, noticeId: row.notice_id, promptType: 'obligation_nudge' });
+    const when = effectiveDeadline === today ? 'היום' : 'מחר';
+    const text = `⏰ תזכורת: ${when} מועד אחרון — ${row.obligation_text || 'משימה'}${childSuffix}`;
+    const result = await guardedSend.guardedSendProactive({ text, noticeId: row.notice_id, promptType: 'obligation_nudge' });
     if (result.sent) {
       db.prepare("UPDATE obligation_nudges SET status='sent', sent_at=? WHERE id=?").run(Date.now(), row.nudge_id);
       sent++;
     }
   }
 
-  if (rows.length) console.log(`[Proactive] obligation_nudge: due=${tomorrow} checked=${rows.length} sent=${sent}`);
-  return { checked: rows.length, sent };
+  if (rows.length || overdue.changes) {
+    console.log(`[Proactive] obligation_nudge: window=${today}..${tomorrow} checked=${rows.length} sent=${sent} rescheduled=${rescheduled} cancelled=${cancelled} missed=${overdue.changes}`);
+  }
+  return { checked: rows.length, sent, rescheduled, cancelled, missed: overdue.changes };
 }
 
 module.exports = {
   detectObligationDeadline,
+  computeObligationKey,
   recordMissingTimePrompt,
   recordObligationNudge,
   checkMissingTimePrompts,

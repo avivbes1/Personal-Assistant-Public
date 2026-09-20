@@ -781,25 +781,40 @@ function initDB() {
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_proactive_prompts_status ON proactive_prompts(prompt_type, status)'); } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_proactive_prompts_notice ON proactive_prompts(notice_id)'); } catch (_) {}
 
-  // G3: obligation_nudges — one T-24h reminder before an explicit deadline, never
-  // repeated. UNIQUE(notice_id, deadline_date) + a pending→sent status transition
-  // guarantee at most one nudge ever fires per (notice, deadline).
+  // G3/Q2: obligation_nudges — one T-24h reminder before an explicit deadline,
+  // deduped by OBLIGATION rather than by notice. Three notices about the same
+  // task (different notice_ids, even different thread_keys) collapse to one nudge
+  // via UNIQUE(obligation_key, deadline_date). notice_id keeps the first source
+  // for traceability; notice_ids holds the JSON array of all contributors.
+  // deadline_source records how the deadline was resolved (Q1). A pending→sent
+  // status transition guarantees at most one nudge ever fires per obligation.
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS obligation_nudges (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        notice_id INTEGER NOT NULL,
+        notice_id INTEGER NOT NULL,         -- first contributing notice
+        notice_ids TEXT,                    -- JSON array of all contributing notice ids
+        obligation_key TEXT,                -- thread_key or sha1(child|deadline|text)
         deadline_date TEXT NOT NULL,        -- YYYY-MM-DD
+        deadline_source TEXT,               -- how the deadline was resolved (Q1)
         child_name TEXT,
         obligation_text TEXT,               -- short description of what's due
-        status TEXT DEFAULT 'pending',      -- 'pending' | 'sent' | 'skipped'
+        status TEXT DEFAULT 'pending',      -- 'pending' | 'sent' | 'skipped' | 'missed'
         sent_at INTEGER,
         created_at INTEGER DEFAULT (unixepoch() * 1000),
-        UNIQUE(notice_id, deadline_date)
+        UNIQUE(obligation_key, deadline_date)
       )
     `);
   } catch (_) {}
+  // Q2: migrate a pre-existing old-schema table (UNIQUE(notice_id, deadline_date),
+  // no obligation_key) to the new obligation-keyed schema.
+  migrateObligationNudgesSchema(db);
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_obligation_nudges_due ON obligation_nudges(deadline_date, status)'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_obligation_nudges_key ON obligation_nudges(obligation_key, deadline_date)'); } catch (_) {}
+
+  // Q5: backfill deadlines/keys on existing pending nudges using the canonical
+  // resolver, cancelling any whose corrected deadline is already past.
+  backfillObligationNudges(db);
 
   // O8: populate media_path/media_type on historical notices from their sources.
   backfillNoticeMedia();
@@ -1171,6 +1186,159 @@ function backfillNoticeMedia() {
         AND m.media_path IS NOT NULL AND notices.media_path IS NULL
     `);
   } catch (_) {}
+}
+
+/**
+ * Q2: migrate obligation_nudges from the old per-notice schema
+ * (UNIQUE(notice_id, deadline_date), no obligation_key) to the obligation-keyed
+ * schema. No-op when the table already has obligation_key (fresh DBs get the new
+ * schema straight from CREATE TABLE above). Existing rows get an obligation_key
+ * computed and duplicates collapse to the earliest row, whose notice_ids array
+ * absorbs the collapsed notice ids.
+ */
+function migrateObligationNudgesSchema(db) {
+  try {
+    const cols = db.prepare('PRAGMA table_info(obligation_nudges)').all();
+    if (!cols.length) return;                                  // table absent
+    if (cols.some(c => c.name === 'obligation_key')) return;   // already migrated
+
+    const { computeObligationKey } = require('./proactive');
+    const oldRows = db.prepare('SELECT * FROM obligation_nudges ORDER BY created_at ASC, id ASC').all();
+
+    const tx = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE obligation_nudges_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          notice_id INTEGER NOT NULL,
+          notice_ids TEXT,
+          obligation_key TEXT,
+          deadline_date TEXT NOT NULL,
+          deadline_source TEXT,
+          child_name TEXT,
+          obligation_text TEXT,
+          status TEXT DEFAULT 'pending',
+          sent_at INTEGER,
+          created_at INTEGER DEFAULT (unixepoch() * 1000),
+          UNIQUE(obligation_key, deadline_date)
+        )
+      `);
+
+      const insert = db.prepare(
+        `INSERT OR IGNORE INTO obligation_nudges_new
+           (notice_id, notice_ids, obligation_key, deadline_date, deadline_source,
+            child_name, obligation_text, status, sent_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      const findKept = db.prepare(
+        'SELECT id, notice_ids FROM obligation_nudges_new WHERE obligation_key = ? AND deadline_date = ?'
+      );
+      const appendIds = db.prepare('UPDATE obligation_nudges_new SET notice_ids=? WHERE id=?');
+
+      let collapsed = 0;
+      for (const r of oldRows) {
+        let threadKey = null;
+        try { threadKey = db.prepare('SELECT thread_key FROM notices WHERE id=?').get(r.notice_id)?.thread_key || null; } catch (_) {}
+        const key = computeObligationKey({
+          threadKey, childName: r.child_name, deadlineDate: r.deadline_date, obligationText: r.obligation_text,
+        });
+        const res = insert.run(
+          r.notice_id, JSON.stringify([r.notice_id]), key, r.deadline_date, null,
+          r.child_name || null, r.obligation_text || null, r.status || 'pending', r.sent_at || null, r.created_at
+        );
+        if (res.changes === 0) {
+          // Duplicate obligation+deadline — fold this notice into the kept row.
+          collapsed++;
+          const kept = findKept.get(key, r.deadline_date);
+          if (kept) {
+            let ids = [];
+            try { ids = JSON.parse(kept.notice_ids || '[]'); } catch (_) { ids = []; }
+            if (!ids.includes(r.notice_id)) { ids.push(r.notice_id); appendIds.run(JSON.stringify(ids), kept.id); }
+          }
+        }
+      }
+
+      db.exec('DROP TABLE obligation_nudges');
+      db.exec('ALTER TABLE obligation_nudges_new RENAME TO obligation_nudges');
+      console.log(`[DB] Migrated obligation_nudges to obligation-keyed schema (${oldRows.length} row(s), ${collapsed} collapsed)`);
+    });
+    tx();
+  } catch (e) {
+    console.warn('[DB] obligation_nudges schema migration failed (non-fatal):', e.message);
+  }
+}
+
+/**
+ * Q5: backfill existing pending obligation nudges. Recomputes each deadline from
+ * the notice's current state via the canonical resolver, fills any missing
+ * obligation_key, and cancels nudges whose corrected deadline has already passed.
+ * Reports the changes it makes before applying them. Idempotent — a fully
+ * up-to-date table produces no changes and stays quiet.
+ */
+function backfillObligationNudges(db) {
+  try {
+    const cols = db.prepare('PRAGMA table_info(obligation_nudges)').all();
+    if (!cols.some(c => c.name === 'obligation_key')) return;  // pre-migration
+
+    const rows = db.prepare("SELECT * FROM obligation_nudges WHERE status = 'pending'").all();
+    if (!rows.length) return;   // nothing to do — skip loading the resolver chain
+
+    const { resolveNoticeDate } = require('./date-parse');
+    const { computeObligationKey } = require('./proactive');
+    const { israelDateIso } = require('./timeUtils');
+    const today = israelDateIso();
+    const plan = [];   // collected before applying so we can report first
+    for (const r of rows) {
+      const notice = db.prepare('SELECT * FROM notices WHERE id = ?').get(r.notice_id);
+
+      // Recompute deadline from resolver (structured signals only; content
+      // fallback is the ingest path's job, not a backfill's).
+      let newDeadline = r.deadline_date, newSource = r.deadline_source;
+      if (notice) {
+        const resolved = resolveNoticeDate(notice);
+        if (resolved && resolved.iso && resolved.iso !== r.deadline_date) {
+          newDeadline = resolved.iso;
+          newSource = resolved.source;
+        }
+      }
+
+      // Fill obligation_key if absent.
+      let newKey = r.obligation_key;
+      if (!newKey) {
+        let threadKey = notice ? notice.thread_key : null;
+        newKey = computeObligationKey({
+          threadKey, childName: r.child_name, deadlineDate: newDeadline, obligationText: r.obligation_text,
+        });
+      }
+
+      const cancel = newDeadline < today;
+      if (newDeadline !== r.deadline_date || newKey !== r.obligation_key || cancel) {
+        plan.push({ id: r.id, newDeadline, newSource, newKey, cancel, from: r.deadline_date });
+      }
+    }
+
+    if (!plan.length) return;
+
+    console.log(`[DB] Q5 obligation-nudge backfill: ${plan.length} pending row(s) need changes:`);
+    for (const p of plan) {
+      const bits = [];
+      if (p.newDeadline !== p.from) bits.push(`deadline ${p.from}→${p.newDeadline}`);
+      if (p.cancel) bits.push('cancel (past)');
+      console.log(`   nudge #${p.id}: ${bits.join(', ') || 'key backfill'}`);
+    }
+
+    const upd = db.prepare(
+      "UPDATE obligation_nudges SET deadline_date=?, deadline_source=?, obligation_key=?, status=? WHERE id=?"
+    );
+    const tx = db.transaction(() => {
+      for (const p of plan) {
+        upd.run(p.newDeadline, p.newSource || null, p.newKey, p.cancel ? 'missed' : 'pending', p.id);
+      }
+    });
+    tx();
+    console.log(`[DB] Q5 obligation-nudge backfill applied (${plan.filter(p => p.cancel).length} cancelled).`);
+  } catch (e) {
+    console.warn('[DB] obligation_nudges backfill failed (non-fatal):', e.message);
+  }
 }
 
 /**

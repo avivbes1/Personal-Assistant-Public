@@ -647,15 +647,18 @@ async function _executeAction(action, senderName) {
                 });
               }
 
-              // G3: explicit deadline in the content → schedule one T-24h nudge.
-              const deadline = proactive.detectObligationDeadline(finalContent);
+              // G3/Q1: explicit deadline → schedule one T-24h nudge. Pass the
+              // full notice row so the deadline is resolved from stored weekday
+              // corrections (D1/J2) rather than re-parsed from the raw text.
+              let noticeRow = null;
+              try { noticeRow = getDB().prepare('SELECT * FROM notices WHERE id=?').get(noticeId); } catch (_) {}
+              const deadline = noticeRow ? proactive.detectObligationDeadline(noticeRow) : null;
               if (deadline) {
-                let childName = null;
-                try { childName = getDB().prepare('SELECT primary_child FROM notices WHERE id=?').get(noticeId)?.primary_child || null; } catch (_) {}
                 proactive.recordObligationNudge(noticeId, {
-                  deadlineDate:  deadline.deadlineDate,
+                  deadlineDate:   deadline.deadlineDate,
                   obligationText: deadline.obligationText,
-                  childName,
+                  deadlineSource: deadline.deadlineSource,
+                  childName:      noticeRow.primary_child || null,
                 });
               }
             } catch (proErr) {
