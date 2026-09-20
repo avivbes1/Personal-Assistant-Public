@@ -292,6 +292,68 @@ check('P-014', 'baileys shim fixture suite is present', () => {
   if (lidFixtures.length === 0) return 'no @lid fixture found in tests/shim/fixtures/ (P-014 mandates LID variants).';
 });
 
+// ── P-020 — notice_event Visibility Join ────────────────────────────────────
+check('P-020', 'getVisibleNoticeEvents exists in db.js', () => {
+  const src = readSrc('src/db.js');
+  if (src === null) return { skip: 'src/db.js not present' };
+  if (!src.includes('function getVisibleNoticeEvents')) {
+    return 'db.js must export getVisibleNoticeEvents() — notice_event is never queried without joining notices for visibility (P-020).';
+  }
+});
+
+check('P-020', 'notice_event consumers use getVisibleNoticeEvents', () => {
+  // Every file that queries notice_event should do so through getVisibleNoticeEvents,
+  // not raw SELECT ... FROM notice_event without a notices join.
+  const consumers = ['src/calendar-bridge.js', 'src/heartbeat/contextBuilder.js'];
+  for (const rel of consumers) {
+    const src = readSrc(rel);
+    if (src === null) continue;
+    if (!src.includes('getVisibleNoticeEvents')) {
+      return `${rel} must use getVisibleNoticeEvents() for notice_event queries (P-020).`;
+    }
+  }
+});
+
+// ── P-021 — Every Scheduled Job Writes a Heartbeat ──────────────────────────
+check('P-021', 'job_runs table and recordJobRun exist in db.js', () => {
+  const src = readSrc('src/db.js');
+  if (src === null) return { skip: 'src/db.js not present' };
+  if (!src.includes('job_runs')) {
+    return 'db.js must have a job_runs table for heartbeat tracking (P-021).';
+  }
+  if (!src.includes('recordJobHeartbeat')) {
+    return 'db.js must export recordJobHeartbeat() for job heartbeat writes (P-021).';
+  }
+});
+
+check('P-021', 'health-throughput.js checks job heartbeats', () => {
+  const src = readSrc('src/health-throughput.js');
+  if (src === null) return { skip: 'src/health-throughput.js not present' };
+  if (!src.includes('checkJobHeartbeats')) {
+    return 'health-throughput.js must have checkJobHeartbeats (P-021).';
+  }
+});
+
+// ── P-024 — Date Resolution Happens in One Place ────────────────────────────
+check('P-024', 'resolveNoticeDate is the canonical resolver in date-parse.js', () => {
+  const src = readSrc('src/date-parse.js');
+  if (src === null) return { skip: 'src/date-parse.js not present' };
+  if (!src.includes('function resolveNoticeDate')) {
+    return 'date-parse.js must export resolveNoticeDate() as the canonical date resolver (P-024).';
+  }
+});
+
+check('P-024', 'detectObligationDeadline accepts a notice row, not a string', () => {
+  const src = readSrc('src/proactive.js');
+  if (src === null) return { skip: 'src/proactive.js not present' };
+  if (/function detectObligationDeadline\(content\)/.test(src)) {
+    return 'detectObligationDeadline still takes a string param "content" — it must accept the full notice row (P-024).';
+  }
+  if (!src.includes('resolveNoticeDate')) {
+    return 'detectObligationDeadline must use resolveNoticeDate() (P-024).';
+  }
+});
+
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log(`\n─────────────────`);
   console.log(`  ${passed} passed, ${failed} failed, ${skipped} skipped`);

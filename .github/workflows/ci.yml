@@ -86,6 +86,8 @@ jobs:
         run: node tests/shim/run.js
       - name: Install PyMuPDF for form-fill tests
         run: pip3 install PyMuPDF
+      - name: Check architectural principles (R6)
+        run: node tests/check-principles.js
       - name: Run regression tests
         run: node tests/run-all.js
         env:

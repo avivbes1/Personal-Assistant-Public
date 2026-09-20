@@ -406,6 +406,37 @@ function checkUntriagedAge(db, nowMs) {
   return null;
 }
 
+/**
+ * R1: Check that the self-improving maintenance loop is alive. Parses
+ * last_maintenance from heartbeat-state.md and alerts when stale > 7 days.
+ * P-021: absence of a heartbeat is an alert.
+ */
+function checkSelfImprovingMaintenance(_db, nowMs) {
+  const MAINTENANCE_FILE = '/home/ubuntu/self-improving/heartbeat-state.md';
+  const MAX_AGE_MS = 7 * DAY_MS;
+  try {
+    const fs = require('fs');
+    const content = fs.readFileSync(MAINTENANCE_FILE, 'utf8');
+    const m = content.match(/last_maintenance:\s*(\d{4}-\d{2}-\d{2})/);
+    if (!m) {
+      emitMetric('self_improving_maintenance', false, { error: 'no last_maintenance found' });
+      return 'self_improving_maintenance: could not parse last_maintenance from heartbeat-state.md';
+    }
+    const lastMs = new Date(m[1] + 'T12:00:00+03:00').getTime();
+    const ageMs = nowMs - lastMs;
+    const ageDays = Math.round(ageMs / DAY_MS);
+    const ok = ageMs <= MAX_AGE_MS;
+    emitMetric('self_improving_maintenance', ok, { lastDate: m[1], ageDays });
+    if (!ok) {
+      return `self_improving_maintenance: last maintenance ${ageDays} days ago (${m[1]}), max 7 days`;
+    }
+    return null;
+  } catch (e) {
+    emitMetric('self_improving_maintenance', false, { error: e.message });
+    return null; // file missing is a soft failure, not a health alert
+  }
+}
+
 function runThroughputChecks(nowMs = Date.now()) {
   const db = getDB();
   const checks = [
@@ -419,6 +450,7 @@ function runThroughputChecks(nowMs = Date.now()) {
     checkStalePending,
     checkDeliveryRatio,
     checkUntriagedAge,
+    checkSelfImprovingMaintenance,
   ];
   const failures = [];
   for (const check of checks) {

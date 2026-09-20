@@ -373,3 +373,65 @@ grep -rl "@lid" tests/shim/fixtures/ | wc -l   # Expected: > 0
 # Check: the suite is wired into npm test
 test -f tests/regression/2026-08-30-baileys-shim.js && echo "bridged into npm test"
 ```
+
+---
+
+## P-016 — weekday_he Is Advisory Input, the Deterministic Corrector Decides
+_Added: Phase J (2026-09-12). Enforcement: manual._
+
+**Principle:** When a notice's Hebrew weekday name contradicts its digit date, `nearestWeekdayIso()` snaps the date to the nearest matching weekday. The weekday is advisory input — it tells the corrector which day of the week is intended, but the corrector decides the actual date. No component should treat weekday_he as authoritative on its own.
+
+**Verification:**
+```bash
+grep -n "nearestWeekdayIso" src/date-parse.js src/agent.js
+```
+
+---
+
+## P-019 — Intent-Gated Retrieval
+_Added: Phase J (2026-09-12). Enforcement: manual._
+
+**Principle:** A fallback is conditioned on the caller's declared intent, not on the first attempt returning empty. An empty result is a valid answer to a bounded question. Digest mode receives an empty window as a valid answer; question mode cascades.
+
+**Verification:**
+```bash
+grep -n "mode.*digest\|mode.*question" src/query.js src/agent.js
+```
+
+---
+
+## P-020 — notice_event Visibility Join
+_Added: Phase J (2026-09-12). Enforcement: automatic._
+
+**Principle:** `notice_event` is never queried without joining `notices` for visibility (dismissed, query_visible). Use `getVisibleNoticeEvents()`.
+
+**Verification:**
+```bash
+grep -n "getVisibleNoticeEvents" src/db.js src/query.js
+```
+
+---
+
+## P-021 — Every Scheduled Job Writes a Heartbeat
+_Added: Phase K (2026-09-12). Enforcement: automatic._
+
+**Principle:** Every scheduled job writes a heartbeat on success. Absence of a heartbeat is an alert. "Nothing to do" ≠ "ran successfully." The health-throughput checker alerts when a job's heartbeat is stale or consecutive empty runs exceed the threshold.
+
+**Verification:**
+```bash
+grep -n "recordJobRun\|job_runs" src/db.js src/health-throughput.js
+```
+
+---
+
+## P-024 — Date Resolution Happens in One Place
+_Added: Phase Q (2026-09-20). Enforcement: automatic._
+
+**Principle:** No component re-parses a date that has already been resolved and stored. `resolveNoticeDate()` in `date-parse.js` is the canonical resolver. It reads weekday-corrected dates from notice_event and notice rows. Every downstream consumer (obligation nudges, calendar bridge, query layer) uses this instead of re-parsing content.
+
+**Verification:**
+```bash
+grep -n "resolveNoticeDate" src/date-parse.js src/proactive.js
+# detectObligationDeadline must accept a notice row, not a string
+grep -n "function detectObligationDeadline" src/proactive.js
+```

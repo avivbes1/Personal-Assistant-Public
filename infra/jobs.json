@@ -40,6 +40,14 @@
       "expectedIntervalMs": 1800000,
       "heartbeatName": null,
       "owner": "OpenClaw cron"
+    },
+    {
+      "name": "Self-improving maintenance",
+      "schedule": "weekly (convention, via heartbeat)",
+      "expectedIntervalMs": 604800000,
+      "heartbeatName": "self_improving_maintenance",
+      "owner": "health-throughput.js (file-based check)",
+      "notes": "R1: checks last_maintenance in heartbeat-state.md"
     }
   ]
 }
