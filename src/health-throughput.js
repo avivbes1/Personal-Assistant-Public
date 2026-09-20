@@ -437,6 +437,27 @@ function checkSelfImprovingMaintenance(_db, nowMs) {
   }
 }
 
+/**
+ * S3: Check for correction capture silence. If incidents occurred in the last
+ * 7 days but zero corrections were logged, the learning loop may be dead.
+ * Only alerts during business hours.
+ */
+function checkCorrectionCapture(_db, nowMs) {
+  const hour = getIsraelHour(nowMs);
+  if (hour < 7 || hour >= 23) return null;
+  const weekAgo = nowMs - 7 * DAY_MS;
+  try {
+    const db = getDB();
+    const corrections = db.prepare('SELECT COUNT(*) as cnt FROM corrections WHERE created_at > ?').get(weekAgo)?.cnt || 0;
+    const incidents = (db.prepare('SELECT COUNT(*) as cnt FROM grounding_misses WHERE created_at > ?').get(weekAgo)?.cnt || 0)
+      + (db.prepare('SELECT COUNT(*) as cnt FROM blocked_actions WHERE created_at > ?').get(weekAgo)?.cnt || 0);
+    const ok = !(incidents > 0 && corrections === 0);
+    emitMetric('correction_capture', ok, { corrections, incidents });
+    if (!ok) return `correction_capture: ${incidents} incident(s) this week but 0 corrections — learning loop may be dead`;
+    return null;
+  } catch (_) { return null; }
+}
+
 function runThroughputChecks(nowMs = Date.now()) {
   const db = getDB();
   const checks = [
@@ -451,6 +472,7 @@ function runThroughputChecks(nowMs = Date.now()) {
     checkDeliveryRatio,
     checkUntriagedAge,
     checkSelfImprovingMaintenance,
+    checkCorrectionCapture,
   ];
   const failures = [];
   for (const check of checks) {

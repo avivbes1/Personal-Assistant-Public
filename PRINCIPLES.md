@@ -33,6 +33,7 @@ grep -r "posted_to_master" . --include="*.js" \
 ---
 
 ## P-002 — No Timeout as Normal Operation
+_Enforcement: manual._
 
 **Principle:** A cron job or scheduled task that consistently times out is not "working but slow" — it is broken. A timeout is a failure, not an acceptable outcome.
 
@@ -47,6 +48,7 @@ grep -r "posted_to_master" . --include="*.js" \
 ---
 
 ## P-003 — Watchdog Must Be Independent of What It Watches
+_Enforcement: manual._
 
 **Principle:** A monitoring/alerting system cannot use the same infrastructure as the system it monitors.
 
@@ -60,6 +62,7 @@ grep -r "posted_to_master" . --include="*.js" \
 ---
 
 ## P-004 — Notices Are Immutable Once Sent
+_Enforcement: manual._
 
 **Principle:** A notice that has been sent to the master group (`posted_to_master=1`) must not be modified, merged, deleted, or resurfaced by any pipeline.
 
@@ -74,6 +77,7 @@ grep -r "posted_to_master" . --include="*.js" \
 ---
 
 ## P-005 — Dismissal Is Respected Immediately
+_Enforcement: manual._
 
 **Principle:** When a user says "stop sending about X" in the master group, all pending notices matching that dismissal must be suppressed in the same transaction — not on the next triage run.
 
@@ -88,6 +92,7 @@ grep -r "posted_to_master" . --include="*.js" \
 ---
 
 ## P-006 — Cross-Day Dedup for Notices
+_Enforcement: manual._
 
 **Principle:** The same real-world event discussed across multiple days must produce at most one sent message per topic, regardless of which day's messages generated the notice.
 
@@ -129,6 +134,7 @@ grep -n "normalizeDecisions\|markNoticesTriaged\|groupByMergeGroup" src/triage-e
 ---
 
 ## P-008 — Every Message Must Reach a Terminal Pipeline State
+_Enforcement: manual._
 
 **Principle:** Every incoming WhatsApp message that enters the notice extraction pipeline must transition through a defined state machine and reach a terminal state (`NOT_ACTIONABLE`, `NOTICE_CREATED`, or `FAILED`) within 30 minutes. Messages stuck in intermediate states are system failures. Silent success (returning without a state transition) is forbidden.
 
@@ -229,6 +235,7 @@ When a production incident, architect consultation, or expert review concludes w
 ---
 
 ## P-010 — Single Owner Per Group (Conversation Continuity)
+_Enforcement: manual._
 
 **Principle:** Each WhatsApp group must have exactly one owning component responsible for message handling. Dual-consumer architectures (where two components both partially handle the same group) create gaps where neither handles a message.
 
@@ -435,3 +442,44 @@ grep -n "resolveNoticeDate" src/date-parse.js src/proactive.js
 # detectObligationDeadline must accept a notice row, not a string
 grep -n "function detectObligationDeadline" src/proactive.js
 ```
+
+---
+
+## P-017 — All Family-Knowledge Retrieval Through query.js
+_Added: Phase J (2026-09-12). Enforcement: manual._
+
+**Principle:** Every consumer that needs family schedule, notice, or event data retrieves it through `query.js` (or the `/api/context` HTTP endpoint that wraps it). No consumer directly queries `notices`, `notice_event`, or `calendar_intents` tables for user-facing answers.
+
+**Source incident:** ISSUE-026 — the digest queried notices directly, bypassing the retrieval layer that handles visibility, dismissal, and deduplication. The query layer existed but had no callers.
+
+---
+
+## P-018 — A Module With No Importer Is a Bug
+_Added: Phase M (2026-09-16). Enforcement: automatic._
+
+**Principle:** Every `.js` file under `src/` must be `require()`d by at least one other `src/` file, or be an allowlisted entry point in `scripts/check-unused-modules.js`. An unimported module is dead code waiting to become a missed-capability incident.
+
+**Source incident:** `schedule-classifier.js` and `notices/repository.js` sat unimported for weeks; `form-filler.py` was written and unused for 85 minutes. Each became an incident when the capability they provided was needed and nothing called them.
+
+**Verification:**
+```bash
+node scripts/check-unused-modules.js
+```
+
+---
+
+## P-022 — Master-Group Parity
+_Added: Phase L (2026-09-15). Enforcement: manual._
+
+**Principle:** Any context capability (media archiving, message buffering, media parsing) built for monitored groups must also apply to the master group, or have a written justification for why not. The master group is the bot's primary output channel and must not be a second-class citizen for context.
+
+**Source incident:** Phase L — `archiveMedia`, `message_buffer`, and `media-parser` all existed but none were wired to the master group. Image-only messages in the master group produced no durable trace in the session transcript.
+
+---
+
+## P-023 — No Text Reaches a Chat Without sanitizeOutbound
+_Added: Phase P (2026-09-17). Enforcement: manual._
+
+**Principle:** Every text string that reaches a WhatsApp chat (master group or DM) passes through `sanitizeOutbound()` or equivalent validation. Raw LLM output, XML tags, tool call fragments, error traces, and `undefined`/`null` must never be delivered to the user.
+
+**Source incident:** Multiple instances of `<exec>`, `<tool`, raw JSON, and `TypeError: undefined` appearing in master group messages when the output guard was bypassed.

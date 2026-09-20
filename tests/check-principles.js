@@ -354,6 +354,35 @@ check('P-024', 'detectObligationDeadline accepts a notice row, not a string', ()
   }
 });
 
+// ── P-018 — A Module With No Importer Is a Bug ─────────────────────────────
+check('P-018', 'check-unused-modules.js exists and passes', () => {
+  const checker = path.join(ROOT, 'scripts/check-unused-modules.js');
+  if (!fs.existsSync(checker)) return { skip: 'scripts/check-unused-modules.js not present' };
+  const { run: runOrphan } = require(checker);
+  const result = runOrphan();
+  if (!result.pass) return result.message;
+});
+
+// ── META-CHECK — Every principle has a check or enforcement:manual ──────────
+check('META', 'every principle in PRINCIPLES.md is covered or explicitly manual', () => {
+  const principles = readSrc('PRINCIPLES.md');
+  if (principles === null) return { skip: 'PRINCIPLES.md not present' };
+  const headings = [...principles.matchAll(/^## (P-\d{3})/gm)].map(m => m[1]);
+  const thisFile = fs.readFileSync(__filename, 'utf8');
+  const checked = new Set([...thisFile.matchAll(/check\('(P-\d{3})'/g)].map(m => m[1]));
+  const manualMarked = new Set();
+  for (const h of headings) {
+    const idx = principles.indexOf('## ' + h);
+    const nextIdx = principles.indexOf('\n## ', idx + 1);
+    const section = principles.substring(idx, nextIdx > 0 ? nextIdx : undefined);
+    if (/enforcement:\s*manual/i.test(section)) manualMarked.add(h);
+  }
+  const uncovered = headings.filter(h => !checked.has(h) && !manualMarked.has(h));
+  if (uncovered.length > 0) {
+    return uncovered.length + ' principle(s) have no check and no enforcement:manual marker: ' + uncovered.join(', ');
+  }
+});
+
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log(`\n─────────────────`);
   console.log(`  ${passed} passed, ${failed} failed, ${skipped} skipped`);

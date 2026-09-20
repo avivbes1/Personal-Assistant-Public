@@ -816,6 +816,31 @@ function initDB() {
   // resolver, cancelling any whose corrected deadline is already past.
   backfillObligationNudges(db);
 
+  // S1: corrections — self-improvement lessons captured as a tool call instead
+  // of by convention in /home/ubuntu/self-improving/corrections.md. Each row is
+  // one correction; when a pattern accumulates 3+ entries it's promotion-due
+  // (should be lifted into memory.md / PRINCIPLES.md). The markdown file is now
+  // a regenerated view of this table, not the source of truth.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS corrections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER DEFAULT (unixepoch() * 1000),
+        context TEXT NOT NULL,
+        correction TEXT NOT NULL,
+        lesson TEXT,
+        pattern TEXT,                -- capability-exists-unused, silent-absence, etc.
+        status TEXT DEFAULT 'open',  -- open | promoted | archived
+        source_message_id TEXT,
+        promoted_at INTEGER,
+        promoted_to TEXT             -- e.g. 'memory.md' or 'PRINCIPLES.md'
+      )
+    `);
+  } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_corrections_pattern ON corrections(pattern, status)'); } catch (_) {}
+  // Idempotent one-time import of the legacy markdown log into the table.
+  migrateCorrectionsFromMarkdown(db);
+
   // O8: populate media_path/media_type on historical notices from their sources.
   backfillNoticeMedia();
 
@@ -1339,6 +1364,126 @@ function backfillObligationNudges(db) {
   } catch (e) {
     console.warn('[DB] obligation_nudges backfill failed (non-fatal):', e.message);
   }
+}
+
+// ── S1: corrections (self-improvement lessons) ────────────────────────────────
+
+const CORRECTIONS_MD_PATH = '/home/ubuntu/self-improving/corrections.md';
+
+/**
+ * S1: one-time, idempotent import of the legacy markdown corrections log into the
+ * corrections table. Parses each `## ...` section, extracts the YYYY-MM-DD date
+ * from the header (headers may be prefixed, e.g. `## ISSUE-2026-07-22 — ...`),
+ * and inserts the CONTEXT/CORRECTION/LESSON/PATTERN/STATUS fields. Existing rows
+ * are matched by context text so re-runs (and mixed old+new state) never
+ * duplicate. created_at is derived from the header date so ordering survives.
+ */
+function migrateCorrectionsFromMarkdown(db) {
+  try {
+    const fs = require('fs');
+    if (!fs.existsSync(CORRECTIONS_MD_PATH)) return;
+    const raw = fs.readFileSync(CORRECTIONS_MD_PATH, 'utf8');
+
+    // Split into `## ` sections, keeping the header with its body.
+    const sections = raw.split(/^## /m).slice(1);
+    if (!sections.length) return;
+
+    const exists = db.prepare('SELECT 1 FROM corrections WHERE context = ? LIMIT 1');
+    const insert = db.prepare(
+      `INSERT INTO corrections (created_at, context, correction, lesson, pattern, status)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+
+    const field = (block, key) => {
+      const m = block.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
+      return m ? m[1].trim() : null;
+    };
+
+    let imported = 0;
+    const tx = db.transaction(() => {
+      for (const sec of sections) {
+        const header = sec.split('\n', 1)[0] || '';
+        const dateMatch = header.match(/(\d{4}-\d{2}-\d{2})/);
+        const context = field(sec, 'CONTEXT');
+        const correction = field(sec, 'CORRECTION');
+        // Both are NOT NULL in the schema; skip malformed sections.
+        if (!context || !correction) continue;
+        if (exists.get(context)) continue;
+
+        const createdAt = dateMatch ? Date.parse(`${dateMatch[1]}T00:00:00Z`) : null;
+        insert.run(
+          createdAt || (Date.now()),
+          context,
+          correction,
+          field(sec, 'LESSON'),
+          field(sec, 'PATTERN'),
+          field(sec, 'STATUS') || 'open'
+        );
+        imported++;
+      }
+    });
+    tx();
+    if (imported) console.log(`[DB] S1 imported ${imported} correction(s) from markdown`);
+  } catch (e) {
+    console.warn('[DB] corrections markdown import failed (non-fatal):', e.message);
+  }
+}
+
+/**
+ * S1: insert a correction. Returns { id, total_for_pattern } where the count is
+ * the number of rows sharing this pattern (used to decide promotion-due at 3+).
+ */
+function saveCorrection({ context, correction, lesson, pattern, source_message_id }) {
+  const d = getDB();
+  const info = d.prepare(
+    `INSERT INTO corrections (context, correction, lesson, pattern, source_message_id)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(context, correction, lesson || null, pattern || null, source_message_id || null);
+  let total_for_pattern = 0;
+  if (pattern) {
+    total_for_pattern = d.prepare(
+      "SELECT COUNT(*) AS n FROM corrections WHERE pattern = ? AND status != 'archived'"
+    ).get(pattern).n;
+  }
+  return { id: info.lastInsertRowid, total_for_pattern };
+}
+
+/**
+ * S1: list corrections newest-first with optional since/pattern/status filters.
+ */
+function getCorrections({ since, pattern, status } = {}) {
+  const d = getDB();
+  const clauses = [];
+  const params = [];
+  if (since != null) { clauses.push('created_at >= ?'); params.push(Number(since)); }
+  if (pattern) { clauses.push('pattern = ?'); params.push(pattern); }
+  if (status) { clauses.push('status = ?'); params.push(status); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  return d.prepare(`SELECT * FROM corrections ${where} ORDER BY created_at DESC, id DESC`).all(...params);
+}
+
+/**
+ * S1: regenerate the markdown log from the table (a view, not the source of
+ * truth). Returns { ok, count, path }.
+ */
+function regenerateCorrectionsMarkdown() {
+  const fs = require('fs');
+  const rows = getCorrections();
+  const header = '# Corrections Log — regenerated from DB (newest first)\n'
+    + '# Format: CONTEXT / CORRECTION / LESSON / PATTERN / STATUS\n';
+  const body = rows.map(r => {
+    const date = new Date(r.created_at).toISOString().slice(0, 10);
+    const firstLine = String(r.correction).split('\n')[0];
+    return `## ${date} — ${firstLine}\n`
+      + `CONTEXT: ${r.context}\n`
+      + `CORRECTION: ${r.correction}\n`
+      + `LESSON: ${r.lesson || ''}\n`
+      + `PATTERN: ${r.pattern || ''}\n`
+      + `STATUS: ${r.status || ''}`;
+  }).join('\n\n');
+  const out = `${header}\n${body}${body ? '\n' : ''}`;
+  fs.writeFileSync(CORRECTIONS_MD_PATH, out);
+  return { ok: true, count: rows.length, path: CORRECTIONS_MD_PATH };
 }
 
 /**
@@ -2621,4 +2766,8 @@ module.exports = {
   // LID → phone mapping cache (H5)
   getLidMapping,
   saveLidMapping,
+  // S1: corrections (self-improvement lessons)
+  saveCorrection,
+  getCorrections,
+  regenerateCorrectionsMarkdown,
 };

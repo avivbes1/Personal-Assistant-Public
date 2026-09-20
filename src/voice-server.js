@@ -565,6 +565,73 @@ function createServer() {
       return;
     }
 
+    // ── S1: corrections (self-improvement capture) ───────────────────────────
+    // POST /correction { context, correction, lesson, pattern, source_message_id }
+    // Records a correction and flags promotion_due when the pattern hits 3+.
+    if (req.method === 'POST' && req.url === '/correction') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { context, correction, lesson, pattern, source_message_id } = JSON.parse(body || '{}');
+          if (!context || !correction) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ ok: false, error: 'Missing required fields: context, correction' }));
+          }
+          const { saveCorrection } = require('./db');
+          const { id, total_for_pattern } = saveCorrection({ context, correction, lesson, pattern, source_message_id });
+          const resp = { ok: true, id, total_for_pattern };
+          if (total_for_pattern >= 3) resp.promotion_due = true;
+          console.log(`[VoiceServer] Correction saved (id=${id}, pattern=${pattern || '-'}, total=${total_for_pattern})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(resp));
+        } catch (e) {
+          console.error('[VoiceServer] /correction error:', e.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: e.message }));
+        }
+      });
+      return;
+    }
+
+    // GET /corrections?since=<epoch_ms>&pattern=<optional>&status=<optional>
+    if (req.method === 'GET' && req.url.startsWith('/corrections/regenerate')) {
+      try {
+        const { regenerateCorrectionsMarkdown } = require('./db');
+        const { count, path: outPath } = regenerateCorrectionsMarkdown();
+        console.log(`[VoiceServer] Regenerated corrections.md (${count} entries)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, count, path: outPath }));
+      } catch (e) {
+        console.error('[VoiceServer] /corrections/regenerate error:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && req.url.startsWith('/corrections')) {
+      try {
+        const urlObj = new URL(req.url, 'http://localhost');
+        const since = urlObj.searchParams.get('since');
+        const pattern = urlObj.searchParams.get('pattern');
+        const status = urlObj.searchParams.get('status');
+        const { getCorrections } = require('./db');
+        const corrections = getCorrections({
+          since: since != null ? Number(since) : undefined,
+          pattern: pattern || undefined,
+          status: status || undefined,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, count: corrections.length, corrections }));
+      } catch (e) {
+        console.error('[VoiceServer] /corrections error:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
     // B7: Group monitoring state endpoint — for OpenClaw/agents to use instead of raw DB writes
     if (req.method === 'POST' && req.url === '/api/groups/monitoring') {
       let body = '';

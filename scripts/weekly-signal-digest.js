@@ -46,6 +46,14 @@ function run() {
   const nudgesSent = safeCount(db,
     "SELECT COUNT(*) as cnt FROM obligation_nudges WHERE status='sent' AND sent_at > ?", [weekAgo]);
 
+  const corrections = safeCount(db,
+    'SELECT COUNT(*) as cnt FROM corrections WHERE created_at > ?', [weekAgo]);
+
+  const incidents = safeCount(db,
+    'SELECT COUNT(*) as cnt FROM grounding_misses WHERE created_at > ?', [weekAgo])
+    + safeCount(db, 'SELECT COUNT(*) as cnt FROM blocked_actions WHERE created_at > ?', [weekAgo])
+    + safeCount(db, "SELECT COUNT(*) as cnt FROM notice_feedback WHERE feedback='negative' AND created_at > ?", [weekAgo]);
+
   const totalNotices = safeCount(db,
     'SELECT COUNT(*) as cnt FROM notices WHERE created_at > ?', [weekAgo]);
 
@@ -74,11 +82,13 @@ function run() {
     `❌ grounding misses: ${groundingMisses}`,
     `🔍 query misses: ${queryMisses}`,
     `👎 negative feedback: ${negativeFeedback}`,
+    `📝 corrections logged: ${corrections}`,
     `🧠 self-improving maintenance: ${maintenanceAge}`,
   ];
 
   // Flag anything that needs attention
   const flags = [];
+  if (incidents > 0 && corrections === 0) flags.push(`⚠️ CAPTURE SILENCE: ${incidents} incident(s) this week but 0 corrections logged — learning loop may be dead`);
   if (groundingMisses > 0) flags.push(`${groundingMisses} grounding miss(es) — review source claims`);
   if (nudgesMissed > 0) flags.push(`${nudgesMissed} nudge(s) missed — sweep may not be running reliably`);
   if (negativeFeedback > 0) flags.push(`${negativeFeedback} negative reaction(s) — review delivery quality`);
