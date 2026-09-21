@@ -314,6 +314,34 @@ function createServer() {
       }
     }
 
+    // Instinct Bridge health: outbox counts, oldest pending age, last heartbeat.
+    if (req.method === 'GET' && req.url === '/health/bridge') {
+      try {
+        const { getStats } = require('./bridge/outboxRepository');
+        const { getJobHeartbeats } = require('./db');
+        const bridgeConfig = require('./bridge/config');
+        const stats = getStats();
+        const heartbeat = getJobHeartbeats().find(h => h.job_name === 'instinct_bridge_export') || null;
+        const payload = {
+          enabled: bridgeConfig.enabled,
+          valid: bridgeConfig.valid,
+          stream: bridgeConfig.stream,
+          pending: stats.pending,
+          claimed: stats.claimed,
+          delivered: stats.delivered,
+          dead: stats.dead,
+          total: stats.total,
+          oldest_pending_age_ms: stats.oldest_pending_age_ms,
+          last_heartbeat: heartbeat,
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(payload));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: e.message }));
+      }
+    }
+
     // ISSUE-019: Config propose endpoint for Lipa autonomous fixes
     if (req.method === 'POST' && req.url === '/config/propose') {
       let body = '';

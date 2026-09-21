@@ -483,3 +483,23 @@ _Added: Phase P (2026-09-17). Enforcement: manual._
 **Principle:** Every text string that reaches a WhatsApp chat (master group or DM) passes through `sanitizeOutbound()` or equivalent validation. Raw LLM output, XML tags, tool call fragments, error traces, and `undefined`/`null` must never be delivered to the user.
 
 **Source incident:** Multiple instances of `<exec>`, `<tool`, raw JSON, and `TypeError: undefined` appearing in master group messages when the output guard was bypassed.
+
+---
+
+## P-026 — Bridge Never Breaks Core
+_Added: Instinct Bridge M1 (2026-09-21). Enforcement: automatic._
+
+**Principle:** The Instinct Bridge outbox/export is purely additive. A failure in bridge code must never prevent message saving, notice creation, or any existing pipeline operation. Every bridge hook invoked from a core write path (`saveMessage`, `saveNotice`, `updateMessageBodyByStanza`) is wrapped in try/catch with silent logging, and no-ops entirely when the bridge is disabled.
+
+**Rule:**
+- Bridge enqueue helpers (`_bridgeEnqueueMessageById`, `_bridgeEnqueueNotice`) are wrapped in try/catch; on any error they log `[Bridge] ... (non-fatal)` and return without propagating.
+- Bridge modules are required lazily inside those helpers so a broken bridge file cannot break `db.js` at load time.
+- The exporter cycle is a single bounded unit of work (no long-running loop) and no-ops when `INSTINCT_BRIDGE_ENABLED` is off.
+- The export allowlist defaults closed: an empty allowlist exports nothing.
+
+**Verification:**
+```bash
+# Check: both enqueue hooks exist and each is guarded by try/catch
+grep -n "_bridgeEnqueueMessageById\|_bridgeEnqueueNotice" src/db.js
+# Expected: helper definitions + call sites in saveMessage/saveNotice/updateMessageBodyByStanza
+```

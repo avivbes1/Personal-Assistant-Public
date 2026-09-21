@@ -844,6 +844,63 @@ function initDB() {
   // O8: populate media_path/media_type on historical notices from their sources.
   backfillNoticeMedia();
 
+  // ── Instinct Bridge (one-way event export) ──────────────────────────────────
+  // Purely additive tables (P-026). bridge_outbox is the durable delivery queue;
+  // bridge_notice_sources links a notice to the message(s) that produced it;
+  // bridge_inbox is a placeholder for a future reply/command channel.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_outbox (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id            TEXT UNIQUE NOT NULL,
+        event_type          TEXT NOT NULL,
+        stream              TEXT NOT NULL,
+        payload_json        TEXT NOT NULL,
+        payload_hash        TEXT,
+        status              TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | delivered | dead
+        attempts            INTEGER NOT NULL DEFAULT 0,
+        available_at        INTEGER NOT NULL,
+        claimed_at          INTEGER,
+        delivered_at        INTEGER,
+        provider_message_id TEXT,
+        last_error          TEXT,
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL
+      )
+    `);
+  } catch (_) {}
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_notice_sources (
+        notice_id  INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (notice_id, message_id)
+      )
+    `);
+  } catch (_) {}
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_inbox (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        inbound_message_id    TEXT UNIQUE NOT NULL,
+        in_reply_to_delivery_id TEXT,
+        command_type          TEXT,
+        payload_json          TEXT,
+        status                TEXT NOT NULL DEFAULT 'received',  -- received | reviewed | executed | rejected
+        reviewed_at           INTEGER,
+        executed_at           INTEGER,
+        last_error            TEXT,
+        created_at            INTEGER NOT NULL,
+        updated_at            INTEGER NOT NULL
+      )
+    `);
+  } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_outbox_delivery ON bridge_outbox(status, available_at, created_at)'); } catch (_) {}
+  // Additive columns on notices for bridge export versioning.
+  try { db.exec('ALTER TABLE notices ADD COLUMN export_version INTEGER NOT NULL DEFAULT 1'); } catch (_) {}
+  try { db.exec('ALTER TABLE notices ADD COLUMN updated_at INTEGER'); } catch (_) {}
+
   console.log('[DB] Initialized at', DB_PATH);
   return db;
 }
@@ -953,13 +1010,103 @@ function checkEnumIntegrity() {
   return violations;
 }
 
+// ── Instinct Bridge hooks (P-026: additive, must never break core) ───────────
+// Every hook below is wrapped in try/catch and only runs when the bridge is
+// enabled and the group is allowlisted. A failure here logs and returns —
+// message/notice persistence is never affected. Bridge modules are required
+// lazily so a broken bridge file can't break db.js at load time.
+
+/** Enqueue a message.created / message.updated event for a stored message row. */
+function _bridgeEnqueueMessageById(messageId, eventType) {
+  try {
+    const bridgeConfig = require('./bridge/config');
+    if (!bridgeConfig.enabled || !messageId) return;
+    const row = getDB().prepare(
+      'SELECT id, group_id, sender, body, timestamp, stanza_id FROM messages WHERE id = ?'
+    ).get(messageId);
+    if (!row) return;
+    const policy = require('./bridge/policy');
+    if (!policy.isGroupAllowed(row.group_id)) return;
+    const { buildMessageRecord, computePayloadHash } = require('./bridge/envelope');
+    const grp = getDB().prepare('SELECT name FROM groups WHERE id = ?').get(row.group_id);
+    const record = buildMessageRecord(row, { jid: row.group_id, name: grp ? grp.name : null });
+    // message.created is once-per-message; message.updated keys on the body hash
+    // so each distinct edit is a distinct event.
+    const suffix = eventType === 'message.updated'
+      ? computePayloadHash(row.body || '').slice(0, 12)
+      : 'v1';
+    const eventId = `${eventType}:${row.id}:${suffix}`;
+    require('./bridge/outboxRepository').enqueueEvent(eventId, eventType, bridgeConfig.stream, record);
+  } catch (e) {
+    console.warn('[Bridge] message enqueue failed (non-fatal):', e.message);
+  }
+}
+
+/** Enqueue a notice.upserted event, recording its source-message linkage. */
+function _bridgeEnqueueNotice(noticeId) {
+  try {
+    const bridgeConfig = require('./bridge/config');
+    if (!bridgeConfig.enabled || !noticeId) return;
+    const notice = getDB().prepare('SELECT * FROM notices WHERE id = ?').get(noticeId);
+    if (!notice) return;
+    const policy = require('./bridge/policy');
+    if (!policy.filterExportableNotice(notice)) return;
+    // Resolve the group JID from its name so the allowlist applies to notices too.
+    const grp = getDB().prepare('SELECT id FROM groups WHERE name = ? LIMIT 1').get(notice.group_name);
+    const jid = grp ? grp.id : null;
+    if (!jid || !policy.isGroupAllowed(jid)) return;
+
+    // Best-effort source-message linkage: the message(s) at the same group +
+    // timestamp that produced this notice (same pair saveNotice's media lookup uses).
+    const sourceIds = _bridgeLinkNoticeSources(notice);
+
+    const { buildNoticeRecord } = require('./bridge/envelope');
+    const record = buildNoticeRecord(notice, sourceIds);
+    const eventId = `notice.upserted:${notice.id}:v${notice.export_version || 1}`;
+    require('./bridge/outboxRepository').enqueueEvent(eventId, 'notice.upserted', bridgeConfig.stream, record);
+  } catch (e) {
+    console.warn('[Bridge] notice enqueue failed (non-fatal):', e.message);
+  }
+}
+
+/**
+ * Record (and return) the message ids that produced a notice, into
+ * bridge_notice_sources. Returns [] when none can be resolved.
+ */
+function _bridgeLinkNoticeSources(notice) {
+  const ids = [];
+  try {
+    const srcTs = notice.message_timestamp || notice.source_timestamp;
+    if (!srcTs) return ids;
+    const rows = getDB().prepare(
+      `SELECT m.id
+         FROM messages m JOIN groups g ON g.id = m.group_id
+        WHERE g.name = ? AND m.timestamp = ?
+        ORDER BY m.id ASC`
+    ).all(notice.group_name, srcTs);
+    const link = getDB().prepare(
+      'INSERT OR IGNORE INTO bridge_notice_sources (notice_id, message_id, created_at) VALUES (?, ?, ?)'
+    );
+    const now = Date.now();
+    for (const r of rows) {
+      link.run(notice.id, r.id, now);
+      ids.push(r.id);
+    }
+  } catch (_) { /* best-effort */ }
+  return ids;
+}
+
 function saveMessage({ group_id, sender, body, timestamp, stanza_id }) {
   const ts = timestamp || Date.now();
   const stmt = getDB().prepare(
     'INSERT OR IGNORE INTO messages (group_id, sender, body, timestamp, processed, stanza_id) VALUES (?, ?, ?, ?, 0, ?)'
   );
   const result = stmt.run(group_id, sender, body, ts, stanza_id || null);
-  if (result.changes > 0) return result.lastInsertRowid;
+  if (result.changes > 0) {
+    const newId = result.lastInsertRowid;
+    _bridgeEnqueueMessageById(newId, 'message.created');
+    return newId;
+  }
   // Already existed — return the existing row id
   const existing = getDB().prepare(
     'SELECT id, stanza_id FROM messages WHERE group_id=? AND timestamp=? AND body=? LIMIT 1'
@@ -1052,6 +1199,9 @@ function updateMessageBodyByStanza(stanzaId, groupId, newBody) {
   getDB().prepare(
     "UPDATE messages SET body=?, body_history=?, processed=0, pipeline_state='RECEIVED', updated_at=? WHERE id=?"
   ).run(newBody, JSON.stringify(history), Date.now(), msg.id);
+
+  // Instinct Bridge: enqueue message.updated (best-effort, never blocks the edit).
+  _bridgeEnqueueMessageById(msg.id, 'message.updated');
 
   return msg.id;
 }
@@ -1192,6 +1342,9 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
       }
     }
   } catch (_) {}
+
+  // Instinct Bridge: enqueue notice.upserted (best-effort, never blocks saving).
+  _bridgeEnqueueNotice(result.lastInsertRowid);
 
   return result.lastInsertRowid;
 }

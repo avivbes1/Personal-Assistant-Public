@@ -13,6 +13,7 @@ const fs = require('fs');
 const dirs = [
   { dir: path.join(__dirname, 'regression'), match: f => f.endsWith('.js') },
   { dir: path.join(__dirname, 'unit'),       match: f => f.endsWith('.test.js') },
+  { dir: path.join(__dirname, 'bridge'),      match: f => f.endsWith('.test.js') },
 ];
 const testFiles = dirs.flatMap(({ dir, match }) =>
   fs.existsSync(dir)

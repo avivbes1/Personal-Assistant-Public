@@ -495,6 +495,19 @@ function initScheduler(sendFn, sendWithIdFn, sendWithMentionsFn) {
     }
   }, { timezone: config.TIMEZONE });
 
+  // ── Instinct Bridge exporter ────────────────────────────────────────────────
+  // Every minute, drain the bridge outbox. No-op when the bridge is disabled
+  // (INSTINCT_BRIDGE_ENABLED=0). Required lazily inside the callback so a broken
+  // bridge module can never break scheduler startup (P-026).
+  cron.schedule('* * * * *', async () => {
+    try {
+      const { runExporterCycle } = require('./bridge/exporterJob');
+      await runExporterCycle();
+    } catch (err) {
+      console.error('[Scheduler] instinct bridge export error:', err.message);
+    }
+  }, { timezone: config.TIMEZONE });
+
   // Start poll-based follow-up system (replaces old setTimeout approach)
   startFollowUpPoller();
 

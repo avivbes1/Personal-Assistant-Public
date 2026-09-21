@@ -363,6 +363,31 @@ check('P-018', 'check-unused-modules.js exists and passes', () => {
   if (!result.pass) return result.message;
 });
 
+// ── P-026 — Bridge Never Breaks Core ───────────────────────────────────────
+check('P-026', 'bridge enqueue hooks exist and are try/catch guarded', () => {
+  const src = readSrc('src/db.js');
+  if (src === null) return { skip: 'src/db.js not present' };
+  for (const fn of ['_bridgeEnqueueMessageById', '_bridgeEnqueueNotice']) {
+    // Isolate the function body and require both a try and a catch inside it.
+    const start = src.indexOf(`function ${fn}(`);
+    if (start === -1) return `${fn} not defined in db.js`;
+    const body = src.slice(start, start + 1200);
+    if (!/\btry\b/.test(body) || !/\bcatch\b/.test(body)) {
+      return `${fn} is not wrapped in try/catch — a bridge failure could break core writes`;
+    }
+  }
+  // Ensure the hooks are actually invoked from the core write paths.
+  if (!src.includes("_bridgeEnqueueMessageById(newId, 'message.created')")) {
+    return 'saveMessage does not enqueue message.created';
+  }
+  if (!src.includes('_bridgeEnqueueNotice(result.lastInsertRowid)')) {
+    return 'saveNotice does not enqueue notice.upserted';
+  }
+  if (!src.includes("_bridgeEnqueueMessageById(msg.id, 'message.updated')")) {
+    return 'updateMessageBodyByStanza does not enqueue message.updated';
+  }
+});
+
 // ── META-CHECK — Every principle has a check or enforcement:manual ──────────
 check('META', 'every principle in PRINCIPLES.md is covered or explicitly manual', () => {
   const principles = readSrc('PRINCIPLES.md');
