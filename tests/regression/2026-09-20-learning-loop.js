@@ -21,7 +21,16 @@ const HEARTBEAT_PATH = '/home/ubuntu/self-improving/heartbeat-state.md';
 const R2_CUTOFF = new Date('2026-09-20T00:00:00+03:00').getTime(); // R2 landed
 
 module.exports = {
+  // This test validates the LIVE learning loop on the production server.
+  // It reads production paths (/home/ubuntu/self-improving/*) and the live DB.
+  // In CI, those don't exist — skip gracefully.
+  ci_skip: true,
+
   async run() {
+    if (process.env.CI) {
+      return { pass: true, message: 'Skipped in CI (live-system closure test)', skipped: true };
+    }
+
     const errors = [];
 
     initDB();
