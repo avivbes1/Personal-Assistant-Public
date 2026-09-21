@@ -69,7 +69,7 @@ async function runExporterCycle() {
   if (good.length > 0) {
     const envelope = buildEnvelope(bridgeConfig.stream, good.map(r => r.payload));
     try {
-      const result = sendBatch(envelope);
+      const result = await sendBatch(envelope);
       if (!result || !result.ok) throw new Error((result && result.error) || 'transport returned not-ok');
       for (const row of good) {
         markDelivered(row.id, result.provider_message_id);
