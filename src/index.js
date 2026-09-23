@@ -77,6 +77,17 @@ setTimeout(() => {
   initScheduler(sendToMasterGroup, sendToMasterGroupWithId, sendToMasterGroupWithMentions);
 }, 2000);
 
+// 4b. Start the Instinct Bridge inbound command poller. Purely additive and
+//     best-effort (P-026): required lazily and wrapped so a broken bridge module
+//     can never break startup. No-ops when the inbound channel is disabled.
+setTimeout(() => {
+  try {
+    require('./bridge/inbound').startInboundPoller();
+  } catch (err) {
+    console.error('[Bridge][Inbound] failed to start poller:', err.message);
+  }
+}, 5000);
+
 // 5. Start health monitor (after a delay so WhatsApp can connect first)
 setTimeout(() => {
   startHealthMonitor(5 * 60 * 1000); // every 5 minutes
