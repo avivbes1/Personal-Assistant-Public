@@ -20,11 +20,19 @@ function intOr(value, fallback) {
 
 const enabled = process.env.INSTINCT_BRIDGE_INBOUND_ENABLED === '1';
 const token = process.env.INSTINCT_BRIDGE_INBOUND_TOKEN || '';
+const account = process.env.INSTINCT_BRIDGE_INBOUND_ACCOUNT || '';
+const replyTo = process.env.INSTINCT_BRIDGE_INBOUND_REPLY_TO || '';
 
 // Validate required fields — but only enforce when the channel is enabled.
 const errors = [];
 if (enabled && !token) {
   errors.push('INSTINCT_BRIDGE_INBOUND_TOKEN is required when the inbound channel is enabled');
+}
+if (enabled && !account) {
+  errors.push('INSTINCT_BRIDGE_INBOUND_ACCOUNT is required when the inbound channel is enabled');
+}
+if (enabled && !replyTo) {
+  errors.push('INSTINCT_BRIDGE_INBOUND_REPLY_TO is required when the inbound channel is enabled');
 }
 if (enabled && errors.length > 0) {
   console.error('[Bridge][Inbound] config invalid — inbound poller will not run:');
@@ -46,10 +54,10 @@ const config = {
 
   // Gmail account we poll (IMAP read + SMTP send, both via the app password
   // shared with the outbound bridge: INSTINCT_BRIDGE_GMAIL_APP_PASSWORD).
-  account: process.env.INSTINCT_BRIDGE_INBOUND_ACCOUNT || '',
+  account,
 
   // Where replies are sent, and the subject prefixes on each leg.
-  replyTo: process.env.INSTINCT_BRIDGE_INBOUND_REPLY_TO || '',
+  replyTo,
   inboundSubjectPrefix: process.env.INSTINCT_BRIDGE_INBOUND_SUBJECT_PREFIX || '[Instinct->FamilyBot]',
   replySubjectPrefix: process.env.INSTINCT_BRIDGE_INBOUND_REPLY_PREFIX || '[FamilyBot->Instinct]',
 };
