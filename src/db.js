@@ -896,6 +896,26 @@ function initDB() {
       )
     `);
   } catch (_) {}
+  // bridge_inbound_log records every inbound command email seen by the inbound
+  // poller (src/bridge/inbound.js), keyed by its IMAP UID so the same message is
+  // never processed twice. Kept in sync with ensureTable() there; from_addr
+  // avoids the SQL reserved word `from`.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_inbound_log (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        gmail_uid         TEXT NOT NULL,
+        gmail_message_id  TEXT,
+        from_addr         TEXT,
+        subject           TEXT,
+        command           TEXT,
+        response_summary  TEXT,
+        processed_at      INTEGER NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'ok'  -- ok | auth_failed | empty | reply_failed | error
+      )
+    `);
+  } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_inbound_uid ON bridge_inbound_log (gmail_uid)'); } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_outbox_delivery ON bridge_outbox(status, available_at, created_at)'); } catch (_) {}
   // Additive columns on notices for bridge export versioning.
   try { db.exec('ALTER TABLE notices ADD COLUMN export_version INTEGER NOT NULL DEFAULT 1'); } catch (_) {}

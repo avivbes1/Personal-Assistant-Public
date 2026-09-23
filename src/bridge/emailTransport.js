@@ -1,22 +1,52 @@
 'use strict';
 /**
- * bridge/emailTransport.js — SES delivery transport for the Instinct Bridge.
+ * bridge/emailTransport.js — Email delivery transport for the Instinct Bridge.
  *
- * Sends batched event envelopes to Instinct via AWS SES. The EC2 instance role
- * provides credentials automatically — no API keys needed.
+ * Supports two backends:
+ *   1. Gmail SMTP (default) — uses nodemailer + app password. Gmail signs DKIM
+ *      and SPF aligns natively. Set INSTINCT_BRIDGE_GMAIL_APP_PASSWORD.
+ *   2. AWS SES (legacy) — uses the EC2 instance role. Set
+ *      INSTINCT_BRIDGE_TRANSPORT=ses to use this path.
  *
  * Shadow mode: when INSTINCT_BRIDGE_SHADOW=1, logs what WOULD send without
- * actually calling SES. Useful for dry-run validation.
+ * actually calling either backend. Useful for dry-run validation.
  */
 
-const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
+const nodemailer = require('nodemailer');
 const bridgeConfig = require('./config');
 
-// Region from EC2 metadata or env; the instance is in eu-west-1.
-const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'eu-west-1';
-const ses = new SESClient({ region: REGION });
-
 const SHADOW = process.env.INSTINCT_BRIDGE_SHADOW === '1';
+const TRANSPORT = (process.env.INSTINCT_BRIDGE_TRANSPORT || 'gmail').toLowerCase();
+
+// --- Gmail SMTP transport (default) ---
+let gmailTransport = null;
+function getGmailTransport() {
+  if (!gmailTransport) {
+    const appPassword = process.env.INSTINCT_BRIDGE_GMAIL_APP_PASSWORD || '';
+    if (!appPassword) throw new Error('[Bridge] INSTINCT_BRIDGE_GMAIL_APP_PASSWORD is required for Gmail transport');
+    gmailTransport = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: {
+        user: bridgeConfig.emailFrom,
+        pass: appPassword,
+      },
+    });
+  }
+  return gmailTransport;
+}
+
+// --- SES transport (legacy fallback) ---
+let sesClient = null;
+function getSES() {
+  if (!sesClient) {
+    const { SESClient } = require('@aws-sdk/client-ses');
+    const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'eu-west-1';
+    sesClient = new SESClient({ region: REGION });
+  }
+  return sesClient;
+}
 
 /**
  * Build a human-readable plain-text summary of the events in the envelope,
@@ -52,6 +82,7 @@ async function sendBatch(envelope) {
   if (SHADOW) {
     console.log(
       `[Bridge][shadow] WOULD send email:\n` +
+      `  transport: ${TRANSPORT}\n` +
       `  to:       ${bridgeConfig.emailTo || '(unset)'}\n` +
       `  from:     ${bridgeConfig.emailFrom || '(unset)'}\n` +
       `  subject:  ${subject}\n` +
@@ -62,23 +93,39 @@ async function sendBatch(envelope) {
     return { ok: true, provider_message_id: `shadow-${envelope.delivery_id}`, shadow: true, bytes };
   }
 
-  const cmd = new SendEmailCommand({
-    Source: bridgeConfig.emailFrom,
-    Destination: { ToAddresses: [bridgeConfig.emailTo] },
-    Message: {
-      Subject: { Data: subject, Charset: 'UTF-8' },
-      Body: { Text: { Data: body, Charset: 'UTF-8' } },
-    },
+  if (TRANSPORT === 'ses') {
+    // Legacy SES path
+    const { SendEmailCommand } = require('@aws-sdk/client-ses');
+    const cmd = new SendEmailCommand({
+      Source: bridgeConfig.emailFrom,
+      Destination: { ToAddresses: [bridgeConfig.emailTo] },
+      Message: {
+        Subject: { Data: subject, Charset: 'UTF-8' },
+        Body: { Text: { Data: body, Charset: 'UTF-8' } },
+      },
+    });
+    const result = await getSES().send(cmd);
+    const messageId = result.MessageId || null;
+    console.log(
+      `[Bridge][SES] sent: ${envelope.event_count} event(s), ` +
+      `${bytes} bytes, delivery=${envelope.delivery_id}, ses_id=${messageId}`
+    );
+    return { ok: true, provider_message_id: messageId, shadow: false, bytes };
+  }
+
+  // Default: Gmail SMTP
+  const transport = getGmailTransport();
+  const info = await transport.sendMail({
+    from: bridgeConfig.emailFrom,
+    to: bridgeConfig.emailTo,
+    subject,
+    text: body,
   });
-
-  const result = await ses.send(cmd);
-  const messageId = result.MessageId || null;
-
+  const messageId = info.messageId || null;
   console.log(
-    `[Bridge] SES sent: ${envelope.event_count} event(s), ` +
-    `${bytes} bytes, delivery=${envelope.delivery_id}, ses_id=${messageId}`
+    `[Bridge][Gmail] sent: ${envelope.event_count} event(s), ` +
+    `${bytes} bytes, delivery=${envelope.delivery_id}, msg_id=${messageId}`
   );
-
   return { ok: true, provider_message_id: messageId, shadow: false, bytes };
 }
 

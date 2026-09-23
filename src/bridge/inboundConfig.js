@@ -46,10 +46,10 @@ const config = {
 
   // Gmail account we poll (IMAP read + SMTP send, both via the app password
   // shared with the outbound bridge: INSTINCT_BRIDGE_GMAIL_APP_PASSWORD).
-  account: process.env.INSTINCT_BRIDGE_INBOUND_ACCOUNT || 'avivbes1@gmail.com',
+  account: process.env.INSTINCT_BRIDGE_INBOUND_ACCOUNT || '',
 
   // Where replies are sent, and the subject prefixes on each leg.
-  replyTo: process.env.INSTINCT_BRIDGE_INBOUND_REPLY_TO || 'avivbesinsky@mail.instinct.com',
+  replyTo: process.env.INSTINCT_BRIDGE_INBOUND_REPLY_TO || '',
   inboundSubjectPrefix: process.env.INSTINCT_BRIDGE_INBOUND_SUBJECT_PREFIX || '[Instinct->FamilyBot]',
   replySubjectPrefix: process.env.INSTINCT_BRIDGE_INBOUND_REPLY_PREFIX || '[FamilyBot->Instinct]',
 };

@@ -2,7 +2,7 @@
 /**
  * bridge/inbound.js — Instinct Bridge inbound command channel.
  *
- * Polls avivbes1@gmail.com via IMAP for emails with subject prefix
+ * Polls the configured Gmail account via IMAP for emails with subject prefix
  * [Instinct->FamilyBot], validates a shared auth token, executes the command,
  * and replies to the Instinct address with [FamilyBot->Instinct] prefix.
  *
@@ -178,9 +178,9 @@ function getBridgeStats(days) {
     // Group breakdown
     try {
       const byGroup = getDB().prepare(`
-        SELECT json_extract(payload, '$.group.name') as grp, COUNT(*) as cnt
+        SELECT json_extract(payload_json, '$.group.name') as grp, COUNT(*) as cnt
         FROM bridge_outbox
-        WHERE created_at > ? AND json_extract(payload, '$.group.name') IS NOT NULL
+        WHERE created_at > ? AND json_extract(payload_json, '$.group.name') IS NOT NULL
         GROUP BY grp ORDER BY cnt DESC LIMIT 10
       `).all(cutoff);
       if (byGroup.length > 0) {
