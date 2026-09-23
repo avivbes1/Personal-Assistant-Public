@@ -40,6 +40,9 @@ if (enabled) {
   if (groupAllowlist.length === 0) {
     errors.push('INSTINCT_BRIDGE_GROUP_ALLOWLIST is empty — nothing will ever be exported');
   }
+  if (groupAllowlist.includes('*')) {
+    console.log('[Bridge] groupAllowlist contains "*" — all monitored groups will be exported');
+  }
   if (errors.length > 0) {
     console.error('[Bridge] config invalid — bridge will not export:');
     for (const e of errors) console.error(`  - ${e}`);

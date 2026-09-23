@@ -26,9 +26,11 @@ function isFamilyPhone(digits) {
   return FAMILY_SUFFIXES.includes(String(digits).slice(-9));
 }
 
-/** True if the group JID is on the export allowlist. Empty allowlist → false. */
+/** True if the group JID is on the export allowlist. Empty allowlist → false.
+ *  A single '*' entry in the allowlist matches all groups. */
 function isGroupAllowed(groupJid) {
   if (!groupJid) return false;
+  if (bridgeConfig.groupAllowlist.includes('*')) return true;
   return bridgeConfig.groupAllowlist.includes(String(groupJid).trim());
 }
 
