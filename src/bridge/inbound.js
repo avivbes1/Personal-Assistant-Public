@@ -59,6 +59,7 @@ function ensureTable() {
       from_addr       TEXT,
       subject         TEXT,
       command         TEXT,
+      request_id      TEXT,
       response_summary TEXT,
       processed_at    INTEGER NOT NULL,
       status          TEXT NOT NULL DEFAULT 'ok'
@@ -68,6 +69,14 @@ function ensureTable() {
   getDB().exec(`
     CREATE INDEX IF NOT EXISTS idx_bridge_inbound_uid ON bridge_inbound_log (gmail_uid)
   `);
+  // Migration: add request_id column if table already existed without it
+  try {
+    const cols = getDB().prepare('PRAGMA table_info(bridge_inbound_log)').all().map(c => c.name);
+    if (!cols.includes('request_id')) {
+      getDB().exec('ALTER TABLE bridge_inbound_log ADD COLUMN request_id TEXT');
+      console.log('[Bridge][Inbound] migrated: added request_id column to bridge_inbound_log');
+    }
+  } catch (_) {}
 }
 
 function wasProcessed(uid) {
@@ -78,11 +87,11 @@ function wasProcessed(uid) {
 function logProcessed(entry) {
   const { getDB } = require('../db');
   getDB().prepare(`
-    INSERT INTO bridge_inbound_log (gmail_uid, gmail_message_id, from_addr, subject, command, response_summary, processed_at, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO bridge_inbound_log (gmail_uid, gmail_message_id, from_addr, subject, command, request_id, response_summary, processed_at, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     String(entry.uid), entry.messageId || null, entry.from || null,
-    entry.subject || null, entry.command || null,
+    entry.subject || null, entry.command || null, entry.requestId || null,
     (entry.response || '').substring(0, 500),
     Date.now(), entry.status || 'ok'
   );
@@ -104,34 +113,151 @@ function extractAndValidateToken(body) {
 
 // ── Command handlers ─────────────────────────────────────────────────────────
 
-async function handleCommand(command) {
-  const cmd = command.toLowerCase().trim();
+/**
+ * Parse the command body as JSON: {"command": "...", "args": {...}, "request_id": "..."}.
+ * Falls back to legacy plain-text dispatch for backward compatibility.
+ */
+function parseCommandPayload(raw) {
+  const trimmed = raw.trim();
+  // Attempt JSON parse first
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed.command === 'string') {
+        return {
+          json: true,
+          command: parsed.command.toLowerCase().trim(),
+          args: parsed.args || {},
+          request_id: parsed.request_id || null,
+        };
+      }
+    } catch (_) {
+      // Malformed JSON — will be reported as an error
+      return { json: true, command: null, args: {}, request_id: null, parseError: trimmed.substring(0, 200) };
+    }
+  }
+  // Legacy plain-text mode
+  return { json: false, command: trimmed.toLowerCase(), args: {}, request_id: null };
+}
 
+/**
+ * Build a structured JSON response envelope.
+ */
+function buildResponse(requestId, ok, result) {
+  return { request_id: requestId || null, ok, result };
+}
+
+/**
+ * Main command dispatcher.  Returns { requestId, responseObj } where
+ * responseObj is {request_id, ok, result}.
+ */
+async function handleCommand(command) {
+  const parsed = parseCommandPayload(command);
+
+  // Malformed JSON
+  if (parsed.json && parsed.command === null) {
+    return {
+      requestId: null,
+      responseObj: buildResponse(null, false, {
+        error: 'malformed_json',
+        message: `Could not parse JSON command body: ${parsed.parseError}`,
+      }),
+    };
+  }
+
+  const cmd = parsed.command;
+  const args = parsed.args;
+  const requestId = parsed.request_id;
+
+  // ── ping ──
   if (cmd === 'ping') {
     const uptime = process.uptime();
     const h = Math.floor(uptime / 3600);
     const m = Math.floor((uptime % 3600) / 60);
-    return `Pong. FamilyBot uptime: ${h}h ${m}m. Bridge: ${bridgeConfig.enabled ? 'enabled' : 'disabled'}, valid: ${bridgeConfig.valid}. Inbound channel: active.`;
+    return {
+      requestId,
+      responseObj: buildResponse(requestId, true, {
+        pong: true,
+        uptime: `${h}h ${m}m`,
+        bridge_enabled: bridgeConfig.enabled,
+        bridge_valid: bridgeConfig.valid,
+        inbound_channel: 'active',
+        protocol: 'json/v1',
+      }),
+    };
   }
 
+  // ── help ──
   if (cmd === 'help') {
-    return [
-      'Available commands:',
-      '  ping              — check bot status and uptime',
-      '  bridge stats [N]  — delivery stats for last N days (default 7)',
-      '  help              — this message',
-      '',
-      'Include AUTH:<token> on its own line in every email.',
-    ].join('\n');
+    return {
+      requestId,
+      responseObj: buildResponse(requestId, true, {
+        commands: [
+          { name: 'ping', description: 'Check bot status and uptime' },
+          { name: 'help', description: 'List available commands' },
+          { name: 'bridge_stats', description: 'Delivery stats for last N days', args: { days: 'number (default 7)' } },
+          { name: 'free_text', description: 'Natural-language query processed by the bot agent', args: { text: 'string (required)' } },
+        ],
+        auth: 'Include AUTH:<token> on its own line before the JSON body.',
+      }),
+    };
   }
 
-  const statsMatch = cmd.match(/^bridge\s+stats(?:\s+(\d+))?/);
-  if (statsMatch) {
-    const days = parseInt(statsMatch[1], 10) || 7;
-    return getBridgeStats(days);
+  // ── bridge_stats (also accepts legacy "bridge stats N") ──
+  if (cmd === 'bridge_stats' || cmd.startsWith('bridge stats') || cmd.startsWith('bridge_stats')) {
+    const days = parseInt(args.days, 10) || (() => {
+      const m = cmd.match(/(?:bridge[_ ]stats)\s+(\d+)/);
+      return m ? parseInt(m[1], 10) : 7;
+    })();
+    const stats = getBridgeStats(days);
+    return {
+      requestId,
+      responseObj: buildResponse(requestId, true, typeof stats === 'string' ? { summary: stats } : stats),
+    };
   }
 
-  return `Unknown command: "${command.substring(0, 100)}"\nSend "help" for available commands.`;
+  // ── free_text — pass to the bot's normal language handler ──
+  if (cmd === 'free_text') {
+    const text = args.text || '';
+    if (!text) {
+      return {
+        requestId,
+        responseObj: buildResponse(requestId, false, {
+          error: 'missing_arg',
+          message: 'free_text requires args.text',
+        }),
+      };
+    }
+    try {
+      const { handleMessage } = require('../agent');
+      const agentResult = await handleMessage(text, null, 'Instinct', []);
+      return {
+        requestId,
+        responseObj: buildResponse(requestId, true, {
+          reply: agentResult.text || '',
+          side_effects: (agentResult.sideEffects || []).length,
+        }),
+      };
+    } catch (err) {
+      console.error('[Bridge][Inbound] free_text handler error:', err.message);
+      return {
+        requestId,
+        responseObj: buildResponse(requestId, false, {
+          error: 'handler_error',
+          message: err.message,
+        }),
+      };
+    }
+  }
+
+  // ── unknown command ──
+  return {
+    requestId,
+    responseObj: buildResponse(requestId, false, {
+      error: 'unknown_command',
+      message: `Unknown command: "${cmd}". Send {"command":"help"} for available commands.`,
+    }),
+  };
 }
 
 function getBridgeStats(days) {
@@ -199,12 +325,12 @@ function getBridgeStats(days) {
 
 // ── Reply sender ─────────────────────────────────────────────────────────────
 
-async function sendReply(originalSubject, responseBody, inReplyTo) {
-  const subject = `${inboundConfig.replySubjectPrefix} Re: ${originalSubject}`;
+async function sendReply(originalSubject, responseObj, inReplyTo) {
+  const subject = `${inboundConfig.replySubjectPrefix} re: ${originalSubject}`;
   const body = [
-    responseBody,
-    '',
     `AUTH:${inboundConfig.token}`,
+    '',
+    JSON.stringify(responseObj, null, 2),
   ].join('\n');
 
   const mailOptions = {
@@ -297,15 +423,16 @@ async function processMessage(msg, uid) {
   }
 
   // Execute command
-  const response = await handleCommand(command);
+  const { requestId, responseObj } = await handleCommand(command);
+  const responseStr = JSON.stringify(responseObj);
 
   // Send reply
   try {
-    await sendReply(subject, response, messageId);
-    logProcessed({ uid, messageId, from: fromAddr, subject, status: 'ok', command, response });
+    await sendReply(subject, responseObj, messageId);
+    logProcessed({ uid, messageId, from: fromAddr, subject, status: 'ok', command, requestId, response: responseStr });
   } catch (err) {
     console.error(`[Bridge][Inbound] reply send failed for uid=${uid}:`, err.message);
-    logProcessed({ uid, messageId, from: fromAddr, subject, status: 'reply_failed', command, response: err.message });
+    logProcessed({ uid, messageId, from: fromAddr, subject, status: 'reply_failed', command, requestId, response: err.message });
   }
 }
 
