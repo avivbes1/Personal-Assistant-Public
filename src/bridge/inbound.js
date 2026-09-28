@@ -355,7 +355,10 @@ async function pollCycle() {
   const client = createImapClient();
   try {
     await client.connect();
-    const lock = await client.getMailboxLock('INBOX');
+    // Use label-scoped mailbox instead of INBOX so the Gmail filter can
+    // archive bridge mail out of the inbox while we still see it.
+    const MAILBOX = process.env.INSTINCT_BRIDGE_INBOUND_MAILBOX || 'FamilyBot Bridge';
+    const lock = await client.getMailboxLock(MAILBOX);
     try {
       // Search for messages with our subject prefix
       const searchCriteria = {
