@@ -65,9 +65,12 @@ function ensureTable() {
       status          TEXT NOT NULL DEFAULT 'ok'
     )
   `);
-  // Index for dedup lookups
+  // Indexes for dedup lookups (uid for legacy, message_id for cross-mailbox)
   getDB().exec(`
     CREATE INDEX IF NOT EXISTS idx_bridge_inbound_uid ON bridge_inbound_log (gmail_uid)
+  `);
+  getDB().exec(`
+    CREATE INDEX IF NOT EXISTS idx_bridge_inbound_msgid ON bridge_inbound_log (gmail_message_id)
   `);
   // Migration: add request_id column if table already existed without it
   try {
@@ -79,18 +82,46 @@ function ensureTable() {
   } catch (_) {}
 }
 
-function wasProcessed(uid) {
+/** Normalize RFC Message-ID: strip angle brackets + lowercase for stable comparison. */
+function normalizeMsgId(raw) {
+  if (!raw) return null;
+  return String(raw).replace(/^<|>$/g, '').toLowerCase();
+}
+
+/**
+ * Check if a message was already processed.
+ * Primary key: gmail_message_id (RFC Message-ID) — stable across mailboxes.
+ * Tries both raw and normalized forms to handle <brackets> mismatches.
+ * Falls back to gmail_uid for legacy rows that lack a message_id.
+ */
+function wasProcessed(uid, messageId) {
   const { getDB } = require('../db');
-  return !!getDB().prepare('SELECT 1 FROM bridge_inbound_log WHERE gmail_uid = ?').get(String(uid));
+  if (messageId) {
+    // Try exact match first, then normalized (strip <> + lowercase)
+    const exact = getDB().prepare('SELECT 1 FROM bridge_inbound_log WHERE gmail_message_id = ?').get(String(messageId));
+    if (exact) return true;
+    const norm = normalizeMsgId(messageId);
+    if (norm) {
+      const stripped = getDB().prepare('SELECT 1 FROM bridge_inbound_log WHERE gmail_message_id = ? OR gmail_message_id = ? OR gmail_message_id = ?').get(norm, `<${norm}>`, String(messageId).toLowerCase());
+      if (stripped) return true;
+    }
+  }
+  if (uid) {
+    const byUid = getDB().prepare('SELECT 1 FROM bridge_inbound_log WHERE gmail_uid = ?').get(String(uid));
+    if (byUid) return true;
+  }
+  return false;
 }
 
 function logProcessed(entry) {
   const { getDB } = require('../db');
+  // INSERT OR IGNORE: if the gmail_message_id already exists (UNIQUE), skip
+  // gracefully instead of throwing — handles cross-mailbox UID changes.
   getDB().prepare(`
-    INSERT INTO bridge_inbound_log (gmail_uid, gmail_message_id, from_addr, subject, command, request_id, response_summary, processed_at, status)
+    INSERT OR IGNORE INTO bridge_inbound_log (gmail_uid, gmail_message_id, from_addr, subject, command, request_id, response_summary, processed_at, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    String(entry.uid), entry.messageId || null, entry.from || null,
+    String(entry.uid), entry.messageId || 'uid:' + entry.uid, entry.from || null,
     entry.subject || null, entry.command || null, entry.requestId || null,
     (entry.response || '').substring(0, 500),
     Date.now(), entry.status || 'ok'
@@ -379,7 +410,16 @@ async function pollCycle() {
 
       for (const msg of messages) {
         const uid = String(msg.uid);
-        if (wasProcessed(uid)) continue;
+        const envelope = msg.envelope || {};
+        const msgId = envelope.messageId || null;
+
+        // Skip our own reply emails — the label catches them because
+        // "[FamilyBot->Instinct] re: [Instinct->FamilyBot]" contains
+        // the inbound subject prefix as a substring.
+        const subject = envelope.subject || '';
+        if (subject.startsWith(inboundConfig.replySubjectPrefix)) continue;
+
+        if (wasProcessed(uid, msgId)) continue;
 
         try {
           await processMessage(msg, uid);
