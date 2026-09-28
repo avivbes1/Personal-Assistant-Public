@@ -88,10 +88,10 @@ setTimeout(() => {
   }
 }, 5000);
 
-// 5. Start health monitor (after a delay so WhatsApp can connect first)
-setTimeout(() => {
-  startHealthMonitor(5 * 60 * 1000); // every 5 minutes
-}, 30 * 1000); // wait 30s after startup
+// 5. Health monitor — DISABLED per Aviv 2026-09-28 (noisy, not actionable)
+// setTimeout(() => {
+//   startHealthMonitor(5 * 60 * 1000); // every 5 minutes
+// }, 30 * 1000);
 
 // 5. Graceful shutdown
 function shutdown(signal) {
