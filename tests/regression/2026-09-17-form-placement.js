@@ -17,7 +17,7 @@ const FIXTURE_PDF = path.join(__dirname, '../fixtures/forms/soccer-registration.
 
 // N4: PyMuPDF is REQUIRED — hard failure.
 try {
-  execSync('python3 -c "import pymupdf"', { timeout: 5000, stdio: 'pipe' });
+  execSync('python3 -c "try:\n import pymupdf\nexcept ImportError:\n import fitz"', { timeout: 5000, stdio: 'pipe' });
 } catch (_) {
   module.exports = { async run() { return { pass: false, message: 'PyMuPDF not installed' }; } };
   return;
