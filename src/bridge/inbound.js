@@ -108,7 +108,10 @@ function wasProcessed(uid, messageId) {
       if (stripped) return true;
     }
   }
-  if (uid) {
+  // Only fall back to UID when no Message-ID is available.
+  // UIDs are per-mailbox, not globally unique — checking UID across
+  // mailboxes (FamilyBot Bridge vs Lipa Bridge) causes false positives.
+  if (!messageId && uid) {
     const byUid = getDB().prepare('SELECT 1 FROM bridge_inbound_log WHERE gmail_uid = ?').get(String(uid));
     if (byUid) return true;
   }
