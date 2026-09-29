@@ -1363,10 +1363,34 @@ function saveNotice({ group_name, content, relevance_date, relevance_time, sourc
     }
   } catch (_) {}
 
-  // Instinct Bridge: enqueue notice.upserted (best-effort, never blocks saving).
-  _bridgeEnqueueNotice(result.lastInsertRowid);
+  // J3: image-only notice guard (single chokepoint — runs for ALL insert paths).
+  // An image caption with no scheduling signal is documentation, not actionable.
+  // Setting query_visible=0 keeps it out of digests/queries but preserves the row.
+  const noticeId = result.lastInsertRowid;
+  if (content && /^\[תמונה:/.test(content)) {
+    const hasSchedulingSignal =
+      /\d\d\.\d/.test(content) ||          // date-like 12.9
+      /\d\d:\d/.test(content) ||           // time-like 08:30
+      /בשעה/.test(content) ||
+      /deadline/i.test(content) ||
+      /\bdue\b/i.test(content) ||
+      /טופס/.test(content) ||              // form
+      /קישור/.test(content) ||             // link
+      /https/i.test(content);
+    if (!hasSchedulingSignal) {
+      try {
+        getDB().prepare('UPDATE notices SET query_visible = 0 WHERE id = ?').run(noticeId);
+        console.log(`[DB] J3: image-only notice ${noticeId} has no scheduling signal → query_visible=0`);
+      } catch (e) {
+        console.warn('[DB] J3 image-only guard failed:', e.message);
+      }
+    }
+  }
 
-  return result.lastInsertRowid;
+  // Instinct Bridge: enqueue notice.upserted (best-effort, never blocks saving).
+  _bridgeEnqueueNotice(noticeId);
+
+  return noticeId;
 }
 
 /**
