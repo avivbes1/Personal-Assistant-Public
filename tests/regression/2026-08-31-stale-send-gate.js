@@ -94,16 +94,13 @@ console.log('=== B3 Stale Send Gate — Regression Tests ===\n');
 {
   console.log('Test 5: computeDeadline with relevance_date + relevance_time');
 
-  // Today in Israel, 2 hours ago
+  // Use a fixed date well in the past to avoid midnight-boundary flakiness.
+  // 2026-08-01 at 10:00 Israel (IDT, UTC+3) = 07:00 UTC — always in the past.
+  const notice = { relevant_datetime: null, relevance_date: '2026-08-01', relevance_time: '10:00' };
   const now = new Date();
-  const twoHoursAgo = new Date(now.getTime() - 2 * 3600000);
-  const dateStr = israelDateStr(twoHoursAgo);
-  const timeStr = israelTimeStr(twoHoursAgo);
-
-  const notice = { relevant_datetime: null, relevance_date: dateStr, relevance_time: timeStr };
   const deadline = computeDeadline(notice, now);
   assert.ok(deadline < now, `deadline (${deadline.toISOString()}) should be before now (${now.toISOString()})`);
-  console.log(`  ✅ Notice with date=${dateStr} time=${timeStr} is stale (deadline ${deadline.toISOString()})\n`);
+  console.log(`  ✅ Notice with date=2026-08-01 time=10:00 is stale (deadline ${deadline.toISOString()})\n`);
 }
 
 // ── Test 6: computeDeadline with relevance_date only (end-of-day) ───────────
