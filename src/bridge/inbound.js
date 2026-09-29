@@ -411,8 +411,6 @@ async function pollCycle() {
         messages.push(msg);
       }
 
-      if (messages.length === 0) return;
-
       for (const msg of messages) {
         const uid = String(msg.uid);
         const envelope = msg.envelope || {};
