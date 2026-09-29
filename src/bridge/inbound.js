@@ -14,6 +14,8 @@ const { ImapFlow } = require('imapflow');
 const nodemailer = require('nodemailer');
 const inboundConfig = require('./inboundConfig');
 const bridgeConfig = require('./config');
+const lipaConfig = require('./lipaConfig');
+const lipaLane = require('./lipaLane');
 
 // ── IMAP client ──────────────────────────────────────────────────────────────
 
@@ -383,20 +385,23 @@ async function sendReply(originalSubject, responseObj, inReplyTo) {
 async function pollCycle() {
   if (!inboundConfig.enabled || !inboundConfig.valid) return;
 
+  // Drain Lipa outbox (reply emails queued by OpenClaw) on every cycle
+  if (lipaConfig.enabled && lipaConfig.valid) {
+    try {
+      await lipaLane.drainLipaOutbox();
+    } catch (err) {
+      console.error('[Bridge][Lipa] outbox drain failed:', err.message);
+    }
+  }
+
   const client = createImapClient();
   try {
     await client.connect();
-    // Use label-scoped mailbox instead of INBOX so the Gmail filter can
-    // archive bridge mail out of the inbox while we still see it.
+
+    // ── Scan Tudat lane (FamilyBot Bridge label) ──────────────────────
     const MAILBOX = process.env.INSTINCT_BRIDGE_INBOUND_MAILBOX || 'FamilyBot Bridge';
     const lock = await client.getMailboxLock(MAILBOX);
     try {
-      // Search for messages with our subject prefix
-      const searchCriteria = {
-        subject: inboundConfig.inboundSubjectPrefix,
-        since: new Date(Date.now() - 86400000), // last 24h
-      };
-
       const messages = [];
       for await (const msg of client.fetch(
         { subject: inboundConfig.inboundSubjectPrefix, since: new Date(Date.now() - 86400000) },
@@ -431,6 +436,52 @@ async function pollCycle() {
     } finally {
       lock.release();
     }
+
+    // ── Scan Lipa lane (Lipa Bridge label) ──────────────────────────
+    if (lipaConfig.enabled && lipaConfig.valid) {
+      const LIPA_MAILBOX = process.env.LIPA_BRIDGE_MAILBOX || 'Lipa Bridge';
+      try {
+        const lipaLock = await client.getMailboxLock(LIPA_MAILBOX);
+        try {
+          const lipaMessages = [];
+          for await (const msg of client.fetch(
+            { subject: lipaConfig.inboundSubjectPrefix, since: new Date(Date.now() - 86400000) },
+            { uid: true, envelope: true, source: true },
+            { uid: true }
+          )) {
+            lipaMessages.push(msg);
+          }
+
+          for (const msg of lipaMessages) {
+            const uid = String(msg.uid);
+            const envelope = msg.envelope || {};
+            const msgId = envelope.messageId || null;
+            const subject = envelope.subject || '';
+
+            // Skip own replies
+            if (subject.startsWith(lipaConfig.replySubjectPrefix)) continue;
+            if (wasProcessed(uid, msgId)) continue;
+
+            try {
+              await processMessage(msg, uid);
+            } catch (err) {
+              console.error(`[Bridge][Lipa] failed to process uid=${uid}:`, err.message);
+              logProcessed({ uid, status: 'lipa_error', command: null, response: err.message });
+            }
+          }
+        } finally {
+          lipaLock.release();
+        }
+      } catch (err) {
+        // Label may not exist yet — log once, don't crash the Tudat lane
+        if (err.message && err.message.includes('does not exist')) {
+          console.log(`[Bridge][Lipa] mailbox '${LIPA_MAILBOX}' not found — create the Gmail label first`);
+        } else {
+          console.error('[Bridge][Lipa] poll cycle failed:', err.message);
+        }
+      }
+    }
+
   } catch (err) {
     console.error('[Bridge][Inbound] poll cycle failed:', err.message);
   } finally {
@@ -452,6 +503,75 @@ async function processMessage(msg, uid) {
 
   console.log(`[Bridge][Inbound] new email: uid=${uid} from=${fromAddr} subject="${subject.substring(0, 80)}"`);
 
+  // ── Lipa lane routing ──────────────────────────────────────────────────
+  // If subject starts with [Instinct->Lipa], route to the Lipa lane instead
+  // of the Tudat handler. Separate auth token, separate queue.
+  if (subject.startsWith(lipaConfig.inboundSubjectPrefix) && lipaConfig.enabled) {
+    const { valid, command } = lipaLane.validateLipaAuth(body);
+    if (!valid) {
+      console.warn(`[Bridge][Lipa] auth failed for uid=${uid} from=${fromAddr}`);
+      logProcessed({ uid, messageId, from: fromAddr, subject, status: 'lipa_auth_failed', command: null, response: 'Invalid Lipa auth token' });
+      return;
+    }
+    if (!command) {
+      logProcessed({ uid, messageId, from: fromAddr, subject, status: 'lipa_empty', command: '', response: 'Empty command' });
+      return;
+    }
+
+    // Parse the JSON command payload
+    const parsed = parseCommandPayload(command);
+    const cmd = parsed.command;
+    const args = parsed.args;
+    const requestId = parsed.request_id;
+
+    // Handle ping locally (no need to round-trip through OpenClaw)
+    if (cmd === 'ping') {
+      const responseObj = buildResponse(requestId, true, {
+        pong: true,
+        lane: 'lipa',
+        protocol: 'json/v1',
+        queue_depth: lipaLane.getPendingInbox().length,
+      });
+      try {
+        // Reply directly for ping — don't queue
+        const replySubject = `${lipaConfig.replySubjectPrefix} re: ${subject}`;
+        const replyBody = [
+          `AUTH:${lipaConfig.token}`,
+          '',
+          JSON.stringify(responseObj, null, 2),
+        ].join('\n');
+        const transport = getSmtpTransport();
+        await transport.sendMail({
+          from: lipaConfig.account,
+          to: lipaConfig.replyTo,
+          subject: replySubject,
+          text: replyBody,
+          ...(messageId ? { inReplyTo: messageId } : {}),
+        });
+        console.log(`[Bridge][Lipa] ping reply sent`);
+        logProcessed({ uid, messageId, from: fromAddr, subject, status: 'lipa_ping', command: 'ping', requestId, response: JSON.stringify(responseObj) });
+      } catch (err) {
+        console.error(`[Bridge][Lipa] ping reply failed:`, err.message);
+        logProcessed({ uid, messageId, from: fromAddr, subject, status: 'lipa_reply_failed', command: 'ping', requestId, response: err.message });
+      }
+      return;
+    }
+
+    // Queue for OpenClaw processing
+    lipaLane.enqueueForLipa({
+      requestId,
+      command: cmd,
+      args,
+      fromAddr,
+      subject,
+      messageId,
+    });
+    console.log(`[Bridge][Lipa] queued command "${cmd}" request_id=${requestId || 'none'}`);
+    logProcessed({ uid, messageId, from: fromAddr, subject, status: 'lipa_queued', command: cmd, requestId, response: 'queued for OpenClaw' });
+    return;
+  }
+
+  // ── Tudat lane (existing behavior) ─────────────────────────────────────
   // Validate auth token
   const { valid, command } = extractAndValidateToken(body);
   if (!valid) {
@@ -577,6 +697,10 @@ function startInboundPoller() {
   }
 
   ensureTable();
+  if (lipaConfig.enabled) {
+    lipaLane.ensureLipaTables();
+    console.log('[Bridge][Lipa] lane enabled — tables ready');
+  }
 
   console.log(
     `[Bridge][Inbound] starting poller — every ${inboundConfig.pollMs / 1000}s, ` +
