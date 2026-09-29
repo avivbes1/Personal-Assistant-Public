@@ -380,7 +380,7 @@ check('P-026', 'bridge enqueue hooks exist and are try/catch guarded', () => {
   if (!src.includes("_bridgeEnqueueMessageById(newId, 'message.created')")) {
     return 'saveMessage does not enqueue message.created';
   }
-  if (!src.includes('_bridgeEnqueueNotice(result.lastInsertRowid)')) {
+  if (!src.includes('_bridgeEnqueueNotice(noticeId)')) {
     return 'saveNotice does not enqueue notice.upserted';
   }
   if (!src.includes("_bridgeEnqueueMessageById(msg.id, 'message.updated')")) {
