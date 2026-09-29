@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { getDB } = require('./db');
+const { getDB, checkEnumIntegrity } = require('./db');
 const { textSimilarity } = require('./notice-dedup');
 const { getIsraelHour } = require('./timeUtils');
 const logger = require('./logger');
@@ -458,6 +458,17 @@ function checkCorrectionCapture(_db, nowMs) {
   } catch (_) { return null; }
 }
 
+// B8/P13: enum integrity — wraps checkEnumIntegrity() to match throughput-check signature.
+function checkEnumIntegrityWrap(_db, _nowMs) {
+  const violations = checkEnumIntegrity();
+  if (violations.length === 0) {
+    emitMetric('enum_integrity', true, { violations: 0 });
+    return null;
+  }
+  emitMetric('enum_integrity', false, { violations: violations.length });
+  return `Enum integrity: ${violations.length} violation(s) — ${violations.join('; ')}`;
+}
+
 function runThroughputChecks(nowMs = Date.now()) {
   const db = getDB();
   const checks = [
@@ -473,6 +484,7 @@ function runThroughputChecks(nowMs = Date.now()) {
     checkUntriagedAge,
     checkSelfImprovingMaintenance,
     checkCorrectionCapture,
+    checkEnumIntegrityWrap,
   ];
   const failures = [];
   for (const check of checks) {
