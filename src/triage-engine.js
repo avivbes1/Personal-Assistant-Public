@@ -1336,7 +1336,7 @@ async function runImmediate() {
 }
 
 // Export for test runner
-module.exports = { runTriage, runDigest, runImmediate, callHaiku, callSonnet, preTriageRules, escalateLowConfidence, classifyBucket, buildClassificationPrompt, isQuietHours, getDeferredNotices, getImmediatePending, computeDeadline, israelDateToUTC, CLASSIFICATION_SYSTEM, getClassificationSystem, FEW_SHOT_EXAMPLES };
+module.exports = { runTriage, runDigest, runImmediate, callHaiku, callSonnet, preTriageRules, escalateLowConfidence, classifyBucket, buildClassificationPrompt, isQuietHours, getPendingNotices, getDeferredNotices, getImmediatePending, computeDeadline, israelDateToUTC, CLASSIFICATION_SYSTEM, getClassificationSystem, FEW_SHOT_EXAMPLES };
 
 // Run if called directly. TRIAGE_MODE selects which drain to run (P-012: all
 // three modes are the same single sender). Default = the */15 full triage.
