@@ -130,8 +130,8 @@ function logAttempt(a) {
     `INSERT INTO bridge_lipa_attempts
        (inbox_id, attempt_number, event, outcome, error, provider_message_id,
         session_id, run_id, claim_generation, started_at, finished_at,
-        cache_read_tokens, cache_write_tokens)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        cache_read_tokens, cache_write_tokens, input_tokens, output_tokens)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     a.inboxId, a.attemptNumber || 0, a.event, a.outcome || null, truncate(a.error),
     a.providerMessageId || null, a.sessionId || null, a.runId || null,
@@ -139,7 +139,9 @@ function logAttempt(a) {
     a.startedAt || null, a.finishedAt != null ? a.finishedAt : Date.now(),
     // NULL is stored as-is and reported as 'unknown' by readers — never 0.
     a.cacheReadTokens == null ? null : a.cacheReadTokens,
-    a.cacheWriteTokens == null ? null : a.cacheWriteTokens
+    a.cacheWriteTokens == null ? null : a.cacheWriteTokens,
+    a.inputTokens == null ? null : a.inputTokens,
+    a.outputTokens == null ? null : a.outputTokens
   );
 }
 
@@ -241,6 +243,7 @@ function fenceOk(row, claimGeneration) {
  */
 function completeClaim({ inboxId, claimGeneration, sessionId, response, originalSubject, inReplyTo,
                          providerMessageId, cacheReadTokens, cacheWriteTokens,
+                         inputTokens, outputTokens,
                          uncertain, uncertainReason }) {
   const now = Date.now();
   const tx = db().transaction(() => {
@@ -248,7 +251,7 @@ function completeClaim({ inboxId, claimGeneration, sessionId, response, original
     if (!fenceOk(row, claimGeneration)) {
       logAttempt({ inboxId, attemptNumber: row ? row.attempts : 0, event: 'fenced', outcome: 'ignored',
         error: `late/stale completion (row gen=${row ? row.claim_generation : 'gone'}/${row ? row.status : 'gone'} vs ${claimGeneration})`,
-        sessionId, claimGeneration, cacheReadTokens, cacheWriteTokens });
+        sessionId, claimGeneration, cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens });
       return { fenced: true };
     }
     if (uncertain) {
@@ -256,7 +259,7 @@ function completeClaim({ inboxId, claimGeneration, sessionId, response, original
         "UPDATE bridge_lipa_inbox SET status = 'needs_review', last_error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?"
       ).run(truncate('uncertain side effect: ' + (uncertainReason || 'unverified mutating work')), now, inboxId);
       logAttempt({ inboxId, attemptNumber: row.attempts, event: 'needs_review', outcome: 'ok',
-        error: uncertainReason || null, sessionId, claimGeneration, cacheReadTokens, cacheWriteTokens });
+        error: uncertainReason || null, sessionId, claimGeneration, cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens });
       return { needsReview: true };
     }
     // Outbox dedup: existence of an outbox row prevents a duplicate RESPONSE.
@@ -271,7 +274,7 @@ function completeClaim({ inboxId, claimGeneration, sessionId, response, original
             originalSubject || row.subject || null, inReplyTo || null, now);
     }
     logAttempt({ inboxId, attemptNumber: row.attempts, event: 'deliver', outcome: 'ok',
-      providerMessageId, sessionId, claimGeneration, cacheReadTokens, cacheWriteTokens, finishedAt: now });
+      providerMessageId, sessionId, claimGeneration, cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens, finishedAt: now });
     return { done: true, outboxWritten: !existing, deduped: !!existing };
   });
   return tx();

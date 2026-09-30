@@ -15,6 +15,8 @@
  *     "provider_message_id": "…",   // tracked for forensics; 'unknown' if absent
  *     "cache_read_tokens":  <int>,  // separate field; omit/null → stored as unknown
  *     "cache_write_tokens": <int>,
+ *     "input_tokens":       <int>,  // provider prompt input tokens; omit/null → unknown
+ *     "output_tokens":      <int>,  // provider completion output tokens; omit/null → unknown
  *     "uncertain":          true,   // uncertain MUTATING work → needs_review, no send
  *     "uncertain_reason":  "…"
  *   }
@@ -54,6 +56,8 @@ if (opts.claim_generation != null) {
     providerMessageId: opts.provider_message_id || 'unknown',
     cacheReadTokens: opts.cache_read_tokens == null ? null : opts.cache_read_tokens,
     cacheWriteTokens: opts.cache_write_tokens == null ? null : opts.cache_write_tokens,
+    inputTokens: opts.input_tokens == null ? null : opts.input_tokens,
+    outputTokens: opts.output_tokens == null ? null : opts.output_tokens,
     uncertain: !!opts.uncertain,
     uncertainReason: opts.uncertain_reason || null,
   });

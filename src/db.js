@@ -993,10 +993,15 @@ function initDB() {
         started_at          INTEGER,
         finished_at         INTEGER,
         cache_read_tokens   INTEGER,                     -- NULL = unknown
-        cache_write_tokens  INTEGER                      -- NULL = unknown
+        cache_write_tokens  INTEGER,                     -- NULL = unknown
+        input_tokens        INTEGER,                     -- NULL = unknown
+        output_tokens       INTEGER                      -- NULL = unknown
       )
     `);
   } catch (_) {}
+  // Additive migration: input/output token columns (added after initial release).
+  try { db.exec('ALTER TABLE bridge_lipa_attempts ADD COLUMN input_tokens INTEGER'); } catch (_) {}
+  try { db.exec('ALTER TABLE bridge_lipa_attempts ADD COLUMN output_tokens INTEGER'); } catch (_) {}
   // Key/value control table: the billing circuit-breaker state and the single
   // global worker lock both live here (see lipaReliability.js).
   try {
