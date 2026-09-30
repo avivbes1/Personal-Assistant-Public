@@ -146,6 +146,7 @@ module.exports = {
           '--terminal-status', 'session terminated, verified via test',
           '--source', 'automated test C4',
           '--side-effect-outcome', 'no side effects, row quarantined',
+          '--hold-session', 'c4-sess',
         ]);
         if (result.code !== 0) errors.push(`C4: --clear-hold with evidence exited ${result.code}: ${result.stderr.substring(0, 200)}`);
         // Hold should be cleared

@@ -378,7 +378,10 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     return { launched: false, reason: 'launch_insert_failed', error: launchInsertErr.message };
   }
 
-  /** Persist outcome record (immutable INSERT). Called from all exit paths. */
+  /** Persist outcome record (immutable INSERT). Called from all exit paths.
+   *  For non-clean exits with captured usage, also reconcile into cost ledger
+   *  (respond.js only covers clean completions; failed/timeout usage is invisible
+   *  without this). Uses sourceKey dedup to never double-count with respond.js. */
   function persistOutcome(status, finishedAt, extra = {}) {
     try {
       getDB().prepare('INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?)')
@@ -387,6 +390,28 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
           expected_claim_ids: expectedClaimIds, status, ...extra,
         }), finishedAt);
     } catch (_) { /* immutable: collision = already exists */ }
+    // Reconcile captured run usage into cost ledger for non-clean exits
+    if (status !== 'clean_exit' && extra.usage && !extra.usage_unknown) {
+      try {
+        accounting.recordRequestCost({
+          inboxId: expectedClaimIds[0] || null,
+          inputTokens: extra.usage.input_tokens,
+          outputTokens: extra.usage.output_tokens,
+          cacheReadTokens: extra.usage.cache_read_tokens || extra.usage.cache_read,
+          cacheWriteTokens: extra.usage.cache_write_tokens || extra.usage.cache_write,
+          model: extra.usage.model || null,
+          sourceKey: `wrapper_${sid}_${status}`,  // dedup: never double-count with respond.js
+        });
+      } catch (_) { /* non-fatal */ }
+    } else if (status !== 'clean_exit') {
+      // Unknown usage for failed runs — record explicitly as unknown
+      try {
+        accounting.recordRequestCost({
+          inboxId: expectedClaimIds[0] || null,
+          sourceKey: `wrapper_${sid}_${status}`,
+        });
+      } catch (_) { /* non-fatal */ }
+    }
   }
 
   // ── build the agent message with bound claim details ──────────────────
@@ -574,9 +599,27 @@ if (require.main === module) {
       process.exit(1);
     }
 
-    // Session match: if the hold has a session_id, the operator must be aware of it
-    // (the evidence --terminal-status should reference the correct session)
-    // We don't block on session_id=null holds (incident protective holds)
+    // Session match: operator must supply --hold-session matching hold.session_id
+    const holdSession = getArg('--hold-session');
+    if (sessionId != null) {
+      // Hold has a session — operator must confirm they're clearing the right one
+      if (!holdSession) {
+        console.error(`[Lipa preflight] --clear-hold REFUSED: hold has session_id=${sessionId}. Supply --hold-session "${sessionId}" to confirm.`);
+        process.exit(1);
+      }
+      if (holdSession !== sessionId) {
+        console.error(`[Lipa preflight] --clear-hold REFUSED: --hold-session "${holdSession}" does not match hold session_id "${sessionId}".`);
+        process.exit(1);
+      }
+    } else {
+      // Null session_id hold (e.g. incident protective hold) — require explicit
+      // evidence that no remote session or side effect remains
+      if (!holdSession || holdSession !== 'none') {
+        console.error('[Lipa preflight] --clear-hold REFUSED: hold has session_id=null (incident hold).');
+        console.error('Supply --hold-session "none" to confirm no remote session exists.');
+        process.exit(1);
+      }
+    }
 
     // All checks pass — write DURABLE audit + clear in ONE transaction
     const auditAt = Date.now();
@@ -593,6 +636,12 @@ if (require.main === module) {
     // Audit + clear in ONE transaction (atomic: either both succeed or neither)
     const clearDb = getDB();
     const tx = clearDb.transaction(() => {
+      // 0. Recheck hold state inside transaction (prevent race)
+      const recheckRow = clearDb.prepare('SELECT value FROM bridge_lipa_state WHERE key = ?').get('execution_hold');
+      if (!recheckRow || !recheckRow.value) throw new Error('hold disappeared between check and clear');
+      const recheckHold = JSON.parse(recheckRow.value);
+      if (!recheckHold.active) throw new Error('hold is no longer active');
+      if (recheckHold.session_id !== sessionId) throw new Error(`hold session_id changed (was ${sessionId}, now ${recheckHold.session_id})`);
       // 1. Write audit
       rel.logAttempt({
         inboxId: 0,
