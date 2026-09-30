@@ -63,20 +63,11 @@ function ensureLipaTables() {
  * Called by the inbound poller when it sees [Instinct->Lipa].
  */
 function enqueueForLipa({ requestId, command, args, fromAddr, subject, messageId }) {
-  const { getDB } = require('../db');
   ensureLipaTables();
-  getDB().prepare(`
-    INSERT INTO bridge_lipa_inbox (request_id, command, args_json, from_addr, subject, gmail_message_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    requestId || null,
-    command || '',
-    JSON.stringify(args || {}),
-    fromAddr || null,
-    subject || null,
-    messageId || null,
-    Date.now()
-  );
+  // Delegate to the reliability layer so oversized jobs are rejected (not
+  // silently truncated) and the due-time columns (available_at, args_bytes,
+  // attempts) are populated for the worker/gate. Returns {inserted, id, rejected?}.
+  return require('./lipaReliability').enqueueGuarded({ requestId, command, args, fromAddr, subject, messageId });
 }
 
 // ── Outbound: OpenClaw writes here, poller reads ─────────────────────────────

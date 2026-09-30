@@ -61,6 +61,21 @@ module.exports = {
     ).get();
     if (!idx) errors.push('missing index: idx_bridge_outbox_delivery');
 
+    // ── Lipa Bridge reliability surface ──────────────────────────────────────
+    for (const t of ['bridge_lipa_inbox', 'bridge_lipa_attempts', 'bridge_lipa_state']) {
+      if (!tableExists(db, t)) errors.push(`missing table: ${t}`);
+    }
+    const lipaCols = columnsOf(db, 'bridge_lipa_inbox');
+    for (const c of ['attempts', 'available_at', 'claim_generation', 'lease_expires_at',
+      'session_id', 'run_id', 'args_bytes', 'split_progress', 'last_error', 'updated_at']) {
+      if (!lipaCols.has(c)) errors.push(`bridge_lipa_inbox missing column: ${c}`);
+    }
+    const attCols = columnsOf(db, 'bridge_lipa_attempts');
+    for (const c of ['inbox_id', 'attempt_number', 'event', 'outcome', 'provider_message_id',
+      'session_id', 'run_id', 'claim_generation', 'cache_read_tokens', 'cache_write_tokens']) {
+      if (!attCols.has(c)) errors.push(`bridge_lipa_attempts missing column: ${c}`);
+    }
+
     return errors.length === 0
       ? { pass: true, message: 'Bridge schema (3 tables, columns, notices ALTERs, index) present after initDB.' }
       : { pass: false, message: errors.join('\n         ') };

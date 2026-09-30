@@ -945,6 +945,72 @@ function initDB() {
   try { db.exec('ALTER TABLE notices ADD COLUMN export_version INTEGER NOT NULL DEFAULT 1'); } catch (_) {}
   try { db.exec('ALTER TABLE notices ADD COLUMN updated_at INTEGER'); } catch (_) {}
 
+  // ── Lipa Bridge reliability layer (src/bridge/lipaReliability.js) ───────────
+  // Purely additive (P-026). The Lipa lane (bridge_lipa_inbox/outbox, defined in
+  // src/bridge/lipaLane.js) was a plain pending/done queue; these columns and
+  // tables add a durable worker: due-time gating, single-worker claim/lease,
+  // fenced completions, bounded retries, a billing circuit breaker, and
+  // per-attempt forensics. bridge_lipa_inbox is created by ensureLipaTables();
+  // ALTERs below fire whether or not that has run yet (wrapped in try/catch).
+  //
+  // status lifecycle: pending | retry | claimed | done | needs_review | dead | paused
+  //   - retry:        failed once, waiting on backoff (available_at in the future)
+  //   - claimed:      leased to a worker session (claim_generation fences it)
+  //   - needs_review: uncertain mutating side effect — NEVER blind-retried
+  //   - dead:         exhausted maxAttempts (3)
+  //   - paused:       parked by the billing circuit breaker
+  try { db.exec('CREATE TABLE IF NOT EXISTS bridge_lipa_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT, command TEXT NOT NULL, args_json TEXT, from_addr TEXT, subject TEXT, gmail_message_id TEXT, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT \'pending\', processed_at INTEGER)'); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN available_at INTEGER"); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN claim_generation INTEGER"); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN lease_expires_at INTEGER"); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN session_id TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN run_id TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN args_bytes INTEGER"); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN split_progress TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN last_error TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN updated_at INTEGER"); } catch (_) {}
+  // Backfill available_at for rows created before the column existed so the
+  // due-time gate treats them as immediately due (never silently stuck).
+  try { db.exec("UPDATE bridge_lipa_inbox SET available_at = created_at WHERE available_at IS NULL"); } catch (_) {}
+
+  // Per-attempt log — one row per claim/deliver/fail/timeout/fence/needs_review
+  // event, for post-hoc forensics. cache_read_tokens / cache_write_tokens are
+  // SEPARATE fields; NULL means 'unknown' (the provider did not report them).
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_lipa_attempts (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        inbox_id            INTEGER NOT NULL,
+        attempt_number      INTEGER NOT NULL,
+        event               TEXT NOT NULL,               -- claim | deliver | fail | timeout | fenced | needs_review | paused
+        outcome             TEXT,                        -- ok | error | ignored
+        error               TEXT,
+        provider_message_id TEXT,
+        session_id          TEXT,
+        run_id              TEXT,
+        claim_generation    INTEGER,
+        started_at          INTEGER,
+        finished_at         INTEGER,
+        cache_read_tokens   INTEGER,                     -- NULL = unknown
+        cache_write_tokens  INTEGER                      -- NULL = unknown
+      )
+    `);
+  } catch (_) {}
+  // Key/value control table: the billing circuit-breaker state and the single
+  // global worker lock both live here (see lipaReliability.js).
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_lipa_state (
+        key        TEXT PRIMARY KEY,
+        value      TEXT,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+  } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_lipa_due ON bridge_lipa_inbox(status, available_at)'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_lipa_attempts ON bridge_lipa_attempts(inbox_id, attempt_number)'); } catch (_) {}
+
   console.log('[DB] Initialized at', DB_PATH);
   return db;
 }
