@@ -55,22 +55,44 @@ const MODEL_RATES = {
 };
 const MTOK = 1_000_000;
 
+// Model aliases: map provider-specific model IDs to canonical rate keys.
+// Only VERIFIED aliases that resolve to a specific pricing tier.
+const MODEL_ALIASES = {
+  // Anthropic API model IDs (with and without dates)
+  'claude-opus-4-6': 'claude-opus-4.6',
+  'claude-opus-4-5': 'claude-opus-4.5',
+  'claude-opus-4-7': 'claude-opus-4.7',
+  'claude-opus-4-8': 'claude-opus-4.8',
+  'claude-opus-5': 'claude-opus-5',
+  'claude-opus-5-5': 'claude-opus-5.5',
+  'claude-sonnet-4-6': 'claude-sonnet-4.6',
+  'claude-sonnet-4-5': 'claude-sonnet-4.5',
+  'claude-sonnet-5': 'claude-sonnet-5',
+  'claude-sonnet-5-5': 'claude-sonnet-5.5',
+  'claude-haiku-4-5': 'claude-haiku-4.5',
+  'claude-haiku-3-5': 'claude-haiku-3.5',
+  // OpenClaw provider/model format
+  'anthropic/claude-opus-4-6': 'claude-opus-4.6',
+  'anthropic/claude-sonnet-4-6': 'claude-sonnet-4.6',
+  'anthropic/claude-haiku-4-5': 'claude-haiku-4.5',
+  'google/gemini-2.5-flash': 'gemini-2.5-flash',
+};
+
 /**
  * Resolve rates for a model string. Returns { rates, known }.
+ * Uses ONLY verified exact model-ID matches and aliases.
+ * No prefix/family fallback — 'claude-sonnet-999' returns known=false.
  * An unknown model returns known=false (caller must mark cost_unknown=true).
  */
 function ratesForModel(model) {
   if (!model) return { rates: null, known: false };
-  const m = String(model).toLowerCase();
-  // Try exact match first
-  for (const [id, rates] of Object.entries(MODEL_RATES)) {
-    if (m.includes(id)) return { rates, known: true };
-  }
-  // Try prefix match (e.g. 'opus' matches any opus)
-  for (const [id, rates] of Object.entries(MODEL_RATES)) {
-    const prefix = id.split('-').slice(1, 2).join(''); // extract 'opus', 'sonnet', etc.
-    if (prefix && m.includes(prefix)) return { rates, known: true };
-  }
+  const m = String(model).toLowerCase().replace(/@\d{8}$/, ''); // strip date suffix like @20250805
+  // Direct match in MODEL_RATES
+  if (MODEL_RATES[m]) return { rates: MODEL_RATES[m], known: true };
+  // Alias match
+  const alias = MODEL_ALIASES[m];
+  if (alias && MODEL_RATES[alias]) return { rates: MODEL_RATES[alias], known: true };
+  // No match = unknown
   return { rates: null, known: false };
 }
 // Legacy exports (Opus 4.6 rates for backward compat)

@@ -637,14 +637,14 @@ module.exports = {
       // ── T30: model-aware accounting rates ──────────────────────────
       {
         // Opus should be most expensive
-        const opusEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-opus-4' });
-        const sonnetEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-sonnet-4' });
-        const haikuEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-haiku-4' });
+        const opusEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-opus-4.6' });
+        const sonnetEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-sonnet-4.6' });
+        const haikuEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-haiku-4.5' });
         if (!opusEst.cost || !sonnetEst.cost || !haikuEst.cost) errors.push('T30: estimates returned null for known token counts');
         if (opusEst.cost <= sonnetEst.cost) errors.push(`T30: Opus ($${opusEst.cost}) not more expensive than Sonnet ($${sonnetEst.cost})`);
         if (sonnetEst.cost <= haikuEst.cost) errors.push(`T30: Sonnet ($${sonnetEst.cost}) not more expensive than Haiku ($${haikuEst.cost})`);
         // Partial usage should be flagged
-        const partial = accounting.estimateFromTokens({ inputTokens: 1000, model: 'opus' });
+        const partial = accounting.estimateFromTokens({ inputTokens: 1000, model: 'claude-opus-4.6' });
         if (!partial.partial) errors.push('T30: missing output tokens not flagged as partial');
         // Unknown model returns cost=null + unknownModel=true (per Aviv: unknown=unknown, not guessed)
         const unknownModel = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: null });

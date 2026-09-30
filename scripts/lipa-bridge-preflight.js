@@ -347,6 +347,7 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
   });
 
   // ── persist launch-start record BEFORE spawn (immutable INSERT) ──────────
+  // A launch INSERT failure MUST stop the launch (not be swallowed).
   const launchKey = `launch_${sid}`;
   try {
     getDB().prepare(
@@ -355,7 +356,24 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
       session_id: sid, started_at: startedAt, expected_claim_ids: expectedClaimIds,
       claim_details: claimDetails, status: 'started', usage: null, usage_unknown: true,
     }), startedAt);
-  } catch (_) { /* key collision = already exists = immutable, do nothing */ }
+  } catch (launchInsertErr) {
+    // Key collision means this sid was already used (replayed) — refuse to launch
+    console.error(`[Lipa preflight] launch INSERT failed (refusing launch): ${launchInsertErr.message}`);
+    rel.releaseWorkerLock(sid);
+    setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, reason: 'launch_insert_failed' });
+    return { launched: false, reason: 'launch_insert_failed', error: launchInsertErr.message };
+  }
+
+  /** Persist outcome record (immutable INSERT). Called from all exit paths. */
+  function persistOutcome(status, finishedAt, extra = {}) {
+    try {
+      getDB().prepare('INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?)')
+        .run('outcome_' + sid, JSON.stringify({
+          session_id: sid, started_at: startedAt, finished_at: finishedAt,
+          expected_claim_ids: expectedClaimIds, status, ...extra,
+        }), finishedAt);
+    } catch (_) { /* immutable: collision = already exists */ }
+  }
 
   // ── build the agent message with bound claim details ──────────────────
   const claimJson = JSON.stringify(claimDetails);
@@ -376,7 +394,7 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     // release the lock (respond.js may or may not run; TTL is the safety net).
     const spawnDoneAt = Date.now();
     setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: spawnDoneAt, reason: `spawn_error: ${spawnErr.message}` });
-    try { getDB().prepare('INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?)').run('outcome_' + sid, JSON.stringify({ session_id: sid, started_at: startedAt, finished_at: spawnDoneAt, status: 'spawn_error', usage: null, usage_unknown: true }), spawnDoneAt); } catch (_) {}
+    persistOutcome('spawn_error', spawnDoneAt, { usage: null, usage_unknown: true });
     setExecutionHold(`spawn failed: ${spawnErr.message}`, { session_id: sid });
     return { launched: true, reason: 'spawn_error', error: spawnErr.message, holdSet: true };
   }
@@ -401,6 +419,7 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     const claimedIds = quarantineClaimedRows(sid, 'CLI timeout — remote status unknown, side effect uncertain', doneAt);
     setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, reason: 'timeout', claimed_ids: claimedIds });
     setExecutionHold('CLI timeout — remote agent status unknown', { session_id: sid, claimed_ids: claimedIds });
+    persistOutcome('timeout', doneAt, { usage: usage || null, usage_unknown: !usage });
     console.error(`[Lipa preflight] CLI TIMEOUT — ${claimedIds.length} claimed row(s) → needs_review; lock left to expire via TTL`);
     return { launched: true, reason: 'timeout', holdSet: true, claimedIds };
   }
@@ -419,6 +438,7 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
       setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, reason: verification.reason || 'exit_0_verify_failed', unverified_ids: unverifiedIds, exit_code: 0, usage_unknown: !usage });
       setExecutionHold('exit 0 but respond.js did not complete all claimed rows', { session_id: sid, claimed_ids: unverifiedIds });
       console.error(`[Lipa preflight] exit 0 verification FAILED — ${unverifiedIds.length} row(s) uncompleted; hold set`);
+      persistOutcome('verification_failed', doneAt, { exit_code: 0, usage: usage || null, usage_unknown: !usage, unverifiedIds });
       return { launched: true, reason: 'clean_exit_verification_failed', exitCode: 0, holdSet: true, unverifiedIds };
     }
 
@@ -427,15 +447,7 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     // Persist outcome record (immutable INSERT, separate from launch-start)
     // No double-count: respond.js handles per-request cost. The wrapper only
     // records run-level metadata. Accounting uses respond.js records only.
-    try {
-      getDB().prepare(
-        'INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?)'
-      ).run('outcome_' + sid, JSON.stringify({
-        session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: 0,
-        expected_claim_ids: claimIds, status: 'clean_exit',
-        usage: usage || null, usage_unknown: !usage,
-      }), doneAt);
-    } catch (_) { /* immutable: collision = already exists */ }
+    persistOutcome('clean_exit', doneAt, { exit_code: 0, usage: usage || null, usage_unknown: !usage });
     setExecutionState({ state: 'terminal', session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: 0, usage_unknown: !usage });
     console.log('[Lipa preflight] agent turn exited 0, all rows verified terminal — lock released');
     return { launched: true, reason: 'clean_exit', exitCode: 0 };
@@ -447,6 +459,7 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
   setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: code, reason: 'nonzero_exit', usage_unknown: !usage });
   setExecutionHold(`agent turn exited non-zero (code=${code}) — completion uncertain`, { session_id: sid, claimed_ids: exitClaimedIds });
   console.error(`[Lipa preflight] agent turn exit code=${code} — hold set, lock left to expire via TTL`);
+  persistOutcome('nonzero_exit', doneAt, { exit_code: code, usage: usage || null, usage_unknown: !usage });
   return { launched: true, reason: 'nonzero_exit', exitCode: code, holdSet: true };
 }
 

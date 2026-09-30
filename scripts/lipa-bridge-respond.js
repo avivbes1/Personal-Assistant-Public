@@ -75,10 +75,17 @@ if (opts.claim_generation == null) {
   }
 }
 
-// Session mismatch check: if the DB row has a session_id, the caller's must match
-if (dbRow && dbRow.session_id && sessionId && dbRow.session_id !== sessionId) {
-  console.error(`[Lipa Bridge] SESSION MISMATCH: row session_id=${dbRow.session_id} != caller session_id=${sessionId}. Exiting 3.`);
-  process.exit(3);
+// Session mismatch check: if the DB row has a session_id, the caller MUST
+// provide a matching one. Missing caller session = mismatch.
+if (dbRow && dbRow.session_id) {
+  if (!sessionId) {
+    console.error(`[Lipa Bridge] SESSION MISMATCH: row has session_id=${dbRow.session_id} but caller provided none. Exiting 3.`);
+    process.exit(3);
+  }
+  if (dbRow.session_id !== sessionId) {
+    console.error(`[Lipa Bridge] SESSION MISMATCH: row session_id=${dbRow.session_id} != caller session_id=${sessionId}. Exiting 3.`);
+    process.exit(3);
+  }
 }
 
 if (opts.claim_generation != null) {

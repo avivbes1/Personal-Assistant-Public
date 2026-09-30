@@ -39,17 +39,36 @@ function _truncateHold(s, n = 300) { s = s == null ? '' : String(s); return s.sl
 
 /**
  * The active execution hold, or null when none is set.
- * Fails CLOSED: if the hold key exists but is corrupt, returns a synthetic
- * hold { active: true, reason: 'corrupt_hold_state' } so launches are blocked.
+ * Fails CLOSED: if the hold key exists but contains ANY value that is not a
+ * valid hold object with active=true, it blocks launches. This includes:
+ * corrupt JSON, {}, [], null, false, strings, missing/false active field.
+ * Only returns null when the key does NOT EXIST in the DB at all.
  */
 function getExecutionHold() {
   const r = getStateEx(HOLD_KEY);
   if (!r.exists) return null;
+  // Key exists — validate rigorously
   if (r.corrupt) {
-    console.error('[Lipa] execution_hold key is corrupt — fail closed (blocking)');
+    console.error('[Lipa] execution_hold: corrupt JSON — fail closed');
     return { active: true, reason: 'corrupt_hold_state', corrupt: true };
   }
-  return r.value && r.value.active ? r.value : null;
+  const v = r.value;
+  // Reject non-object, arrays, null, false, empty object, strings
+  if (v == null || typeof v !== 'object' || Array.isArray(v)) {
+    console.error('[Lipa] execution_hold: invalid type — fail closed');
+    return { active: true, reason: 'invalid_hold_type', corrupt: true };
+  }
+  if (Object.keys(v).length === 0) {
+    console.error('[Lipa] execution_hold: empty object — fail closed');
+    return { active: true, reason: 'empty_hold_object', corrupt: true };
+  }
+  // A valid hold with active=true
+  if (v.active === true) return v;
+  // Key exists with active=false or missing — this is ambiguous.
+  // Fail closed: a hold key should only exist if active. If someone set
+  // active=false, the key should have been deleted.
+  console.error('[Lipa] execution_hold: exists but active is not true — fail closed');
+  return { active: true, reason: 'hold_exists_not_active', corrupt: true };
 }
 
 /**
@@ -190,12 +209,26 @@ function acquireWorkerLock(holder, ttlMs = WORKER_LOCK_TTL_MS) {
       return false;
     }
     const cur = r.value;
-    // Validate schema: must be object with holder + expires_at
-    if (cur && (typeof cur !== 'object' || Array.isArray(cur) || !cur.holder || !cur.expires_at)) {
-      console.error('[Lipa] worker_lock: invalid schema — fail closed (refusing acquire)');
+    if (r.exists && cur != null) {
+      // Validate: must be a non-array object with string holder and numeric expires_at
+      if (typeof cur !== 'object' || Array.isArray(cur)) {
+        console.error('[Lipa] worker_lock: not a valid object — fail closed');
+        return false;
+      }
+      if (!cur.holder || typeof cur.holder !== 'string') {
+        console.error('[Lipa] worker_lock: missing/invalid holder — fail closed');
+        return false;
+      }
+      if (typeof cur.expires_at !== 'number' || !Number.isFinite(cur.expires_at)) {
+        console.error('[Lipa] worker_lock: non-numeric expires_at — fail closed');
+        return false;
+      }
+      if (cur.holder !== holder && cur.expires_at > now) return false;
+    } else if (r.exists) {
+      // Key exists but value parsed to null/false/0/'' — fail closed, don't overwrite
+      console.error('[Lipa] worker_lock: exists but value is null/falsy — fail closed');
       return false;
     }
-    if (cur && cur.holder !== holder && cur.expires_at > now) return false;
     setState('worker_lock', { holder, acquired_at: (cur && cur.holder === holder) ? cur.acquired_at : now, expires_at: now + ttlMs });
     return true;
   });
@@ -423,6 +456,11 @@ function failClaim({ inboxId, claimGeneration, sessionId, error, isTimeout,
     if (attempts >= MAX_ATTEMPTS) {
       db().prepare("UPDATE bridge_lipa_inbox SET status = 'dead', attempts = ?, last_error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
         .run(attempts, errText, now, inboxId);
+      // Exhausted: set hold (cannot verify what happened on final attempt)
+      if (isTimeout) {
+        setExecutionHold(`exhausted timeout — session ${sessionId || 'unknown'}, row ${inboxId}`,
+          { session_id: sessionId || null, claimed_ids: [inboxId] });
+      }
       return { status: 'dead', attempts };
     }
 
