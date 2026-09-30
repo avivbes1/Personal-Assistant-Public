@@ -70,8 +70,9 @@ function forceComplete(db, id, sessionId, gen) {
   const now = Date.now();
   db.prepare("UPDATE bridge_lipa_inbox SET status='done', session_id=?, claim_generation=?, updated_at=? WHERE id=?")
     .run(sessionId, gen, now, id);
+  // Use unique request_id per inbox_id to avoid dedup conflicts across tests
   db.prepare("INSERT OR IGNORE INTO bridge_lipa_outbox (inbox_id, request_id, response_json, original_subject, in_reply_to, created_at) VALUES (?, ?, '{}', '', '', ?)")
-    .run(id, PREFIX + 'done', now);
+    .run(id, PREFIX + 'done_' + id, now);
 }
 
 /** Mock launcher that resolves with a configurable result. */
@@ -256,17 +257,16 @@ module.exports = {
       // ── T13: clean exit (code 0) with verified completion → no hold ──────────
       {
         resetState(db);
-        // Create a row, claim it, then complete it (simulate what respond.js does inside the turn)
         const id = enqueue('t13'); ids.push(id);
         const sid = 'clean-t13';
-        const gen = forceClaim(db, id, sid);
 
-        // Mock launcher: when it "runs", we simulate respond.js completing the row
         const launcher = (opts) => {
+          const gen = forceClaim(db, id, sid);
           forceComplete(db, id, sid, gen);
           return Promise.resolve({ code: 0, signal: null, timedOut: false, stdout: '' });
         };
-        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1 } });
+        // Inject expected claim IDs so verification works on shared DB
+        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1, getExpectedClaimIds: () => [id] } });
         if (!res.launched) errors.push('T13: did not launch');
         if (res.reason !== 'clean_exit') errors.push(`T13: reason=${res.reason}, expected clean_exit`);
         const hold = getExecutionHold();
@@ -360,21 +360,20 @@ module.exports = {
       // ── T19: exit 0 without response in DB → hold set ──────────────────────
       {
         resetState(db);
+        // Row must be pending+due so preflight pre-reads its ID
         const id = enqueue('t19'); ids.push(id);
         const sid = 'exit0-noresponse-t19';
-        const gen = forceClaim(db, id, sid);
-        // Mock launcher returns exit 0 but does NOT complete the row (respond.js didn't run)
-        const res = await runPreflight({
-          launcher: mockLauncher({ code: 0, signal: null, timedOut: false, stdout: '' }),
-          sessionId: sid, deps: { getDueCount: () => 1 },
-        });
+        // Launcher claims the row but does NOT complete it (respond.js didn't run)
+        const launcher = (opts) => {
+          forceClaim(db, id, sid);
+          return Promise.resolve({ code: 0, signal: null, timedOut: false, stdout: '' });
+        };
+        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1, getExpectedClaimIds: () => [id] } });
         if (!res.launched) errors.push('T19: not launched');
-        // Since the row is still 'claimed', exit 0 verification should fail
         if (res.reason === 'clean_exit') errors.push('T19: treated as clean exit despite uncompleted row');
         if (res.reason !== 'clean_exit_verification_failed') errors.push(`T19: reason=${res.reason}, expected clean_exit_verification_failed`);
         const hold = getExecutionHold();
         if (!hold || !hold.active) errors.push('T19: hold not set on unverified exit 0');
-        // The row should be quarantined
         const row = db.prepare('SELECT status FROM bridge_lipa_inbox WHERE id = ?').get(id);
         if (row && row.status === 'claimed') errors.push('T19: row still claimed after failed exit 0 verification');
         resetState(db);
@@ -431,8 +430,17 @@ module.exports = {
           .run(EXEC_STATE_KEY, 'not json at all', Date.now());
         let stateResult;
         try { stateResult = getExecutionState(); } catch (e) { errors.push('T22: corrupt execution_state threw instead of failing closed'); }
-        // Should return null (fail closed = not treated as active), not crash
-        if (stateResult != null && stateResult.state) errors.push('T22: corrupt execution_state was parsed as valid');
+        // Fail closed: corrupt state should return { state: 'unknown', corrupt: true }
+        // which BLOCKS launches (not null which would allow them)
+        if (!stateResult) errors.push('T22: corrupt execution_state returned null (fail OPEN, not closed)');
+        if (stateResult && stateResult.state !== 'unknown') errors.push(`T22: corrupt state=${stateResult.state}, expected unknown`);
+        if (stateResult && !stateResult.corrupt) errors.push('T22: corrupt state not flagged as corrupt');
+        // Clear the corrupt HOLD first so we can test the execution_state gate separately
+        db.prepare('DELETE FROM bridge_lipa_state WHERE key = ?').run(HOLD_KEY);
+        // Verify corrupt execution_state actually blocks a launch
+        const blockRes = await runPreflight({ launcher: mockLauncher({ code: 0 }), deps: { getDueCount: () => 1 } });
+        if (blockRes.launched) errors.push('T22: launched despite corrupt execution_state (fail OPEN)');
+        if (blockRes.reason !== 'execution_state_active') errors.push(`T22: reason=${blockRes.reason}, expected execution_state_active`);
         resetState(db);
       }
 
@@ -499,44 +507,140 @@ module.exports = {
         resetState(db);
       }
 
-      // ── T26: launcher stdout captured + execution state persisted ───────────
+      // ── T26: launcher stdout captured + launch record persisted ───────────
       {
         resetState(db);
         const id = enqueue('t26'); ids.push(id);
         const sid = 'stdout-t26';
-        const gen = forceClaim(db, id, sid);
-        // Mock launcher returns exit 0 with stdout; the row is completed inside
         const launcher = (opts) => {
+          const gen = forceClaim(db, id, sid);
           forceComplete(db, id, sid, gen);
           return Promise.resolve({
             code: 0, signal: null, timedOut: false,
             stdout: JSON.stringify({ usage: { input_tokens: 5000, output_tokens: 1000 } }),
           });
         };
-        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1 } });
+        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1, getExpectedClaimIds: () => [id] } });
         if (!res.launched) errors.push('T26: not launched');
         if (res.reason !== 'clean_exit') errors.push(`T26: reason=${res.reason}, expected clean_exit`);
-        // Execution state should be 'terminal' with usage
+        // Execution state should be 'terminal'
         const execState = getExecutionState();
         if (!execState) errors.push('T26: no execution state persisted');
         if (execState && execState.state !== 'terminal') errors.push(`T26: state=${execState.state}, expected terminal`);
-        if (execState && execState.usage) {
-          if (execState.usage.input_tokens !== 5000) errors.push(`T26: input_tokens=${execState.usage.input_tokens}, expected 5000`);
-          if (execState.usage.output_tokens !== 1000) errors.push(`T26: output_tokens=${execState.usage.output_tokens}, expected 1000`);
-        } else if (execState) {
-          errors.push('T26: usage not captured from stdout');
+        // usage_unknown should be false since we captured stdout
+        if (execState && execState.usage_unknown !== false) errors.push('T26: usage_unknown should be false when usage captured');
+        // Immutable launch record should exist
+        const launchKey = `launch_${sid}`;
+        const launchRow = db.prepare('SELECT value FROM bridge_lipa_state WHERE key = ?').get(launchKey);
+        if (!launchRow) errors.push('T26: no immutable launch record persisted');
+        if (launchRow) {
+          const lr = JSON.parse(launchRow.value);
+          if (!lr.usage) errors.push('T26: launch record missing usage');
+          if (lr.usage && lr.usage.input_tokens !== 5000) errors.push(`T26: launch input_tokens=${lr.usage.input_tokens}`);
+          if (lr.usage_unknown) errors.push('T26: launch record incorrectly marked usage_unknown');
         }
         resetState(db);
+        // Clean launch record
+        try { db.prepare('DELETE FROM bridge_lipa_state WHERE key = ?').run(launchKey); } catch (_) {}
       }
 
     } finally {
       cleanup(db, ids);
       for (const k of STATE_KEYS) restoreState(db, k, stateSnaps[k]);
+      // Clean any immutable launch records left by tests
+      db.prepare("DELETE FROM bridge_lipa_state WHERE key LIKE 'launch_%'").run();
     }
 
-    const total = 26;
+      // ── T27: corrupt hold blocks launch (fail closed) ─────────────────
+      {
+        resetState(db);
+        // Write corrupt JSON into hold key
+        db.prepare(`INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+          .run(HOLD_KEY, '{invalid json!!!', Date.now());
+        const holdResult = getExecutionHold();
+        if (!holdResult) errors.push('T27: corrupt hold returned null (fail OPEN)');
+        if (holdResult && !holdResult.corrupt) errors.push('T27: corrupt hold not flagged');
+        // Must block launch
+        const res = await runPreflight({ launcher: mockLauncher({ code: 0 }), deps: { getDueCount: () => 1 } });
+        if (res.launched) errors.push('T27: launched despite corrupt hold (fail OPEN)');
+        if (res.reason !== 'execution_hold') errors.push(`T27: reason=${res.reason}, expected execution_hold`);
+        resetState(db);
+      }
+
+      // ── T28: verifyCompletions fails closed on empty expected claims ───────
+      {
+        resetState(db);
+        // If no expected claims are known, verification must fail (not succeed vacuously)
+        const launcher = mockLauncher({ code: 0, signal: null, timedOut: false, stdout: '' });
+        const res = await runPreflight({
+          launcher, sessionId: 'empty-claims-t28',
+          // getDueCount returns 1 but the pre-read finds nothing pending (already claimed)
+          deps: { getDueCount: () => 1 },
+        });
+        // The preflight should either not launch (if pre-read finds nothing) or
+        // fail verification (if it launched but has empty expected claims)
+        if (res.launched && res.reason === 'clean_exit') {
+          errors.push('T28: clean_exit with empty expected claims (fail OPEN)');
+        }
+        resetState(db);
+      }
+
+      // ── T29: failClaim(isTimeout:true) parks immediately, no retry ───────
+      {
+        resetState(db);
+        const id = enqueue('t29'); ids.push(id);
+        const sid = 'explicit-timeout-t29';
+        rel.acquireWorkerLock(sid);
+        const claimed = rel.claimDue({ limit: 100, sessionId: sid });
+        const row = claimed.rows.find(r => r.id === id);
+        if (!row) { errors.push('T29: setup failed - could not claim'); } else {
+          const result = rel.failClaim({
+            inboxId: id, claimGeneration: row.claim_generation, sessionId: sid,
+            error: new Error('agent timeout'), isTimeout: true,
+          });
+          if (result.status === 'retry') errors.push('T29: explicit timeout went to retry (UNSAFE)');
+          if (result.status !== 'needs_review') errors.push(`T29: status=${result.status}, expected needs_review`);
+          if (!result.parked) errors.push('T29: not flagged as parked');
+          // Hold must be set
+          const hold = getExecutionHold();
+          if (!hold || !hold.active) errors.push('T29: execution hold not set on explicit timeout');
+        }
+        rel.releaseWorkerLock(sid);
+        resetState(db);
+      }
+
+      // ── T30: model-aware accounting rates ──────────────────────────
+      {
+        // Opus should be most expensive
+        const opusEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-opus-4' });
+        const sonnetEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-sonnet-4' });
+        const haikuEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-haiku-4' });
+        if (!opusEst.cost || !sonnetEst.cost || !haikuEst.cost) errors.push('T30: estimates returned null for known token counts');
+        if (opusEst.cost <= sonnetEst.cost) errors.push(`T30: Opus ($${opusEst.cost}) not more expensive than Sonnet ($${sonnetEst.cost})`);
+        if (sonnetEst.cost <= haikuEst.cost) errors.push(`T30: Sonnet ($${sonnetEst.cost}) not more expensive than Haiku ($${haikuEst.cost})`);
+        // Partial usage should be flagged
+        const partial = accounting.estimateFromTokens({ inputTokens: 1000, model: 'opus' });
+        if (!partial.partial) errors.push('T30: missing output tokens not flagged as partial');
+        // Unknown model defaults to most expensive (Opus)
+        const unknownModel = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: null });
+        if (unknownModel.cost !== opusEst.cost) errors.push('T30: unknown model did not default to Opus rates');
+      }
+
+      // ── T31: partial usage flagged as cost_unknown in recordRequestCost ───
+      {
+        const id = enqueue('t31'); ids.push(id);
+        // Only input tokens known, output missing → partial → cost_unknown=1
+        const rec = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000 });
+        if (!rec.unknown) errors.push('T31: partial usage not flagged as unknown');
+        // Full tokens known → cost_unknown=0
+        const rec2 = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000, outputTokens: 500 });
+        if (rec2.unknown) errors.push('T31: full usage wrongly flagged as unknown');
+        resetState(db);
+      }
+
+    const total = 31;
     return errors.length === 0
-      ? { pass: true, message: `Lipa preflight: all ${total} tests pass (T1-T15 gate logic + T16-T26 execution state, verified completion, fence enforcement, fail-closed caps, first-timeout park, stdout capture).` }
+      ? { pass: true, message: `Lipa preflight: all ${total} tests pass (T1-T15 gate, T16-T26 exec state/fence/caps, T27-T31 fail-closed corruption/explicit timeout/model rates/partial usage).` }
       : { pass: false, message: errors.join('\n         ') };
   },
 };

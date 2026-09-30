@@ -276,8 +276,10 @@ module.exports = {
         rel.releaseWorkerLock('empty');
         if (db.prepare("SELECT COUNT(*) c FROM bridge_lipa_state WHERE key='worker_lock'").get().c !== 0) errors.push('T10: worker lock not released after an empty claim');
         // There is NO launch counter anywhere — an empty cycle increments nothing.
-        const counterKeys = db.prepare("SELECT key FROM bridge_lipa_state").all().map(r => r.key).filter(k => /launch|counter/i.test(k));
-        if (counterKeys.length) errors.push(`T10: unexpected launch/counter state key(s) exist: ${counterKeys.join(',')}`);
+        // launch_* keys are immutable per-run records from the preflight wrapper (valid, not counters).
+        const counterKeys = db.prepare("SELECT key FROM bridge_lipa_state").all().map(r => r.key)
+          .filter(k => /counter/i.test(k));
+        if (counterKeys.length) errors.push(`T10: unexpected counter state key(s) exist: ${counterKeys.join(',')}`);
       }
 
       // ── T11: daily cost cap blocks new launches at $20 ──────────────────────

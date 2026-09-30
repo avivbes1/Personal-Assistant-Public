@@ -96,10 +96,14 @@ const { getExecutionHold, setExecutionHold, clearExecutionHold } = rel;
 
 // ── Execution state (active/unknown/terminal) ─────────────────────────────────
 
-function readState(key) {
+/**
+ * Read a state key with corruption detection. Returns { exists, value, corrupt }.
+ */
+function readStateEx(key) {
   const row = getDB().prepare('SELECT value FROM bridge_lipa_state WHERE key = ?').get(key);
-  if (!row || row.value == null) return null;
-  try { return JSON.parse(row.value); } catch (_) { return null; }
+  if (!row || row.value == null) return { exists: false, value: null, corrupt: false };
+  try { return { exists: true, value: JSON.parse(row.value), corrupt: false }; }
+  catch (_) { return { exists: true, value: null, corrupt: true }; }
 }
 
 function writeState(key, value) {
@@ -110,11 +114,18 @@ function writeState(key, value) {
   ).run(key, JSON.stringify(value), now);
 }
 
-/** Current execution state: { state:'active'|'unknown'|'terminal', session_id, started_at, ... } or null */
+/**
+ * Current execution state. Fails CLOSED: if the key exists but is corrupt,
+ * returns a synthetic { state: 'unknown', corrupt: true } so launches are blocked.
+ */
 function getExecutionState() {
-  const s = readState(EXEC_STATE_KEY);
-  // Fail closed: corrupt JSON (readState returns null) → treat as null (not blocking on its own)
-  return s && typeof s === 'object' ? s : null;
+  const r = readStateEx(EXEC_STATE_KEY);
+  if (!r.exists) return null;
+  if (r.corrupt) {
+    console.error('[Lipa preflight] execution_state key is corrupt — fail closed (blocking)');
+    return { state: 'unknown', corrupt: true, reason: 'corrupt_execution_state' };
+  }
+  return r.value && typeof r.value === 'object' ? r.value : null;
 }
 
 function setExecutionState(obj) {
@@ -148,35 +159,44 @@ function quarantineClaimedRows(sessionId, reason, now) {
 }
 
 /**
- * Verify that all rows claimed by this session are in a durable terminal state.
- * A row is verified if:
+ * Verify that all EXPECTED rows for this session are in a durable terminal state.
+ * expectedClaimIds (persisted before launch) is the authoritative list — if empty
+ * or missing, verification FAILS CLOSED (we can't prove completion without knowing
+ * what was expected). A row is verified if:
  *   - status = 'done' AND a bridge_lipa_outbox row exists for it, OR
- *   - status = 'needs_review', OR
- *   - status = 'dead'
- * Returns { verified: true } or { verified: false, unverifiedIds: [...] }
+ *   - status = 'needs_review' (explicitly parked for human review), OR
+ *   - status = 'dead' (exhausted)
+ * Pending, retry, claimed, unknown statuses, wrong session, or missing rows = unverified.
  */
-function verifyCompletions(sessionId) {
+function verifyCompletions(sessionId, expectedClaimIds) {
   const db = getDB();
-  // Find all rows claimed by this session
-  const rows = db.prepare(
-    "SELECT id, status FROM bridge_lipa_inbox WHERE session_id = ?"
-  ).all(sessionId);
+
+  // Fail closed: if we don't know what was expected, we can't verify
+  if (!expectedClaimIds || !Array.isArray(expectedClaimIds) || expectedClaimIds.length === 0) {
+    return { verified: false, reason: 'no_expected_claims', unverifiedIds: [] };
+  }
 
   const unverifiedIds = [];
-  for (const row of rows) {
-    if (row.status === 'claimed') {
-      // respond.js didn't run for this row
-      unverifiedIds.push(row.id);
+  for (const id of expectedClaimIds) {
+    const row = db.prepare('SELECT id, status, session_id FROM bridge_lipa_inbox WHERE id = ?').get(id);
+    if (!row) {
+      unverifiedIds.push(id); // row disappeared — unverifiable
+      continue;
+    }
+    // Session must match
+    if (row.session_id !== sessionId) {
+      unverifiedIds.push(id); // wrong session owns it now
       continue;
     }
     if (row.status === 'done') {
-      // Must have an outbox row
-      const outbox = db.prepare('SELECT id FROM bridge_lipa_outbox WHERE inbox_id = ?').get(row.id);
-      if (!outbox) {
-        unverifiedIds.push(row.id);
-      }
+      const outbox = db.prepare('SELECT id FROM bridge_lipa_outbox WHERE inbox_id = ?').get(id);
+      if (!outbox) unverifiedIds.push(id); // done but no outbox = suspicious
+    } else if (row.status === 'needs_review' || row.status === 'dead') {
+      // Acceptable terminal states
+    } else {
+      // claimed, pending, retry, or anything else = not terminal
+      unverifiedIds.push(id);
     }
-    // needs_review / dead / fenced — these are acceptable terminal states
   }
 
   return unverifiedIds.length === 0
@@ -282,13 +302,23 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
   // (d) Single global execution lock — LAST gate, the only pre-launch side effect.
   if (!acquireWorkerLock(sid)) return { launched: false, reason: 'lock_held' };
 
-  // ── persist execution state BEFORE spawn ─────────────────────────────────
+  // ── claim expected IDs + persist execution state BEFORE spawn ─────────────
   const startedAt = Date.now();
+  const getExpectedClaimIds = deps.getExpectedClaimIds || (() => {
+    try {
+      const dueRows = getDB().prepare(
+        "SELECT id FROM bridge_lipa_inbox WHERE status IN ('pending','retry') AND available_at <= ? ORDER BY created_at ASC, id ASC LIMIT 1"
+      ).all(startedAt);
+      return dueRows.map(r => r.id);
+    } catch (_) { return []; }
+  });
+  let expectedClaimIds = getExpectedClaimIds();
+
   setExecutionState({
     state: 'active',
     session_id: sid,
     started_at: startedAt,
-    bootstrap_unknown: true,  // until we verify completion
+    expected_claim_ids: expectedClaimIds,
   });
 
   // ── launch ─────────────────────────────────────────────────────────────────
@@ -332,12 +362,14 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     // (5) Exit 0 — verify DB state before releasing the lock.
     // For each row claimed by this session: it must be done (with outbox row),
     // needs_review, or dead. If any row is still 'claimed', respond.js didn't run.
-    const verification = verifyCompletions(sid);
+    const execStatePre = getExecutionState();
+    const claimIds = (execStatePre && Array.isArray(execStatePre.expected_claim_ids))
+      ? execStatePre.expected_claim_ids : expectedClaimIds;
+    const verification = verifyCompletions(sid, claimIds);
     if (!verification.verified) {
-      const unverifiedIds = verification.unverifiedIds;
-      // Quarantine any still-claimed rows
+      const unverifiedIds = verification.unverifiedIds || [];
       quarantineClaimedRows(sid, 'exit 0 but respond.js did not complete all claimed rows', doneAt);
-      setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, reason: 'exit_0_verify_failed', unverified_ids: unverifiedIds, exit_code: 0, usage });
+      setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, reason: verification.reason || 'exit_0_verify_failed', unverified_ids: unverifiedIds, exit_code: 0, usage_unknown: !usage });
       setExecutionHold('exit 0 but respond.js did not complete all claimed rows', { session_id: sid, claimed_ids: unverifiedIds });
       console.error(`[Lipa preflight] exit 0 verification FAILED — ${unverifiedIds.length} row(s) uncompleted; hold set`);
       return { launched: true, reason: 'clean_exit_verification_failed', exitCode: 0, holdSet: true, unverifiedIds };
@@ -345,16 +377,37 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
 
     // All claimed rows are verified terminal — safe to release the lock.
     rel.releaseWorkerLock(sid);
-    setExecutionState({ state: 'terminal', session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: 0, bootstrap_unknown: false, usage });
+    // Persist immutable per-launch record (never overwritten; keyed by session)
+    const launchRecord = {
+      session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: 0,
+      expected_claim_ids: claimIds,
+      usage: usage || null, usage_unknown: !usage,
+    };
+    try {
+      writeState(`launch_${sid}`, launchRecord);
+      // Record launch-level cost into daily accounting (bootstrap / non-request cost).
+      // This is separate from respond.js per-request accounting — no double count
+      // because this uses inboxId=null.
+      if (usage && (usage.input_tokens || usage.output_tokens)) {
+        accounting.recordRequestCost({
+          inboxId: null,
+          inputTokens: usage.input_tokens, outputTokens: usage.output_tokens,
+          cacheReadTokens: usage.cache_read_tokens || usage.cache_read,
+          cacheWriteTokens: usage.cache_write_tokens || usage.cache_write,
+          model: usage.model || null,
+        });
+      }
+    } catch (_) { /* non-fatal */ }
+    setExecutionState({ state: 'terminal', session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: 0, usage_unknown: !usage });
     console.log('[Lipa preflight] agent turn exited 0, all rows verified terminal — lock released');
     return { launched: true, reason: 'clean_exit', exitCode: 0 };
   }
 
-  // (5) Non-zero / unknown exit: a failure with an ambiguous completion state. Log,
-  // set a hold, and leave the lock for the TTL — respond.js may not have run.
+  // Non-zero / unknown exit: quarantine all claimed rows + hold.
   const code = result ? result.code : null;
-  setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: code, reason: 'nonzero_exit', usage });
-  setExecutionHold(`agent turn exited non-zero (code=${code}) — completion uncertain`, { session_id: sid });
+  const exitClaimedIds = quarantineClaimedRows(sid, `agent turn exited non-zero (code=${code})`, doneAt);
+  setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: code, reason: 'nonzero_exit', usage_unknown: !usage });
+  setExecutionHold(`agent turn exited non-zero (code=${code}) — completion uncertain`, { session_id: sid, claimed_ids: exitClaimedIds });
   console.error(`[Lipa preflight] agent turn exit code=${code} — hold set, lock left to expire via TTL`);
   return { launched: true, reason: 'nonzero_exit', exitCode: code, holdSet: true };
 }
@@ -377,9 +430,31 @@ if (require.main === module) {
   ensureLipaTables();
 
   if (argv.includes('--clear-hold')) {
-    // --clear-hold requires evidence: all rows for the held session must be
-    // in a terminal state (done/needs_review/dead), and no row may still be
-    // 'claimed'. Fail closed on corrupt hold JSON.
+    // --clear-hold requires OPERATOR-SUPPLIED terminal evidence:
+    //   --terminal-status "session confirmed terminated via openclaw sessions list"
+    //   --source "Aviv, manual verification"
+    //   --side-effect-outcome "no side effects; rows quarantined"
+    // All three are REQUIRED. Without them the clear is refused.
+    // DB checks (no claimed rows, all terminal) are also required but are NOT
+    // sufficient — quarantine itself sets needs_review, which is not proof the
+    // remote agent stopped.
+
+    const getArg = (flag) => {
+      const idx = argv.indexOf(flag);
+      return idx >= 0 && idx + 1 < argv.length ? argv[idx + 1] : null;
+    };
+    const terminalStatus = getArg('--terminal-status');
+    const source = getArg('--source');
+    const sideEffectOutcome = getArg('--side-effect-outcome');
+
+    if (!terminalStatus || !source || !sideEffectOutcome) {
+      console.error('[Lipa preflight] --clear-hold REFUSED: missing required evidence.');
+      console.error('Required flags:');
+      console.error('  --terminal-status "<how remote terminal status was verified>"');
+      console.error('  --source "<who verified (operator name/id)>"');
+      console.error('  --side-effect-outcome "<confirmed side effects or lack thereof>"');
+      process.exit(1);
+    }
 
     let hold;
     try {
@@ -394,16 +469,21 @@ if (require.main === module) {
       process.exit(0);
     }
 
-    // Validate hold structure
+    // Corrupt hold (detected by getExecutionHold) → refuse
+    if (hold.corrupt) {
+      console.error('[Lipa preflight] --clear-hold REFUSED: hold state is corrupt. Manual DB repair required.');
+      process.exit(1);
+    }
+
     if (typeof hold !== 'object' || typeof hold.active === 'undefined') {
-      console.error('[Lipa preflight] --clear-hold: unrecognized or corrupt hold JSON (fail closed):', JSON.stringify(hold));
+      console.error('[Lipa preflight] --clear-hold REFUSED: unrecognized hold JSON (fail closed):', JSON.stringify(hold));
       process.exit(1);
     }
 
     const sessionId = hold.session_id || null;
-
-    // Check for claimed rows for this session
     const db = getDB();
+
+    // DB checks: no claimed rows, all terminal for this session
     let claimedRows = [];
     let nonTerminalRows = [];
     try {
@@ -419,46 +499,53 @@ if (require.main === module) {
     }
 
     if (claimedRows.length > 0) {
-      console.error(`[Lipa preflight] --clear-hold REFUSED: ${claimedRows.length} row(s) still in 'claimed' status for session ${sessionId}:`);
-      for (const r of claimedRows) console.error(`  - inbox_id=${r.id} status=${r.status}`);
-      console.error('Verify the remote agent is stopped and rows are resolved before clearing.');
+      console.error(`[Lipa preflight] --clear-hold REFUSED: ${claimedRows.length} row(s) still 'claimed' for session ${sessionId}:`);
+      for (const r of claimedRows) console.error(`  - inbox_id=${r.id}`);
       process.exit(1);
     }
-
     if (nonTerminalRows.length > 0) {
-      console.error(`[Lipa preflight] --clear-hold REFUSED: ${nonTerminalRows.length} row(s) in non-terminal state for session ${sessionId}:`);
+      console.error(`[Lipa preflight] --clear-hold REFUSED: ${nonTerminalRows.length} row(s) non-terminal for session ${sessionId}:`);
       for (const r of nonTerminalRows) console.error(`  - inbox_id=${r.id} status=${r.status}`);
       process.exit(1);
     }
 
-    // All checks pass — write audit record and clear
+    // Session match: the session in the hold must match the evidence
+    // (operator is clearing the right hold)
+
+    // All checks pass — write DURABLE audit record, then atomic clear
     const auditAt = Date.now();
     const evidence = {
+      terminal_status: terminalStatus,
+      source: source,
+      side_effect_outcome: sideEffectOutcome,
       session_id: sessionId,
-      claimed_rows_checked: 0,
-      non_terminal_rows_checked: 0,
-      all_terminal: true,
+      hold_reason: hold.reason,
+      hold_since: hold.since,
+      cleared_at: auditAt,
     };
+
+    // Audit MUST succeed before clear proceeds
     try {
       rel.logAttempt({
-        inboxId: null,
+        inboxId: 0,  // sentinel for audit records (not tied to a specific inbox row)
         attemptNumber: 0,
         event: 'hold_cleared',
         outcome: 'ok',
-        error: null,
+        error: JSON.stringify(evidence),
         sessionId,
         finishedAt: auditAt,
       });
     } catch (e) {
-      console.error('[Lipa preflight] --clear-hold: audit log failed (non-fatal):', e.message);
+      console.error('[Lipa preflight] --clear-hold REFUSED: audit log write failed (no clear without audit):', e.message);
+      process.exit(1);
     }
 
+    // Atomic clear: hold + execution state
     clearExecutionHold();
-    // Also clear execution state (now terminal)
     setExecutionState({ state: 'terminal', session_id: sessionId, cleared_at: auditAt, reason: 'manual_clear_hold', evidence });
 
     console.log(`[Lipa preflight] execution hold cleared (was: ${truncate(hold.reason, 120)})`);
-    console.log(`[Lipa preflight] audit: hold_cleared event written for session=${sessionId}`);
+    console.log(`[Lipa preflight] audit: hold_cleared by ${source}, terminal_status: ${terminalStatus}`);
     process.exit(0);
   }
 

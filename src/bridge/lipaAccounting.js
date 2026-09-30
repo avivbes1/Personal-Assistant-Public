@@ -27,11 +27,31 @@ function db() {
   return require('../db').getDB();
 }
 
-// ── rates (conservative, Claude Opus) — dollars per 1M tokens ────────────────
-const USD_PER_MTOK_INPUT = 3.0;        // prompt input
-const USD_PER_MTOK_OUTPUT = 15.0;      // completion output
-const USD_PER_MTOK_CACHE_READ = 0.30;  // cache read (hit)
+// ── model-specific rates — dollars per 1M tokens ───────────────────────
+// Rates are keyed by model prefix. When the model is unknown, we use the most
+// expensive rates (Opus) so the bound is genuinely conservative.
+const MODEL_RATES = {
+  'opus':   { input: 15.0,  output: 75.0,  cacheRead: 1.50  },
+  'sonnet': { input: 3.0,   output: 15.0,  cacheRead: 0.30  },
+  'haiku':  { input: 0.80,  output: 4.0,   cacheRead: 0.08  },
+  'flash':  { input: 0.15,  output: 0.60,  cacheRead: 0.0375 },
+};
+const DEFAULT_RATES = MODEL_RATES.opus; // most expensive = conservative bound
 const MTOK = 1_000_000;
+
+/** Resolve rates for a model string. Falls back to Opus (most expensive). */
+function ratesForModel(model) {
+  if (!model) return DEFAULT_RATES;
+  const m = String(model).toLowerCase();
+  for (const [key, rates] of Object.entries(MODEL_RATES)) {
+    if (m.includes(key)) return rates;
+  }
+  return DEFAULT_RATES;
+}
+// Legacy exports for backward compat (Opus rates)
+const USD_PER_MTOK_INPUT = DEFAULT_RATES.input;
+const USD_PER_MTOK_OUTPUT = DEFAULT_RATES.output;
+const USD_PER_MTOK_CACHE_READ = DEFAULT_RATES.cacheRead;
 
 // ── caps ─────────────────────────────────────────────────────────────────────
 const DAILY_CAP_USD = 20;
@@ -40,17 +60,22 @@ const REQUEST_CAP_USD = 2;
 function num(v) { return typeof v === 'number' && Number.isFinite(v) ? v : null; }
 
 /**
- * Lower-bound dollar estimate from token counts. Missing counts are treated as
- * 0 (keeps it a lower bound). Cache-write tokens carry no rate here and are
- * intentionally excluded, which only ever makes the bound more conservative.
- * Returns null when NO token count is known.
+ * Lower-bound dollar estimate from token counts using model-specific rates.
+ * Missing counts are treated as 0 (keeps it a lower bound). Cache-write tokens
+ * are excluded (no provider charges for writes separately in current pricing).
+ * Returns { cost, partial } where partial=true if ANY expected token count is
+ * missing (so callers know the estimate is incomplete). Returns { cost: null }
+ * when NO token count is known.
  */
-function estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens } = {}) {
+function estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens, model } = {}) {
   const inp = num(inputTokens), out = num(outputTokens), cr = num(cacheReadTokens);
-  if (inp == null && out == null && cr == null) return null;
-  return ((inp || 0) * USD_PER_MTOK_INPUT
-        + (out || 0) * USD_PER_MTOK_OUTPUT
-        + (cr  || 0) * USD_PER_MTOK_CACHE_READ) / MTOK;
+  if (inp == null && out == null && cr == null) return { cost: null, partial: false };
+  const rates = ratesForModel(model);
+  const partial = (inp == null || out == null); // missing a major token class
+  const cost = ((inp || 0) * rates.input
+              + (out || 0) * rates.output
+              + (cr  || 0) * rates.cacheRead) / MTOK;
+  return { cost, partial };
 }
 
 /**
@@ -62,8 +87,16 @@ function estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens } = {})
 function recordRequestCost({ inboxId, inputTokens, outputTokens, cacheReadTokens,
                              cacheWriteTokens, model, costUsd, now = Date.now() } = {}) {
   let cost = num(costUsd);
-  if (cost == null) cost = estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens });
-  const unknown = cost == null;
+  let partialUsage = false;
+  if (cost == null) {
+    const est = estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens, model });
+    cost = est.cost;
+    partialUsage = est.partial;
+  }
+  // unknown = true when we have NO cost info at all (no costUsd, no tokens)
+  // partial usage (some tokens known, some not) still gets cost_unknown=1
+  // because the estimate is incomplete and could significantly understate spend.
+  const unknown = cost == null || partialUsage;
   const res = db().prepare(
     `INSERT INTO bridge_lipa_costs
        (inbox_id, model, input_tokens, output_tokens, cache_read_tokens,
@@ -137,6 +170,7 @@ function checkRequestCap(opts) {
 
 module.exports = {
   USD_PER_MTOK_INPUT, USD_PER_MTOK_OUTPUT, USD_PER_MTOK_CACHE_READ,
+  MODEL_RATES, DEFAULT_RATES, ratesForModel,
   DAILY_CAP_USD, REQUEST_CAP_USD,
   estimateFromTokens, recordRequestCost, getDailySpend, checkDailyCap, checkRequestCap,
 };

@@ -37,10 +37,19 @@ const lipaAccounting = require('./lipaAccounting');
 const HOLD_KEY = 'execution_hold';
 function _truncateHold(s, n = 300) { s = s == null ? '' : String(s); return s.slice(0, n); }
 
-/** The active execution hold, or null when none is set. */
+/**
+ * The active execution hold, or null when none is set.
+ * Fails CLOSED: if the hold key exists but is corrupt, returns a synthetic
+ * hold { active: true, reason: 'corrupt_hold_state' } so launches are blocked.
+ */
 function getExecutionHold() {
-  const h = getState(HOLD_KEY);
-  return h && h.active ? h : null;
+  const r = getStateEx(HOLD_KEY);
+  if (!r.exists) return null;
+  if (r.corrupt) {
+    console.error('[Lipa] execution_hold key is corrupt — fail closed (blocking)');
+    return { active: true, reason: 'corrupt_hold_state', corrupt: true };
+  }
+  return r.value && r.value.active ? r.value : null;
 }
 
 /**
@@ -93,10 +102,23 @@ function jitter(ms) { return Math.floor(ms * 0.2 * Math.random()); }          //
 
 // ── key/value control state (circuit breaker + worker lock) ──────────────────
 
-function getState(key) {
+/**
+ * Read a control-plane state key. Returns { exists, value, corrupt }.
+ * - exists=false: no row in DB
+ * - exists=true, corrupt=false: parsed JSON
+ * - exists=true, corrupt=true: row present but JSON malformed → fail closed
+ */
+function getStateEx(key) {
   const row = db().prepare('SELECT value FROM bridge_lipa_state WHERE key = ?').get(key);
-  if (!row || row.value == null) return null;
-  try { return JSON.parse(row.value); } catch (_) { return null; }
+  if (!row || row.value == null) return { exists: false, value: null, corrupt: false };
+  try { return { exists: true, value: JSON.parse(row.value), corrupt: false }; }
+  catch (_) { return { exists: true, value: null, corrupt: true }; }
+}
+
+/** Legacy compat — returns parsed value or null. Does NOT distinguish absent from corrupt. */
+function getState(key) {
+  const r = getStateEx(key);
+  return r.value;
 }
 
 function setState(key, value) {
@@ -379,11 +401,7 @@ function failClaim({ inboxId, claimGeneration, sessionId, error, isTimeout,
       error: errText, sessionId, runId, claimGeneration, providerMessageId,
       cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens, finishedAt: now });
 
-    // A failed (or timed-out) delivery may still have consumed provider tokens
-    // BEFORE it failed — the success path is not the only place spend happens.
-    // Record the (lower-bound / unknown) cost so accounting never treats a failed
-    // attempt as free. Best-effort: a cost-INSERT error must not roll back or
-    // change the core fail/retry/dead transition below.
+    // Cost accounting: record even on failure (tokens consumed before failure).
     try {
       lipaAccounting.recordRequestCost({ inboxId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, now });
     } catch (e) { console.error('[Lipa] failClaim cost accounting failed:', e.message); }
@@ -393,6 +411,19 @@ function failClaim({ inboxId, claimGeneration, sessionId, error, isTimeout,
         .run(attempts, errText, now, inboxId);
       return { status: 'dead', attempts };
     }
+
+    // TIMEOUT = UNCERTAIN: park immediately, never blind-retry.
+    // A timeout means the remote agent may have already taken action;
+    // retrying could cause duplicate side effects.
+    if (isTimeout) {
+      const reviewText = `timeout — uncertain side effect (attempt ${attempts}), needs review`;
+      db().prepare("UPDATE bridge_lipa_inbox SET status = 'needs_review', attempts = ?, last_error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
+        .run(attempts, reviewText, now, inboxId);
+      setExecutionHold(`explicit timeout — session ${sessionId || 'unknown'}, row ${inboxId}`,
+        { session_id: sessionId || null, claimed_ids: [inboxId] });
+      return { status: 'needs_review', attempts, parked: true };
+    }
+
     const backoff = BACKOFF_BASE_MS * Math.pow(2, attempts - 1);
     const availableAt = now + backoff + jitter(backoff);
     db().prepare("UPDATE bridge_lipa_inbox SET status = 'retry', attempts = ?, available_at = ?, last_error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?")

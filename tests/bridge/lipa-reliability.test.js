@@ -93,11 +93,13 @@ module.exports = {
       const nowDue = rel.claimDue({ limit: 50, sessionId: 'sess-d' }).rows.find(r => r.id === dId);
       if (!nowDue) errors.push('UC-2: due row was not claimed once available_at <= now');
 
-      // ── UC-3: fenced late completion (completion after retry) ───────────────
+      // ── UC-3: fenced late completion (completion after non-timeout retry) ────
+      // Uses a non-timeout failure (isTimeout=false) to trigger retry, since
+      // timeouts now park immediately to needs_review.
       const fId = enqueue('fence'); ids.push(fId);
       const c1 = rel.claimDue({ limit: 50, sessionId: 'sess-f1' }).rows.find(r => r.id === fId);
       const gen1 = c1.claim_generation;
-      rel.failClaim({ inboxId: fId, claimGeneration: gen1, sessionId: 'sess-f1', error: new Error('worker timed out'), isTimeout: true });
+      rel.failClaim({ inboxId: fId, claimGeneration: gen1, sessionId: 'sess-f1', error: new Error('transient delivery error'), isTimeout: false });
       db.prepare('UPDATE bridge_lipa_inbox SET available_at=? WHERE id=?').run(Date.now() - 1, fId);   // make retry due now
       const c2 = rel.claimDue({ limit: 50, sessionId: 'sess-f2' }).rows.find(r => r.id === fId);
       if (!c2 || c2.claim_generation === gen1) errors.push('UC-3: re-claim did not bump generation');
