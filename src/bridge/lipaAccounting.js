@@ -27,31 +27,56 @@ function db() {
   return require('../db').getDB();
 }
 
-// ── model-specific rates — dollars per 1M tokens ───────────────────────
-// Rates are keyed by model prefix. When the model is unknown, we use the most
-// expensive rates (Opus) so the bound is genuinely conservative.
+// ── versioned model rates — dollars per 1M tokens ─────────────────────
+// Source: https://platform.claude.com/docs/en/about-claude/pricing (2026-09-30)
+// Each entry uses exact model IDs with versioned rates. Cache writes DO have a
+// charge. An unknown model is marked cost_unknown=true, NOT priced at a guess.
 const MODEL_RATES = {
-  'opus':   { input: 15.0,  output: 75.0,  cacheRead: 1.50  },
-  'sonnet': { input: 3.0,   output: 15.0,  cacheRead: 0.30  },
-  'haiku':  { input: 0.80,  output: 4.0,   cacheRead: 0.08  },
-  'flash':  { input: 0.15,  output: 0.60,  cacheRead: 0.0375 },
+  // Opus 4.x series: $5/$25, cache hit $0.50, 5m cache write $6.25
+  'claude-opus-4.6':  { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
+  'claude-opus-4.5':  { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
+  'claude-opus-4.7':  { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
+  'claude-opus-4.8':  { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
+  // Opus 5.x: $4/$20 (5.5), $5/$25 (5.0)
+  'claude-opus-5.5':  { input: 4.0,  output: 20.0, cacheRead: 0.20, cacheWrite: 5.0  },
+  'claude-opus-5':    { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
+  // Sonnet 4.x: $3/$15
+  'claude-sonnet-4.6': { input: 3.0,  output: 15.0, cacheRead: 0.30, cacheWrite: 3.75 },
+  'claude-sonnet-4.5': { input: 3.0,  output: 15.0, cacheRead: 0.30, cacheWrite: 3.75 },
+  // Sonnet 5.x: $2/$10
+  'claude-sonnet-5.5': { input: 2.0,  output: 10.0, cacheRead: 0.20, cacheWrite: 2.50 },
+  'claude-sonnet-5':   { input: 2.0,  output: 10.0, cacheRead: 0.20, cacheWrite: 2.50 },
+  // Haiku 4.5: $1/$5
+  'claude-haiku-4.5':  { input: 1.0,  output: 5.0,  cacheRead: 0.10, cacheWrite: 1.25 },
+  // Haiku 3.5 (retired): $0.80/$4
+  'claude-haiku-3.5':  { input: 0.80, output: 4.0,  cacheRead: 0.08, cacheWrite: 1.0  },
+  // Gemini Flash (approximate)
+  'gemini-2.5-flash':  { input: 0.15, output: 0.60, cacheRead: 0.0375, cacheWrite: 0.0 },
 };
-const DEFAULT_RATES = MODEL_RATES.opus; // most expensive = conservative bound
 const MTOK = 1_000_000;
 
-/** Resolve rates for a model string. Falls back to Opus (most expensive). */
+/**
+ * Resolve rates for a model string. Returns { rates, known }.
+ * An unknown model returns known=false (caller must mark cost_unknown=true).
+ */
 function ratesForModel(model) {
-  if (!model) return DEFAULT_RATES;
+  if (!model) return { rates: null, known: false };
   const m = String(model).toLowerCase();
-  for (const [key, rates] of Object.entries(MODEL_RATES)) {
-    if (m.includes(key)) return rates;
+  // Try exact match first
+  for (const [id, rates] of Object.entries(MODEL_RATES)) {
+    if (m.includes(id)) return { rates, known: true };
   }
-  return DEFAULT_RATES;
+  // Try prefix match (e.g. 'opus' matches any opus)
+  for (const [id, rates] of Object.entries(MODEL_RATES)) {
+    const prefix = id.split('-').slice(1, 2).join(''); // extract 'opus', 'sonnet', etc.
+    if (prefix && m.includes(prefix)) return { rates, known: true };
+  }
+  return { rates: null, known: false };
 }
-// Legacy exports for backward compat (Opus rates)
-const USD_PER_MTOK_INPUT = DEFAULT_RATES.input;
-const USD_PER_MTOK_OUTPUT = DEFAULT_RATES.output;
-const USD_PER_MTOK_CACHE_READ = DEFAULT_RATES.cacheRead;
+// Legacy exports (Opus 4.6 rates for backward compat)
+const USD_PER_MTOK_INPUT = 5.0;
+const USD_PER_MTOK_OUTPUT = 25.0;
+const USD_PER_MTOK_CACHE_READ = 0.50;
 
 // ── caps ─────────────────────────────────────────────────────────────────────
 const DAILY_CAP_USD = 20;
@@ -67,15 +92,21 @@ function num(v) { return typeof v === 'number' && Number.isFinite(v) ? v : null;
  * missing (so callers know the estimate is incomplete). Returns { cost: null }
  * when NO token count is known.
  */
-function estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens, model } = {}) {
-  const inp = num(inputTokens), out = num(outputTokens), cr = num(cacheReadTokens);
-  if (inp == null && out == null && cr == null) return { cost: null, partial: false };
-  const rates = ratesForModel(model);
-  const partial = (inp == null || out == null); // missing a major token class
+function estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, model } = {}) {
+  const inp = num(inputTokens), out = num(outputTokens);
+  const cr = num(cacheReadTokens), cw = num(cacheWriteTokens);
+  if (inp == null && out == null && cr == null && cw == null) return { cost: null, partial: false, unknownModel: false };
+  const { rates, known } = ratesForModel(model);
+  // Unknown model → cannot price, mark unknown
+  if (!known || !rates) return { cost: null, partial: false, unknownModel: true };
+  // Partial: missing a major token class (input or output). Cache counts are
+  // supplementary — missing cache alone doesn't make the estimate partial.
+  const partial = (inp == null || out == null);
   const cost = ((inp || 0) * rates.input
               + (out || 0) * rates.output
-              + (cr  || 0) * rates.cacheRead) / MTOK;
-  return { cost, partial };
+              + (cr  || 0) * rates.cacheRead
+              + (cw  || 0) * (rates.cacheWrite || 0)) / MTOK;
+  return { cost, partial, unknownModel: false };
 }
 
 /**
@@ -88,15 +119,19 @@ function recordRequestCost({ inboxId, inputTokens, outputTokens, cacheReadTokens
                              cacheWriteTokens, model, costUsd, now = Date.now() } = {}) {
   let cost = num(costUsd);
   let partialUsage = false;
+  let unknownModel = false;
   if (cost == null) {
-    const est = estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens, model });
+    const est = estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, model });
     cost = est.cost;
     partialUsage = est.partial;
+    unknownModel = est.unknownModel;
   }
-  // unknown = true when we have NO cost info at all (no costUsd, no tokens)
-  // partial usage (some tokens known, some not) still gets cost_unknown=1
-  // because the estimate is incomplete and could significantly understate spend.
-  const unknown = cost == null || partialUsage;
+  // unknown = true when:
+  // - no cost info at all (no costUsd, no tokens)
+  // - partial usage (some tokens known, some not) — could significantly understate spend
+  // - unknown model — cannot price without knowing the model
+  // - missing cache counts — partial
+  const unknown = cost == null || partialUsage || unknownModel;
   const res = db().prepare(
     `INSERT INTO bridge_lipa_costs
        (inbox_id, model, input_tokens, output_tokens, cache_read_tokens,
@@ -170,7 +205,7 @@ function checkRequestCap(opts) {
 
 module.exports = {
   USD_PER_MTOK_INPUT, USD_PER_MTOK_OUTPUT, USD_PER_MTOK_CACHE_READ,
-  MODEL_RATES, DEFAULT_RATES, ratesForModel,
+  MODEL_RATES, ratesForModel,
   DAILY_CAP_USD, REQUEST_CAP_USD,
   estimateFromTokens, recordRequestCost, getDailySpend, checkDailyCap, checkRequestCap,
 };

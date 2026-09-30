@@ -60,21 +60,25 @@ const sessionId = opts.session_id || process.env.OPENCLAW_SESSION_ID || null;
 // Look up the current row to check if it has claim_generation set in the DB.
 // If it does and no claim_generation was provided in options, reject.
 const dbRow = (() => {
-  try { return getDB().prepare('SELECT claim_generation, status FROM bridge_lipa_inbox WHERE id = ?').get(inboxId); }
+  try { return getDB().prepare('SELECT claim_generation, status, session_id FROM bridge_lipa_inbox WHERE id = ?').get(inboxId); }
   catch (e) { return null; }
 })();
 
 if (opts.claim_generation == null) {
-  // If the row has claim_generation set, the caller MUST provide it.
   if (dbRow && dbRow.claim_generation != null) {
-    console.error(`[Lipa Bridge] FENCE REJECT: inbox_id=${inboxId} has claim_generation=${dbRow.claim_generation} in DB but none provided in options_json. Exiting 3.`);
+    console.error(`[Lipa Bridge] FENCE REJECT: inbox_id=${inboxId} has claim_generation=${dbRow.claim_generation} in DB but none provided. Exiting 3.`);
     process.exit(3);
   }
-  // Also reject if session_id is not available for any reason (belt-and-suspenders).
   if (!sessionId) {
-    console.error(`[Lipa Bridge] FENCE REJECT: no claim_generation and no session_id (OPENCLAW_SESSION_ID unset and not in options_json). Exiting 3.`);
+    console.error(`[Lipa Bridge] FENCE REJECT: no claim_generation and no session_id. Exiting 3.`);
     process.exit(3);
   }
+}
+
+// Session mismatch check: if the DB row has a session_id, the caller's must match
+if (dbRow && dbRow.session_id && sessionId && dbRow.session_id !== sessionId) {
+  console.error(`[Lipa Bridge] SESSION MISMATCH: row session_id=${dbRow.session_id} != caller session_id=${sessionId}. Exiting 3.`);
+  process.exit(3);
 }
 
 if (opts.claim_generation != null) {

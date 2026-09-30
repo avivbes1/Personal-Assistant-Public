@@ -42,7 +42,14 @@ function cleanup(db, ids) {
     db.prepare(`DELETE FROM bridge_lipa_attempts WHERE inbox_id IN (${list})`).run();
     db.prepare(`DELETE FROM bridge_lipa_inbox WHERE id IN (${list})`).run();
   }
-  db.prepare(`DELETE FROM bridge_lipa_inbox WHERE request_id LIKE '${PREFIX}%'`).run();
+  const rem = db.prepare(`SELECT id FROM bridge_lipa_inbox WHERE request_id LIKE '${PREFIX}%'`).all();
+  if (rem.length) {
+    const rl = rem.map(r => r.id).join(',');
+    db.prepare(`DELETE FROM bridge_lipa_costs WHERE inbox_id IN (${rl})`).run();
+    db.prepare(`DELETE FROM bridge_lipa_outbox WHERE inbox_id IN (${rl})`).run();
+    db.prepare(`DELETE FROM bridge_lipa_attempts WHERE inbox_id IN (${rl})`).run();
+    db.prepare(`DELETE FROM bridge_lipa_inbox WHERE id IN (${rl})`).run();
+  }
 }
 function enqueue(tag) {
   const res = rel.enqueueGuarded({ requestId: PREFIX + tag, command: 'noop', args: { tag } });

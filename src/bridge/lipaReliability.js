@@ -176,12 +176,26 @@ function resumeCircuit() {
 
 // ── single global worker lock ────────────────────────────────────────────────
 
-/** Acquire (or renew) the global worker lock. Returns true if held by us. */
+/**
+ * Acquire (or renew) the global worker lock. Returns true if held by us.
+ * Fails CLOSED: if the lock key exists but is corrupt/malformed, refuse to
+ * acquire (return false) — never overwrite corrupt state.
+ */
 function acquireWorkerLock(holder, ttlMs = WORKER_LOCK_TTL_MS) {
   const now = Date.now();
   const tx = db().transaction(() => {
-    const cur = getState('worker_lock');
-    if (cur && cur.holder !== holder && cur.expires_at > now) return false; // someone else, still live
+    const r = getStateEx('worker_lock');
+    if (r.exists && r.corrupt) {
+      console.error('[Lipa] worker_lock: corrupt JSON — fail closed (refusing acquire)');
+      return false;
+    }
+    const cur = r.value;
+    // Validate schema: must be object with holder + expires_at
+    if (cur && (typeof cur !== 'object' || Array.isArray(cur) || !cur.holder || !cur.expires_at)) {
+      console.error('[Lipa] worker_lock: invalid schema — fail closed (refusing acquire)');
+      return false;
+    }
+    if (cur && cur.holder !== holder && cur.expires_at > now) return false;
     setState('worker_lock', { holder, acquired_at: (cur && cur.holder === holder) ? cur.acquired_at : now, expires_at: now + ttlMs });
     return true;
   });

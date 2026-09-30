@@ -45,7 +45,15 @@ function cleanup(db, ids) {
     db.prepare(`DELETE FROM bridge_lipa_attempts WHERE inbox_id IN (${list})`).run();
     db.prepare(`DELETE FROM bridge_lipa_inbox WHERE id IN (${list})`).run();
   }
-  db.prepare(`DELETE FROM bridge_lipa_inbox WHERE request_id LIKE '${PREFIX}%'`).run();
+  // Clean any remaining test rows (delete outbox/costs/attempts first due to FK)
+  const remaining = db.prepare(`SELECT id FROM bridge_lipa_inbox WHERE request_id LIKE '${PREFIX}%'`).all();
+  if (remaining.length) {
+    const rlist = remaining.map(r => r.id).join(',');
+    db.prepare(`DELETE FROM bridge_lipa_costs WHERE inbox_id IN (${rlist})`).run();
+    db.prepare(`DELETE FROM bridge_lipa_outbox WHERE inbox_id IN (${rlist})`).run();
+    db.prepare(`DELETE FROM bridge_lipa_attempts WHERE inbox_id IN (${rlist})`).run();
+    db.prepare(`DELETE FROM bridge_lipa_inbox WHERE id IN (${rlist})`).run();
+  }
 }
 function enqueue(tag) {
   const res = rel.enqueueGuarded({ requestId: PREFIX + tag, command: 'noop', args: { tag } });
@@ -182,7 +190,10 @@ module.exports = {
       {
         resetState(db);
         const launcher = mockLauncher(new Error('ENOENT: openclaw not found'));
-        const res = await runPreflight({ launcher, sessionId: 'spawn-fail-t8', deps: { getDueCount: () => 1 } });
+        const res = await runPreflight({ launcher, sessionId: 'spawn-fail-t8', deps: {
+          getDueCount: () => 1,
+          claimDue: ({ sessionId: s }) => ({ rows: [{ id: 9998, claim_generation: 1 }] }),
+        } });
         if (!res.launched) errors.push('T8: not marked as launched');
         if (res.reason !== 'spawn_error') errors.push(`T8: reason=${res.reason}, expected spawn_error`);
         if (!res.holdSet) errors.push('T8: hold was not set');
@@ -202,7 +213,10 @@ module.exports = {
 
         const res = await runPreflight({
           launcher: mockLauncher({ code: null, signal: 'SIGTERM', timedOut: true }),
-          sessionId: sid, deps: { getDueCount: () => 1 },
+          sessionId: sid, deps: {
+            getDueCount: () => 1,
+            claimDue: () => ({ rows: [{ id: id, claim_generation: genBefore }] }),
+          },
         });
         if (!res.launched) errors.push('T9: not marked as launched');
         if (res.reason !== 'timeout') errors.push(`T9: reason=${res.reason}, expected timeout`);
@@ -266,7 +280,7 @@ module.exports = {
           return Promise.resolve({ code: 0, signal: null, timedOut: false, stdout: '' });
         };
         // Inject expected claim IDs so verification works on shared DB
-        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1, getExpectedClaimIds: () => [id] } });
+        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1, claimDue: () => ({ rows: [{ id: id, claim_generation: 1 }] }) } });
         if (!res.launched) errors.push('T13: did not launch');
         if (res.reason !== 'clean_exit') errors.push(`T13: reason=${res.reason}, expected clean_exit`);
         const hold = getExecutionHold();
@@ -279,7 +293,10 @@ module.exports = {
         resetState(db);
         const res = await runPreflight({
           launcher: mockLauncher({ code: 1, signal: null, timedOut: false }),
-          sessionId: 'nonzero-t14', deps: { getDueCount: () => 1 },
+          sessionId: 'nonzero-t14', deps: {
+            getDueCount: () => 1,
+            claimDue: () => ({ rows: [{ id: 9997, claim_generation: 1 }] }),
+          },
         });
         if (!res.launched) errors.push('T14: did not launch');
         if (res.reason !== 'nonzero_exit') errors.push(`T14: reason=${res.reason}, expected nonzero_exit`);
@@ -368,7 +385,7 @@ module.exports = {
           forceClaim(db, id, sid);
           return Promise.resolve({ code: 0, signal: null, timedOut: false, stdout: '' });
         };
-        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1, getExpectedClaimIds: () => [id] } });
+        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1, claimDue: () => ({ rows: [{ id: id, claim_generation: 1 }] }) } });
         if (!res.launched) errors.push('T19: not launched');
         if (res.reason === 'clean_exit') errors.push('T19: treated as clean exit despite uncompleted row');
         if (res.reason !== 'clean_exit_verification_failed') errors.push(`T19: reason=${res.reason}, expected clean_exit_verification_failed`);
@@ -520,7 +537,7 @@ module.exports = {
             stdout: JSON.stringify({ usage: { input_tokens: 5000, output_tokens: 1000 } }),
           });
         };
-        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1, getExpectedClaimIds: () => [id] } });
+        const res = await runPreflight({ launcher, sessionId: sid, deps: { getDueCount: () => 1, claimDue: () => ({ rows: [{ id: id, claim_generation: 1 }] }) } });
         if (!res.launched) errors.push('T26: not launched');
         if (res.reason !== 'clean_exit') errors.push(`T26: reason=${res.reason}, expected clean_exit`);
         // Execution state should be 'terminal'
@@ -535,9 +552,18 @@ module.exports = {
         if (!launchRow) errors.push('T26: no immutable launch record persisted');
         if (launchRow) {
           const lr = JSON.parse(launchRow.value);
-          if (!lr.usage) errors.push('T26: launch record missing usage');
-          if (lr.usage && lr.usage.input_tokens !== 5000) errors.push(`T26: launch input_tokens=${lr.usage.input_tokens}`);
-          if (lr.usage_unknown) errors.push('T26: launch record incorrectly marked usage_unknown');
+          // Launch record is written BEFORE spawn → usage=null, usage_unknown=true (correct)
+          if (lr.status !== 'started') errors.push(`T26: launch record status=${lr.status}, expected started`);
+        }
+        // Outcome record (written after exit 0 verification) should have the usage
+        const outcomeKey = `outcome_${sid}`;
+        const outcomeRow = db.prepare('SELECT value FROM bridge_lipa_state WHERE key = ?').get(outcomeKey);
+        if (!outcomeRow) errors.push('T26: no outcome record persisted');
+        if (outcomeRow) {
+          const or = JSON.parse(outcomeRow.value);
+          if (!or.usage) errors.push('T26: outcome record missing usage');
+          if (or.usage && or.usage.input_tokens !== 5000) errors.push(`T26: outcome input_tokens=${or.usage.input_tokens}`);
+          if (or.usage_unknown) errors.push('T26: outcome record incorrectly marked usage_unknown');
         }
         resetState(db);
         // Clean launch record
@@ -547,8 +573,10 @@ module.exports = {
     } finally {
       cleanup(db, ids);
       for (const k of STATE_KEYS) restoreState(db, k, stateSnaps[k]);
-      // Clean any immutable launch records left by tests
-      db.prepare("DELETE FROM bridge_lipa_state WHERE key LIKE 'launch_%'").run();
+      // Clean any immutable launch/outcome records left by tests
+      db.prepare("DELETE FROM bridge_lipa_state WHERE key LIKE 'launch_%' OR key LIKE 'outcome_%'").run();
+      // WAL checkpoint to release locks before next test in suite
+      try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
     }
 
       // ── T27: corrupt hold blocks launch (fail closed) ─────────────────
@@ -574,14 +602,11 @@ module.exports = {
         const launcher = mockLauncher({ code: 0, signal: null, timedOut: false, stdout: '' });
         const res = await runPreflight({
           launcher, sessionId: 'empty-claims-t28',
-          // getDueCount returns 1 but the pre-read finds nothing pending (already claimed)
-          deps: { getDueCount: () => 1 },
+          deps: { getDueCount: () => 1, claimDue: () => ({ rows: [] }) },
         });
-        // The preflight should either not launch (if pre-read finds nothing) or
-        // fail verification (if it launched but has empty expected claims)
-        if (res.launched && res.reason === 'clean_exit') {
-          errors.push('T28: clean_exit with empty expected claims (fail OPEN)');
-        }
+        // With no claims, the preflight should NOT launch
+        if (res.launched) errors.push('T28: launched despite empty claims');
+        if (res.reason !== 'no_claims') errors.push('T28: reason=' + res.reason + ', expected no_claims');
         resetState(db);
       }
 
@@ -621,20 +646,25 @@ module.exports = {
         // Partial usage should be flagged
         const partial = accounting.estimateFromTokens({ inputTokens: 1000, model: 'opus' });
         if (!partial.partial) errors.push('T30: missing output tokens not flagged as partial');
-        // Unknown model defaults to most expensive (Opus)
+        // Unknown model returns cost=null + unknownModel=true (per Aviv: unknown=unknown, not guessed)
         const unknownModel = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: null });
-        if (unknownModel.cost !== opusEst.cost) errors.push('T30: unknown model did not default to Opus rates');
+        if (unknownModel.cost !== null) errors.push('T30: unknown model should return null cost, not a guess');
+        if (!unknownModel.unknownModel) errors.push('T30: unknown model not flagged as unknownModel');
       }
 
       // ── T31: partial usage flagged as cost_unknown in recordRequestCost ───
       {
         const id = enqueue('t31'); ids.push(id);
-        // Only input tokens known, output missing → partial → cost_unknown=1
+        // Only input tokens, no model → unknownModel → cost_unknown=1
         const rec = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000 });
-        if (!rec.unknown) errors.push('T31: partial usage not flagged as unknown');
-        // Full tokens known → cost_unknown=0
-        const rec2 = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000, outputTokens: 500 });
-        if (rec2.unknown) errors.push('T31: full usage wrongly flagged as unknown');
+        if (!rec.unknown) errors.push('T31: partial usage (no model) not flagged as unknown');
+        // Full tokens with known model → cost_unknown=0
+        const rec2 = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000, outputTokens: 500, model: 'claude-opus-4.6' });
+        if (rec2.unknown) errors.push('T31: full usage with known model wrongly flagged as unknown');
+        // Partial (missing cache) with known model → still unknown
+        const rec3 = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000, outputTokens: 500, model: 'claude-opus-4.6' });
+        // This has both input and output, so partial=false (cache is optional). Should be known.
+        if (rec3.unknown) errors.push('T31: input+output with known model wrongly flagged as unknown');
         resetState(db);
       }
 

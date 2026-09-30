@@ -114,18 +114,38 @@ function writeState(key, value) {
   ).run(key, JSON.stringify(value), now);
 }
 
+const VALID_EXEC_STATES = new Set(['active', 'unknown', 'terminal']);
+
 /**
- * Current execution state. Fails CLOSED: if the key exists but is corrupt,
- * returns a synthetic { state: 'unknown', corrupt: true } so launches are blocked.
+ * Current execution state. Fails CLOSED on:
+ * - corrupt JSON (parse error)
+ * - empty object {}, array [], string, or non-object
+ * - missing or unrecognized state field
+ * - missing session_id
+ * All return a synthetic { state: 'unknown', corrupt: true } so launches are blocked.
  */
 function getExecutionState() {
   const r = readStateEx(EXEC_STATE_KEY);
   if (!r.exists) return null;
   if (r.corrupt) {
-    console.error('[Lipa preflight] execution_state key is corrupt — fail closed (blocking)');
-    return { state: 'unknown', corrupt: true, reason: 'corrupt_execution_state' };
+    console.error('[Lipa preflight] execution_state: malformed JSON — fail closed');
+    return { state: 'unknown', corrupt: true, reason: 'malformed_json' };
   }
-  return r.value && typeof r.value === 'object' ? r.value : null;
+  const v = r.value;
+  // Schema validation: must be a non-null, non-array object with known state + session_id
+  if (!v || typeof v !== 'object' || Array.isArray(v)) {
+    console.error('[Lipa preflight] execution_state: not a valid object — fail closed');
+    return { state: 'unknown', corrupt: true, reason: 'invalid_type' };
+  }
+  if (!v.state || !VALID_EXEC_STATES.has(v.state)) {
+    console.error(`[Lipa preflight] execution_state: unknown state '${v.state}' — fail closed`);
+    return { state: 'unknown', corrupt: true, reason: 'unknown_state' };
+  }
+  if (!v.session_id && v.state !== 'terminal') {
+    console.error('[Lipa preflight] execution_state: missing session_id — fail closed');
+    return { state: 'unknown', corrupt: true, reason: 'missing_session_id' };
+  }
+  return v;
 }
 
 function setExecutionState(obj) {
@@ -302,34 +322,61 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
   // (d) Single global execution lock — LAST gate, the only pre-launch side effect.
   if (!acquireWorkerLock(sid)) return { launched: false, reason: 'lock_held' };
 
-  // ── claim expected IDs + persist execution state BEFORE spawn ─────────────
+  // ── claim atomically under global lock + persist state BEFORE spawn ─────
   const startedAt = Date.now();
-  const getExpectedClaimIds = deps.getExpectedClaimIds || (() => {
-    try {
-      const dueRows = getDB().prepare(
-        "SELECT id FROM bridge_lipa_inbox WHERE status IN ('pending','retry') AND available_at <= ? ORDER BY created_at ASC, id ASC LIMIT 1"
-      ).all(startedAt);
-      return dueRows.map(r => r.id);
-    } catch (_) { return []; }
-  });
-  let expectedClaimIds = getExpectedClaimIds();
+  const claimDue = deps.claimDue || rel.claimDue;
+  const claimResult = claimDue({ limit: 1, sessionId: sid, now: startedAt });
+  const claimedRows = (claimResult && claimResult.rows) || [];
+  const expectedClaimIds = claimedRows.map(r => r.id);
+  const claimDetails = claimedRows.map(r => ({
+    inbox_id: r.id, claim_generation: r.claim_generation, session_id: sid,
+  }));
+
+  if (expectedClaimIds.length === 0) {
+    // Nothing was claimed despite getDueCount > 0 (race or paused)
+    rel.releaseWorkerLock(sid);
+    return { launched: false, reason: 'no_claims' };
+  }
 
   setExecutionState({
     state: 'active',
     session_id: sid,
     started_at: startedAt,
     expected_claim_ids: expectedClaimIds,
+    claim_details: claimDetails,
   });
 
+  // ── persist launch-start record BEFORE spawn (immutable INSERT) ──────────
+  const launchKey = `launch_${sid}`;
+  try {
+    getDB().prepare(
+      'INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?)'
+    ).run(launchKey, JSON.stringify({
+      session_id: sid, started_at: startedAt, expected_claim_ids: expectedClaimIds,
+      claim_details: claimDetails, status: 'started', usage: null, usage_unknown: true,
+    }), startedAt);
+  } catch (_) { /* key collision = already exists = immutable, do nothing */ }
+
+  // ── build the agent message with bound claim details ──────────────────
+  const claimJson = JSON.stringify(claimDetails);
+  const boundMessage = [
+    CRON_MESSAGE,
+    `\nBound claims: ${claimJson}`,
+    `Session: ${sid}`,
+    'poll.js and respond.js MUST verify this session_id and claim_generation match.',
+  ].join('\n');
+
   // ── launch ─────────────────────────────────────────────────────────────────
-  const args = ['agent', '-m', CRON_MESSAGE, '--agent', 'personal', '--session-id', sid, '--json'];
+  const args = ['agent', '-m', boundMessage, '--agent', 'personal', '--session-id', sid, '--json'];
   let result;
   try {
     result = await launcher({ command: 'openclaw', args, timeoutMs, sessionId: sid });
   } catch (spawnErr) {
     // (5/T9) Launch failed to start: we cannot know if anything ran → hold; do NOT
     // release the lock (respond.js may or may not run; TTL is the safety net).
-    setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: Date.now(), reason: `spawn_error: ${spawnErr.message}` });
+    const spawnDoneAt = Date.now();
+    setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: spawnDoneAt, reason: `spawn_error: ${spawnErr.message}` });
+    try { getDB().prepare('INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?)').run('outcome_' + sid, JSON.stringify({ session_id: sid, started_at: startedAt, finished_at: spawnDoneAt, status: 'spawn_error', usage: null, usage_unknown: true }), spawnDoneAt); } catch (_) {}
     setExecutionHold(`spawn failed: ${spawnErr.message}`, { session_id: sid });
     return { launched: true, reason: 'spawn_error', error: spawnErr.message, holdSet: true };
   }
@@ -377,27 +424,18 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
 
     // All claimed rows are verified terminal — safe to release the lock.
     rel.releaseWorkerLock(sid);
-    // Persist immutable per-launch record (never overwritten; keyed by session)
-    const launchRecord = {
-      session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: 0,
-      expected_claim_ids: claimIds,
-      usage: usage || null, usage_unknown: !usage,
-    };
+    // Persist outcome record (immutable INSERT, separate from launch-start)
+    // No double-count: respond.js handles per-request cost. The wrapper only
+    // records run-level metadata. Accounting uses respond.js records only.
     try {
-      writeState(`launch_${sid}`, launchRecord);
-      // Record launch-level cost into daily accounting (bootstrap / non-request cost).
-      // This is separate from respond.js per-request accounting — no double count
-      // because this uses inboxId=null.
-      if (usage && (usage.input_tokens || usage.output_tokens)) {
-        accounting.recordRequestCost({
-          inboxId: null,
-          inputTokens: usage.input_tokens, outputTokens: usage.output_tokens,
-          cacheReadTokens: usage.cache_read_tokens || usage.cache_read,
-          cacheWriteTokens: usage.cache_write_tokens || usage.cache_write,
-          model: usage.model || null,
-        });
-      }
-    } catch (_) { /* non-fatal */ }
+      getDB().prepare(
+        'INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?)'
+      ).run('outcome_' + sid, JSON.stringify({
+        session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: 0,
+        expected_claim_ids: claimIds, status: 'clean_exit',
+        usage: usage || null, usage_unknown: !usage,
+      }), doneAt);
+    } catch (_) { /* immutable: collision = already exists */ }
     setExecutionState({ state: 'terminal', session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: 0, usage_unknown: !usage });
     console.log('[Lipa preflight] agent turn exited 0, all rows verified terminal — lock released');
     return { launched: true, reason: 'clean_exit', exitCode: 0 };

@@ -97,19 +97,39 @@ if (!rel.acquireWorkerLock(sessionId)) exitQuiet(0);
 // so releasing now would let the next poll cycle claim more rows mid-execution.
 // scripts/lipa-bridge-respond.js releases the lock on completion; WORKER_LOCK_TTL_MS
 // is the crash safety net if the agent turn never lands.
-const claim = rel.claimDue({ limit: 1, sessionId, runId, now });
+// Check if the preflight already claimed rows for this session (v3+ flow).
+// If so, read them back instead of claiming again.
+const { initDB: _initDB, getDB: _getDB } = require('../src/db');
+const alreadyClaimed = _getDB().prepare(
+  "SELECT * FROM bridge_lipa_inbox WHERE status='claimed' AND session_id = ?"
+).all(sessionId);
 
-if (claim.paused || claim.rows.length === 0) {
-  // Nothing actually claimed → nothing will complete → release the lock now so a
-  // no-op poll does not hold it for the full TTL.
+let claimedRows;
+if (alreadyClaimed.length > 0) {
+  // Preflight pre-claimed. Verify session match and use these rows.
+  claimedRows = alreadyClaimed.map(r => {
+    const args = (() => { try { return JSON.parse(r.args_json || '{}'); } catch (_) { return {}; } })();
+    return { ...r, args };
+  });
+} else {
+  // Legacy path: claim here (for backward compat with old cron or direct invocation)
+  const claim = rel.claimDue({ limit: 1, sessionId, runId, now });
+  if (claim.paused || claim.rows.length === 0) {
+    rel.releaseWorkerLock(sessionId);
+    exitQuiet(0);
+  }
+  claimedRows = claim.rows;
+}
+
+if (claimedRows.length === 0) {
   rel.releaseWorkerLock(sessionId);
   exitQuiet(0);
 }
 
-const commands = claim.rows.map(row => ({
+const commands = claimedRows.map(row => ({
   inbox_id: row.id,
   request_id: row.request_id,
-  claim_generation: row.claim_generation,   // MUST be echoed back to respond.js (fencing)
+  claim_generation: row.claim_generation,
   session_id: sessionId,
   attempt: row.attempts,
   command: row.command,

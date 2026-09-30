@@ -155,6 +155,9 @@ module.exports = {
       db.prepare("DELETE FROM bridge_lipa_state WHERE key LIKE 'launch_%'").run();
     }
 
+    // WAL checkpoint to release any locks before next test in suite
+    try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
+
     return errors.length === 0
       ? { pass: true, message: 'Lipa concurrency: all 4 real child-process tests pass (lock contention, execution state blocking, evidence-required clear, evidence-supplied clear).' }
       : { pass: false, message: errors.join('\n         ') };
