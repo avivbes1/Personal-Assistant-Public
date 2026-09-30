@@ -96,11 +96,21 @@ function setExecutionHold(reason, meta = {}) {
   return value;
 }
 
-/** Clear the execution hold. Returns the hold that was cleared (or null). */
+/** Clear the execution hold atomically (delete hold + set execution_state to terminal). */
 function clearExecutionHold() {
-  const prev = getExecutionHold();
-  if (prev) db().prepare('DELETE FROM bridge_lipa_state WHERE key = ?').run(HOLD_KEY);
-  return prev || null;
+  const d = db();
+  const tx = d.transaction(() => {
+    const prev = getExecutionHold();
+    if (!prev) return null;
+    d.prepare('DELETE FROM bridge_lipa_state WHERE key = ?').run(HOLD_KEY);
+    // Also set execution_state to terminal so new launches aren't blocked
+    const execState = getStateEx('execution_state');
+    if (execState.exists) {
+      setState('execution_state', { state: 'terminal', cleared_at: Date.now(), reason: 'hold_cleared' });
+    }
+    return prev;
+  });
+  return tx();
 }
 
 function db() {
@@ -123,13 +133,19 @@ function jitter(ms) { return Math.floor(ms * 0.2 * Math.random()); }          //
 
 /**
  * Read a control-plane state key. Returns { exists, value, corrupt }.
- * - exists=false: no row in DB
- * - exists=true, corrupt=false: parsed JSON
- * - exists=true, corrupt=true: row present but JSON malformed → fail closed
+ * - exists=false: no row in DB at all
+ * - exists=true, corrupt=false: row present with valid JSON
+ * - exists=true, corrupt=true: row present but JSON is malformed OR value is SQL NULL
+ *
+ * IMPORTANT: a SQL NULL stored value is treated as "key exists with null value" =
+ * fail closed (corrupt=true). This prevents a DB write of NULL from being
+ * silently treated as "no hold" / "no lock". Only a MISSING row (no row at all)
+ * returns exists=false.
  */
 function getStateEx(key) {
   const row = db().prepare('SELECT value FROM bridge_lipa_state WHERE key = ?').get(key);
-  if (!row || row.value == null) return { exists: false, value: null, corrupt: false };
+  if (!row) return { exists: false, value: null, corrupt: false };          // key absent
+  if (row.value == null) return { exists: true, value: null, corrupt: true }; // NULL stored = corrupt
   try { return { exists: true, value: JSON.parse(row.value), corrupt: false }; }
   catch (_) { return { exists: true, value: null, corrupt: true }; }
 }
@@ -166,7 +182,17 @@ function isBillingError(err) {
 }
 
 function getCircuit() {
-  return getState('circuit') || { state: 'closed' };
+  const r = getStateEx('circuit');
+  if (!r.exists) return { state: 'closed' };
+  if (r.corrupt) {
+    console.error('[Lipa] circuit: corrupt/null — fail closed (paused)');
+    return { state: 'open', reason: 'corrupt_circuit', corrupt: true };
+  }
+  if (!r.value || typeof r.value !== 'object' || !r.value.state) {
+    console.error('[Lipa] circuit: invalid value — fail closed (paused)');
+    return { state: 'open', reason: 'invalid_circuit', corrupt: true };
+  }
+  return r.value;
 }
 function isPaused() {
   return getCircuit().state === 'open';

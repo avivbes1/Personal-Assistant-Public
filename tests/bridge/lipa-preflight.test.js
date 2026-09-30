@@ -1,4 +1,12 @@
 'use strict';
+// SAFETY: bridge tests must NEVER run against the production DB.
+// run-bridge-isolated.js sets FAMILYBOT_DB_PATH to a temp DB before spawning.
+if (!process.env.FAMILYBOT_DB_PATH ||
+    require('path').resolve(process.env.FAMILYBOT_DB_PATH) ===
+    require('path').resolve(__dirname, '../../data/family.db')) {
+  module.exports = { run: async () => ({ pass: false, message: 'SAFETY ABORT: FAMILYBOT_DB_PATH is not set to an isolated test DB. Run via run-bridge-isolated.js.' }) };
+  return;
+}
 /**
  * lipa-preflight.test.js — system-cron preflight wrapper for the Lipa Bridge.
  *
@@ -570,15 +578,6 @@ module.exports = {
         try { db.prepare('DELETE FROM bridge_lipa_state WHERE key = ?').run(launchKey); } catch (_) {}
       }
 
-    } finally {
-      cleanup(db, ids);
-      for (const k of STATE_KEYS) restoreState(db, k, stateSnaps[k]);
-      // Clean any immutable launch/outcome records left by tests
-      db.prepare("DELETE FROM bridge_lipa_state WHERE key LIKE 'launch_%' OR key LIKE 'outcome_%'").run();
-      // WAL checkpoint to release locks before next test in suite
-      try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
-    }
-
       // ── T27: corrupt hold blocks launch (fail closed) ─────────────────
       {
         resetState(db);
@@ -636,18 +635,18 @@ module.exports = {
 
       // ── T30: model-aware accounting rates ──────────────────────────
       {
-        // Opus should be most expensive
-        const opusEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-opus-4.6' });
-        const sonnetEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-sonnet-4.6' });
-        const haikuEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: 'claude-haiku-4.5' });
+        // Opus should be most expensive (full tokens with explicit cache=0 for clean estimate)
+        const opusEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, model: 'claude-opus-4.6' });
+        const sonnetEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, model: 'claude-sonnet-4.6' });
+        const haikuEst = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, model: 'claude-haiku-4.5' });
         if (!opusEst.cost || !sonnetEst.cost || !haikuEst.cost) errors.push('T30: estimates returned null for known token counts');
         if (opusEst.cost <= sonnetEst.cost) errors.push(`T30: Opus ($${opusEst.cost}) not more expensive than Sonnet ($${sonnetEst.cost})`);
         if (sonnetEst.cost <= haikuEst.cost) errors.push(`T30: Sonnet ($${sonnetEst.cost}) not more expensive than Haiku ($${haikuEst.cost})`);
-        // Partial usage should be flagged
-        const partial = accounting.estimateFromTokens({ inputTokens: 1000, model: 'claude-opus-4.6' });
+        // Partial usage should be flagged (missing output tokens)
+        const partial = accounting.estimateFromTokens({ inputTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0, model: 'claude-opus-4.6' });
         if (!partial.partial) errors.push('T30: missing output tokens not flagged as partial');
         // Unknown model returns cost=null + unknownModel=true (per Aviv: unknown=unknown, not guessed)
-        const unknownModel = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, model: null });
+        const unknownModel = accounting.estimateFromTokens({ inputTokens: 1000000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, model: null });
         if (unknownModel.cost !== null) errors.push('T30: unknown model should return null cost, not a guess');
         if (!unknownModel.unknownModel) errors.push('T30: unknown model not flagged as unknownModel');
       }
@@ -658,15 +657,23 @@ module.exports = {
         // Only input tokens, no model → unknownModel → cost_unknown=1
         const rec = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000 });
         if (!rec.unknown) errors.push('T31: partial usage (no model) not flagged as unknown');
-        // Full tokens with known model → cost_unknown=0
-        const rec2 = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000, outputTokens: 500, model: 'claude-opus-4.6' });
-        if (rec2.unknown) errors.push('T31: full usage with known model wrongly flagged as unknown');
-        // Partial (missing cache) with known model → still unknown
+        // Full tokens + explicit cache=0 with known model → cost_unknown=0
+        const rec2 = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0, model: 'claude-opus-4.6' });
+        if (rec2.unknown) errors.push('T31: full usage with explicit cache=0 and known model wrongly flagged as unknown');
+        // Missing cache with known model → partial → cost_unknown=1 (cache required for complete estimate)
         const rec3 = accounting.recordRequestCost({ inboxId: id, inputTokens: 1000, outputTokens: 500, model: 'claude-opus-4.6' });
-        // This has both input and output, so partial=false (cache is optional). Should be known.
-        if (rec3.unknown) errors.push('T31: input+output with known model wrongly flagged as unknown');
+        if (!rec3.unknown) errors.push('T31: input+output with missing cache should be flagged as unknown (partial estimate)');
         resetState(db);
       }
+
+    } finally {
+      cleanup(db, ids);
+      for (const k of STATE_KEYS) restoreState(db, k, stateSnaps[k]);
+      // Clean any immutable launch/outcome records left by tests
+      db.prepare("DELETE FROM bridge_lipa_state WHERE key LIKE 'launch_%' OR key LIKE 'outcome_%'").run();
+      // WAL checkpoint to release locks before next test in suite
+      try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
+    }
 
     const total = 31;
     return errors.length === 0

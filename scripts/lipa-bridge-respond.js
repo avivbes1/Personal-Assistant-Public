@@ -123,6 +123,7 @@ if (opts.claim_generation != null) {
       inboxId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
       model: opts.model || null,
       costUsd: opts.cost_usd == null ? null : opts.cost_usd,
+      sourceKey: `${sessionId || 'unknown'}_${inboxId}`,
     });
     const capCheck = accounting.checkRequestCap({ inboxId, cost: rec.cost });
     if (capCheck.alert) {

@@ -29,64 +29,53 @@ function db() {
 
 // ── versioned model rates — dollars per 1M tokens ─────────────────────
 // Source: https://platform.claude.com/docs/en/about-claude/pricing (2026-09-30)
-// Each entry uses exact model IDs with versioned rates. Cache writes DO have a
-// charge. An unknown model is marked cost_unknown=true, NOT priced at a guess.
+// Only STABLE versioned rates are included. Unverified rates (5.x series,
+// Gemini) are intentionally excluded — unknown models return cost_unknown=true.
+// An unknown model is marked cost_unknown=true, NOT priced at a guess.
 const MODEL_RATES = {
   // Opus 4.x series: $5/$25, cache hit $0.50, 5m cache write $6.25
-  'claude-opus-4.6':  { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4.5':  { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
+  'claude-opus-4.6':  { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4.7':  { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4.8':  { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
-  // Opus 5.x: $4/$20 (5.5), $5/$25 (5.0)
-  'claude-opus-5.5':  { input: 4.0,  output: 20.0, cacheRead: 0.20, cacheWrite: 5.0  },
-  'claude-opus-5':    { input: 5.0,  output: 25.0, cacheRead: 0.50, cacheWrite: 6.25 },
   // Sonnet 4.x: $3/$15
-  'claude-sonnet-4.6': { input: 3.0,  output: 15.0, cacheRead: 0.30, cacheWrite: 3.75 },
   'claude-sonnet-4.5': { input: 3.0,  output: 15.0, cacheRead: 0.30, cacheWrite: 3.75 },
-  // Sonnet 5.x: $2/$10
-  'claude-sonnet-5.5': { input: 2.0,  output: 10.0, cacheRead: 0.20, cacheWrite: 2.50 },
-  'claude-sonnet-5':   { input: 2.0,  output: 10.0, cacheRead: 0.20, cacheWrite: 2.50 },
+  'claude-sonnet-4.6': { input: 3.0,  output: 15.0, cacheRead: 0.30, cacheWrite: 3.75 },
   // Haiku 4.5: $1/$5
   'claude-haiku-4.5':  { input: 1.0,  output: 5.0,  cacheRead: 0.10, cacheWrite: 1.25 },
   // Haiku 3.5 (retired): $0.80/$4
   'claude-haiku-3.5':  { input: 0.80, output: 4.0,  cacheRead: 0.08, cacheWrite: 1.0  },
-  // Gemini Flash (approximate)
-  'gemini-2.5-flash':  { input: 0.15, output: 0.60, cacheRead: 0.0375, cacheWrite: 0.0 },
 };
 const MTOK = 1_000_000;
 
 // Model aliases: map provider-specific model IDs to canonical rate keys.
 // Only VERIFIED aliases that resolve to a specific pricing tier.
+// ratesForModel strips provider prefixes and date suffixes before lookup, so
+// only the bare model-ID form (hyphen → dot conversion) is needed here.
 const MODEL_ALIASES = {
-  // Anthropic API model IDs (with and without dates)
-  'claude-opus-4-6': 'claude-opus-4.6',
+  // Anthropic API model IDs (hyphen form → dot form)
   'claude-opus-4-5': 'claude-opus-4.5',
+  'claude-opus-4-6': 'claude-opus-4.6',
   'claude-opus-4-7': 'claude-opus-4.7',
   'claude-opus-4-8': 'claude-opus-4.8',
-  'claude-opus-5': 'claude-opus-5',
-  'claude-opus-5-5': 'claude-opus-5.5',
-  'claude-sonnet-4-6': 'claude-sonnet-4.6',
   'claude-sonnet-4-5': 'claude-sonnet-4.5',
-  'claude-sonnet-5': 'claude-sonnet-5',
-  'claude-sonnet-5-5': 'claude-sonnet-5.5',
+  'claude-sonnet-4-6': 'claude-sonnet-4.6',
   'claude-haiku-4-5': 'claude-haiku-4.5',
   'claude-haiku-3-5': 'claude-haiku-3.5',
-  // OpenClaw provider/model format
-  'anthropic/claude-opus-4-6': 'claude-opus-4.6',
-  'anthropic/claude-sonnet-4-6': 'claude-sonnet-4.6',
-  'anthropic/claude-haiku-4-5': 'claude-haiku-4.5',
-  'google/gemini-2.5-flash': 'gemini-2.5-flash',
 };
 
 /**
  * Resolve rates for a model string. Returns { rates, known }.
- * Uses ONLY verified exact model-ID matches and aliases.
+ * Strips provider prefix (e.g. anthropic/, google/) and date suffix (@YYYYMMDD)
+ * before lookup. Matches ONLY exact MODEL_RATES keys or MODEL_ALIASES entries.
  * No prefix/family fallback — 'claude-sonnet-999' returns known=false.
  * An unknown model returns known=false (caller must mark cost_unknown=true).
  */
 function ratesForModel(model) {
   if (!model) return { rates: null, known: false };
-  const m = String(model).toLowerCase().replace(/@\d{8}$/, ''); // strip date suffix like @20250805
+  const m = String(model).toLowerCase()
+    .replace(/@\d{8}$/, '')      // strip date suffix like @20250805
+    .replace(/^[^/]+\//, '');    // strip provider prefix like anthropic/ or google/
   // Direct match in MODEL_RATES
   if (MODEL_RATES[m]) return { rates: MODEL_RATES[m], known: true };
   // Alias match
@@ -121,9 +110,11 @@ function estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens, cacheW
   const { rates, known } = ratesForModel(model);
   // Unknown model → cannot price, mark unknown
   if (!known || !rates) return { cost: null, partial: false, unknownModel: true };
-  // Partial: missing a major token class (input or output). Cache counts are
-  // supplementary — missing cache alone doesn't make the estimate partial.
-  const partial = (inp == null || out == null);
+  // Partial: missing any token class (input, output, cache read, or cache write).
+  // Cache counts are required for a complete estimate — a null cache count means
+  // the provider usage is unknown, not zero. If you have no cache activity, pass
+  // cacheReadTokens=0 and cacheWriteTokens=0 explicitly.
+  const partial = (inp == null || out == null || cr == null || cw == null);
   const cost = ((inp || 0) * rates.input
               + (out || 0) * rates.output
               + (cr  || 0) * rates.cacheRead
@@ -138,7 +129,13 @@ function estimateFromTokens({ inputTokens, outputTokens, cacheReadTokens, cacheW
  * Returns { id, cost, unknown } — cost is the number used (null when unknown).
  */
 function recordRequestCost({ inboxId, inputTokens, outputTokens, cacheReadTokens,
-                             cacheWriteTokens, model, costUsd, now = Date.now() } = {}) {
+                             cacheWriteTokens, model, costUsd, sourceKey, now = Date.now() } = {}) {
+  // Dedup: if sourceKey is provided and a row with that key already exists, skip
+  if (sourceKey) {
+    const existing = db().prepare('SELECT id FROM bridge_lipa_costs WHERE source_key = ?').get(sourceKey);
+    if (existing) return { id: existing.id, cost: null, unknown: true, deduped: true };
+  }
+
   let cost = num(costUsd);
   let partialUsage = false;
   let unknownModel = false;
@@ -148,21 +145,17 @@ function recordRequestCost({ inboxId, inputTokens, outputTokens, cacheReadTokens
     partialUsage = est.partial;
     unknownModel = est.unknownModel;
   }
-  // unknown = true when:
-  // - no cost info at all (no costUsd, no tokens)
-  // - partial usage (some tokens known, some not) — could significantly understate spend
-  // - unknown model — cannot price without knowing the model
-  // - missing cache counts — partial
   const unknown = cost == null || partialUsage || unknownModel;
   const res = db().prepare(
     `INSERT INTO bridge_lipa_costs
        (inbox_id, model, input_tokens, output_tokens, cache_read_tokens,
-        cache_write_tokens, cost_usd_lower_bound, cost_unknown, recorded_at, date_jerusalem)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        cache_write_tokens, cost_usd_lower_bound, cost_unknown, recorded_at, date_jerusalem, source_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     inboxId == null ? null : inboxId, model || null,
     num(inputTokens), num(outputTokens), num(cacheReadTokens), num(cacheWriteTokens),
-    unknown ? null : cost, unknown ? 1 : 0, now, israelDateIso(new Date(now))
+    unknown ? null : cost, unknown ? 1 : 0, now, israelDateIso(new Date(now)),
+    sourceKey || null
   );
   return { id: res.lastInsertRowid, cost: unknown ? null : cost, unknown };
 }

@@ -1042,6 +1042,9 @@ function initDB() {
     `);
   } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_lipa_costs_date ON bridge_lipa_costs(date_jerusalem)'); } catch (_) {}
+  // v6: source_key for cost dedup (unique per provider-run)
+  try { db.exec('ALTER TABLE bridge_lipa_costs ADD COLUMN source_key TEXT'); } catch (_) {}
+  try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_bridge_lipa_costs_source_key ON bridge_lipa_costs(source_key) WHERE source_key IS NOT NULL'); } catch (_) {}
 
   console.log('[DB] Initialized at', DB_PATH);
   return db;

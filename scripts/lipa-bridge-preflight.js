@@ -141,9 +141,15 @@ function getExecutionState() {
     console.error(`[Lipa preflight] execution_state: unknown state '${v.state}' — fail closed`);
     return { state: 'unknown', corrupt: true, reason: 'unknown_state' };
   }
-  if (!v.session_id && v.state !== 'terminal') {
-    console.error('[Lipa preflight] execution_state: missing session_id — fail closed');
-    return { state: 'unknown', corrupt: true, reason: 'missing_session_id' };
+  if (v.state !== 'terminal') {
+    if (!v.session_id || typeof v.session_id !== 'string') {
+      console.error('[Lipa preflight] execution_state: missing/non-string session_id — fail closed');
+      return { state: 'unknown', corrupt: true, reason: 'invalid_session_id' };
+    }
+    if (v.started_at != null && (typeof v.started_at !== 'number' || !Number.isFinite(v.started_at))) {
+      console.error('[Lipa preflight] execution_state: non-numeric started_at — fail closed');
+      return { state: 'unknown', corrupt: true, reason: 'invalid_started_at' };
+    }
   }
   return v;
 }
@@ -233,14 +239,21 @@ function verifyCompletions(sessionId, expectedClaimIds) {
  * is NOT proof the remote agent stopped (the caller treats it as ambiguous).
  * Captures stdout for usage extraction.
  */
-function defaultLauncher({ command, args, timeoutMs, sessionId }) {
+function defaultLauncher({ command, args, timeoutMs, sessionId, claimDetails }) {
   return new Promise((resolve, reject) => {
     let child;
     const stdoutChunks = [];
     try {
+      const firstClaim = claimDetails && claimDetails[0];
       child = spawn(command, args, {
         stdio: ['ignore', 'pipe', 'inherit'],
-        env: { ...process.env, OPENCLAW_SESSION_ID: sessionId },
+        env: {
+          ...process.env,
+          OPENCLAW_SESSION_ID: sessionId,
+          LIPA_BRIDGE_BOUND: '1',
+          LIPA_BRIDGE_CLAIM_ID: firstClaim ? String(firstClaim.inbox_id) : '',
+          LIPA_BRIDGE_CLAIM_GEN: firstClaim ? String(firstClaim.claim_generation) : '',
+        },
       });
     } catch (e) { return reject(e); }
 
@@ -388,7 +401,7 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
   const args = ['agent', '-m', boundMessage, '--agent', 'personal', '--session-id', sid, '--json'];
   let result;
   try {
-    result = await launcher({ command: 'openclaw', args, timeoutMs, sessionId: sid });
+    result = await launcher({ command: 'openclaw', args, timeoutMs, sessionId: sid, claimDetails });
   } catch (spawnErr) {
     // (5/T9) Launch failed to start: we cannot know if anything ran → hold; do NOT
     // release the lock (respond.js may or may not run; TTL is the safety net).

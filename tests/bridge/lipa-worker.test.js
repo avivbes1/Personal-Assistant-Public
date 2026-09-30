@@ -1,4 +1,12 @@
 'use strict';
+// SAFETY: bridge tests must NEVER run against the production DB.
+// run-bridge-isolated.js sets FAMILYBOT_DB_PATH to a temp DB before spawning.
+if (!process.env.FAMILYBOT_DB_PATH ||
+    require('path').resolve(process.env.FAMILYBOT_DB_PATH) ===
+    require('path').resolve(__dirname, '../../data/family.db')) {
+  module.exports = { run: async () => ({ pass: false, message: 'SAFETY ABORT: FAMILYBOT_DB_PATH is not set to an isolated test DB. Run via run-bridge-isolated.js.' }) };
+  return;
+}
 /**
  * lipa-worker.test.js — end-to-end behavior of the Lipa Bridge worker layer.
  *
