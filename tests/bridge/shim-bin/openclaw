@@ -1,0 +1,9 @@
+#!/usr/bin/env node
+// DENY-BY-DEFAULT openclaw shim for test harness.
+// Prevents accidental paid LLM launches during tests.
+// If a test accidentally invokes the real CLI, this logs and exits 99.
+const fs = require('fs');
+const msg = `[TEST SHIM] BLOCKED real openclaw launch at ${new Date().toISOString()} args=${JSON.stringify(process.argv.slice(2))}`;
+process.stderr.write(msg + '\n');
+try { fs.appendFileSync('/tmp/openclaw-shim-blocked.log', msg + '\n'); } catch (_) {}
+process.exit(99);

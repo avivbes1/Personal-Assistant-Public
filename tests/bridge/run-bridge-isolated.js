@@ -57,7 +57,12 @@ for (const file of testFiles) {
       process.exit(1);
     });
   `], {
-    env: { ...process.env, FAMILYBOT_DB_PATH: dbPath },
+    env: {
+      ...process.env,
+      FAMILYBOT_DB_PATH: dbPath,
+      // Deny-by-default: shim-bin/openclaw blocks accidental paid launches
+      PATH: path.join(__dirname, 'shim-bin') + ':' + (process.env.PATH || ''),
+    },
     timeout: 30000,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
