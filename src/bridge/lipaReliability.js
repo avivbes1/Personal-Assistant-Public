@@ -476,7 +476,7 @@ function failClaim({ inboxId, claimGeneration, sessionId, error, isTimeout,
 
     // Cost accounting: record even on failure (tokens consumed before failure).
     try {
-      lipaAccounting.recordRequestCost({ inboxId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, now });
+      lipaAccounting.recordRequestCost({ inboxId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, now, sourceKey: `${sessionId || 'unknown'}_${inboxId}_fail_${attempts}` });
     } catch (e) { console.error('[Lipa] failClaim cost accounting failed:', e.message); }
 
     if (attempts >= MAX_ATTEMPTS) {
@@ -541,7 +541,7 @@ function reconcileStaleClaims({ now = Date.now() } = {}) {
       // cost_usd_lower_bound=NULL) so a timeout is never silently counted as $0 in
       // forensics. Best-effort so a cost-INSERT error can't roll back the reconcile.
       try {
-        lipaAccounting.recordRequestCost({ inboxId: r.id, now });
+        lipaAccounting.recordRequestCost({ inboxId: r.id, now, sourceKey: `reconcile_${r.session_id || 'unknown'}_${r.id}_${attempts}` });
       } catch (e) { console.error('[Lipa] reconcile cost accounting failed:', e.message); }
 
       if (attempts >= MAX_ATTEMPTS) {

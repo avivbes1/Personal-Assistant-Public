@@ -101,7 +101,8 @@ const { getExecutionHold, setExecutionHold, clearExecutionHold } = rel;
  */
 function readStateEx(key) {
   const row = getDB().prepare('SELECT value FROM bridge_lipa_state WHERE key = ?').get(key);
-  if (!row || row.value == null) return { exists: false, value: null, corrupt: false };
+  if (!row) return { exists: false, value: null, corrupt: false };
+  if (row.value == null) return { exists: true, value: null, corrupt: true }; // SQL NULL = fail closed
   try { return { exists: true, value: JSON.parse(row.value), corrupt: false }; }
   catch (_) { return { exists: true, value: null, corrupt: true }; }
 }
@@ -573,10 +574,11 @@ if (require.main === module) {
       process.exit(1);
     }
 
-    // Session match: the session in the hold must match the evidence
-    // (operator is clearing the right hold)
+    // Session match: if the hold has a session_id, the operator must be aware of it
+    // (the evidence --terminal-status should reference the correct session)
+    // We don't block on session_id=null holds (incident protective holds)
 
-    // All checks pass — write DURABLE audit record, then atomic clear
+    // All checks pass — write DURABLE audit + clear in ONE transaction
     const auditAt = Date.now();
     const evidence = {
       terminal_status: terminalStatus,
@@ -588,10 +590,12 @@ if (require.main === module) {
       cleared_at: auditAt,
     };
 
-    // Audit MUST succeed before clear proceeds
-    try {
+    // Audit + clear in ONE transaction (atomic: either both succeed or neither)
+    const clearDb = getDB();
+    const tx = clearDb.transaction(() => {
+      // 1. Write audit
       rel.logAttempt({
-        inboxId: 0,  // sentinel for audit records (not tied to a specific inbox row)
+        inboxId: 0,
         attemptNumber: 0,
         event: 'hold_cleared',
         outcome: 'ok',
@@ -599,14 +603,20 @@ if (require.main === module) {
         sessionId,
         finishedAt: auditAt,
       });
+      // 2. Delete hold
+      clearDb.prepare('DELETE FROM bridge_lipa_state WHERE key = ?').run('execution_hold');
+      // 3. Set execution state to terminal
+      clearDb.prepare(
+        `INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      ).run('execution_state', JSON.stringify({ state: 'terminal', session_id: sessionId, cleared_at: auditAt, reason: 'manual_clear_hold', evidence }), auditAt);
+    });
+    try {
+      tx();
     } catch (e) {
-      console.error('[Lipa preflight] --clear-hold REFUSED: audit log write failed (no clear without audit):', e.message);
+      console.error('[Lipa preflight] --clear-hold REFUSED: transactional write failed:', e.message);
       process.exit(1);
     }
-
-    // Atomic clear: hold + execution state
-    clearExecutionHold();
-    setExecutionState({ state: 'terminal', session_id: sessionId, cleared_at: auditAt, reason: 'manual_clear_hold', evidence });
 
     console.log(`[Lipa preflight] execution hold cleared (was: ${truncate(hold.reason, 120)})`);
     console.log(`[Lipa preflight] audit: hold_cleared by ${source}, terminal_status: ${terminalStatus}`);

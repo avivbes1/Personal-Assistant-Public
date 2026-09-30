@@ -16,7 +16,9 @@ const fs = require('fs');
 const os = require('os');
 
 const BRIDGE_DIR = __dirname;
-const PROD_DB = path.resolve(__dirname, '../../data/family.db');
+// Use realpathSync to follow symlinks (family.db -> besinsky.db)
+const PROD_DB = (() => { try { return fs.realpathSync(path.join(__dirname, '../../data/family.db')); } catch (_) { return path.resolve(__dirname, '../../data/family.db'); } })();
+const DATA_DIR = path.resolve(__dirname, '../../data');
 
 // Create isolated DB
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lipa-bridge-suite-'));

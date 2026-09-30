@@ -1,9 +1,12 @@
 'use strict';
 // SAFETY: bridge tests must NEVER run against the production DB.
 // run-bridge-isolated.js sets FAMILYBOT_DB_PATH to a temp DB before spawning.
-if (!process.env.FAMILYBOT_DB_PATH ||
-    require('path').resolve(process.env.FAMILYBOT_DB_PATH) ===
-    require('path').resolve(__dirname, '../../data/family.db')) {
+const _fs = require('fs'), _path = require('path');
+const _dbEnv = process.env.FAMILYBOT_DB_PATH || '';
+const _dataDir = _path.resolve(__dirname, '../../data');
+const _realDb = _dbEnv ? (function(){ try { return _fs.realpathSync(_dbEnv); } catch(_) { return _path.resolve(_dbEnv); } })() : '';
+const _realProd = (function(){ try { return _fs.realpathSync(_path.join(_dataDir, 'family.db')); } catch(_) { return ''; } })();
+if (!_dbEnv || _realDb.startsWith(_dataDir) || _realDb === _realProd) {
   module.exports = { run: async () => ({ pass: false, message: 'SAFETY ABORT: FAMILYBOT_DB_PATH is not set to an isolated test DB. Run via run-bridge-isolated.js.' }) };
   return;
 }
