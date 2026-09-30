@@ -35,6 +35,9 @@ function restoreState(db, key, snap) {
 function cleanup(db, ids) {
   if (ids.length) {
     const list = ids.join(',');
+    // failClaim now records an advisory cost on every failure/timeout, so clean
+    // those rows too (they are keyed by inbox_id, deleted before the inbox rows).
+    db.prepare(`DELETE FROM bridge_lipa_costs WHERE inbox_id IN (${list})`).run();
     db.prepare(`DELETE FROM bridge_lipa_outbox WHERE inbox_id IN (${list})`).run();
     db.prepare(`DELETE FROM bridge_lipa_attempts WHERE inbox_id IN (${list})`).run();
     db.prepare(`DELETE FROM bridge_lipa_inbox WHERE id IN (${list})`).run();

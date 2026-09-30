@@ -1015,6 +1015,33 @@ function initDB() {
   } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_lipa_due ON bridge_lipa_inbox(status, available_at)'); } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_lipa_attempts ON bridge_lipa_attempts(inbox_id, attempt_number)'); } catch (_) {}
+  // Dedup guard: two concurrent arrivals with the same request_id insert once.
+  // Partial index (WHERE request_id IS NOT NULL) so anonymous/null jobs are never
+  // deduped against each other. enqueueGuarded() upserts against this index.
+  try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_bridge_lipa_request_id ON bridge_lipa_inbox(request_id) WHERE request_id IS NOT NULL'); } catch (_) {}
+
+  // Advisory cost accounting (src/bridge/lipaAccounting.js). Purely additive: a
+  // lower-bound cost estimate per request drives a soft daily cap (block new
+  // launches) and a per-request alert threshold (flag, never block/retry).
+  // cost_unknown=1 marks a row whose tokens AND cost were both unavailable.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_lipa_costs (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        inbox_id             INTEGER,
+        model                TEXT,
+        input_tokens         INTEGER,
+        output_tokens        INTEGER,
+        cache_read_tokens    INTEGER,
+        cache_write_tokens   INTEGER,
+        cost_usd_lower_bound REAL,
+        cost_unknown         INTEGER NOT NULL DEFAULT 0,
+        recorded_at          INTEGER NOT NULL,
+        date_jerusalem       TEXT NOT NULL
+      )
+    `);
+  } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_lipa_costs_date ON bridge_lipa_costs(date_jerusalem)'); } catch (_) {}
 
   console.log('[DB] Initialized at', DB_PATH);
   return db;

@@ -26,6 +26,10 @@
  */
 
 const lipaConfig = require('./lipaConfig');
+// Advisory cost accounting (soft daily/request caps). Re-exported below so the
+// whole Lipa worker layer has one import surface (rel.accounting.*); the scripts
+// also import it directly.
+const lipaAccounting = require('./lipaAccounting');
 
 function db() {
   return require('../db').getDB();
@@ -154,7 +158,11 @@ function argsByteLength(args) {
 
 /**
  * Guarded enqueue. Rejects an oversized job (> MAX_ARGS_BYTES) rather than
- * silently truncating it. Returns {inserted, id, rejected?, bytes, reason?}.
+ * silently truncating it. Dedups on request_id: two concurrent arrivals with the
+ * same request_id insert only once (ON CONFLICT via the partial unique index
+ * idx_bridge_lipa_request_id — see db.js). A NULL request_id is NEVER deduped
+ * (the partial index excludes NULLs, so each anonymous job inserts).
+ * Returns {inserted, id, rejected?, duplicate?, bytes, reason?}.
  * (Splitting large jobs is supported via the split_progress column + saveSplitProgress;
  *  callers that can chunk should do so and enqueue each chunk under the limit.)
  */
@@ -166,13 +174,25 @@ function enqueueGuarded({ requestId, command, args, fromAddr, subject, messageId
     console.error(`[Lipa] rejecting oversized job: ${bytes}B > ${MAX_ARGS_BYTES}B (request_id=${requestId || 'n/a'})`);
     return { inserted: false, rejected: true, bytes, reason: `args ${bytes}B exceeds ${MAX_ARGS_BYTES}B limit` };
   }
-  const res = db().prepare(
-    `INSERT INTO bridge_lipa_inbox
-       (request_id, command, args_json, from_addr, subject, gmail_message_id,
-        created_at, status, attempts, available_at, args_bytes, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`
-  ).run(requestId || null, command || '', argsJson, fromAddr || null, subject || null,
-        messageId || null, now, now, bytes, now);
+  const cols = `(request_id, command, args_json, from_addr, subject, gmail_message_id,
+        created_at, status, attempts, available_at, args_bytes, updated_at)`;
+  const vals = `VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`;
+  const params = [requestId || null, command || '', argsJson, fromAddr || null, subject || null,
+        messageId || null, now, now, bytes, now];
+  if (requestId) {
+    // Dedup non-null request_id against the partial unique index. The WHERE
+    // clause in the conflict target must match the partial index exactly.
+    const res = db().prepare(
+      `INSERT INTO bridge_lipa_inbox ${cols} ${vals}
+         ON CONFLICT(request_id) WHERE request_id IS NOT NULL DO NOTHING`
+    ).run(...params);
+    if (res.changes === 0) {
+      const existing = db().prepare('SELECT id FROM bridge_lipa_inbox WHERE request_id = ?').get(requestId);
+      return { inserted: false, duplicate: true, id: existing ? existing.id : undefined, bytes };
+    }
+    return { inserted: true, id: res.lastInsertRowid, bytes };
+  }
+  const res = db().prepare(`INSERT INTO bridge_lipa_inbox ${cols} ${vals}`).run(...params);
   return { inserted: true, id: res.lastInsertRowid, bytes };
 }
 
@@ -199,7 +219,7 @@ function getDueCount(now = Date.now()) {
  * ids on each. No-ops (returns []) when the circuit is open. Attempts are NOT
  * incremented here — only a failed delivery counts against MAX_ATTEMPTS.
  */
-function claimDue({ limit = 10, sessionId, runId, now = Date.now(), leaseMs = LEASE_MS } = {}) {
+function claimDue({ limit = 1, sessionId, runId, now = Date.now(), leaseMs = LEASE_MS } = {}) {
   if (isPaused()) return { paused: true, rows: [] };
   const tx = db().transaction(() => {
     const rows = db().prepare(
@@ -287,13 +307,15 @@ function completeClaim({ inboxId, claimGeneration, sessionId, response, original
  * schedules an exponential-backoff+jitter retry or dead-letters at MAX_ATTEMPTS.
  */
 function failClaim({ inboxId, claimGeneration, sessionId, error, isTimeout,
-                     cacheReadTokens, cacheWriteTokens }) {
+                     cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens,
+                     providerMessageId, runId }) {
   const now = Date.now();
   const tx = db().transaction(() => {
     const row = db().prepare('SELECT * FROM bridge_lipa_inbox WHERE id = ?').get(inboxId);
     if (!fenceOk(row, claimGeneration)) {
       logAttempt({ inboxId, attemptNumber: row ? row.attempts : 0, event: 'fenced', outcome: 'ignored',
-        error: 'late/stale failure', sessionId, claimGeneration });
+        error: 'late/stale failure', sessionId, runId, claimGeneration, providerMessageId,
+        cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens });
       return { fenced: true };
     }
     const errText = truncate(error && error.message ? error.message : error);
@@ -303,13 +325,24 @@ function failClaim({ inboxId, claimGeneration, sessionId, error, isTimeout,
       db().prepare("UPDATE bridge_lipa_inbox SET status = 'retry', available_at = ?, lease_expires_at = NULL, last_error = ?, updated_at = ? WHERE id = ?")
         .run(now, errText, now, inboxId);            // attempts unchanged — held, not penalized
       logAttempt({ inboxId, attemptNumber: row.attempts, event: 'paused', outcome: 'error',
-        error: errText, sessionId, claimGeneration, cacheReadTokens, cacheWriteTokens, finishedAt: now });
+        error: errText, sessionId, runId, claimGeneration, providerMessageId,
+        cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens, finishedAt: now });
       return { paused: true, status: 'retry' };
     }
 
     const attempts = (row.attempts || 0) + 1;
     logAttempt({ inboxId, attemptNumber: attempts, event: isTimeout ? 'timeout' : 'fail', outcome: 'error',
-      error: errText, sessionId, claimGeneration, cacheReadTokens, cacheWriteTokens, finishedAt: now });
+      error: errText, sessionId, runId, claimGeneration, providerMessageId,
+      cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens, finishedAt: now });
+
+    // A failed (or timed-out) delivery may still have consumed provider tokens
+    // BEFORE it failed — the success path is not the only place spend happens.
+    // Record the (lower-bound / unknown) cost so accounting never treats a failed
+    // attempt as free. Best-effort: a cost-INSERT error must not roll back or
+    // change the core fail/retry/dead transition below.
+    try {
+      lipaAccounting.recordRequestCost({ inboxId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, now });
+    } catch (e) { console.error('[Lipa] failClaim cost accounting failed:', e.message); }
 
     if (attempts >= MAX_ATTEMPTS) {
       db().prepare("UPDATE bridge_lipa_inbox SET status = 'dead', attempts = ?, last_error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
@@ -330,6 +363,16 @@ function failClaim({ inboxId, claimGeneration, sessionId, error, isTimeout,
  * PID is not remote liveness, so we rely on the lease). Bumps claim_generation
  * so the ORIGINAL worker's in-flight completion is fenced when it finally lands.
  * Also the drain step of the rollback procedure. Returns count reconciled.
+ *
+ * A lease expiry IS a failed attempt, so it INCREMENTS attempts (otherwise a row
+ * could bounce claimed→expired→retry→claimed forever, never dead-lettering).
+ * After the increment, per row:
+ *   - attempts >= MAX_ATTEMPTS  → dead   (exhausted; exhaustion wins over review)
+ *   - attempts >= 2  (2nd+ timeout) → needs_review: we cannot verify whether the
+ *     first-timed-out attempt already produced a side effect, so an uncertain
+ *     write is parked for a human rather than blind-retried.
+ *   - attempts == 1  (first timeout) → retry with exponential backoff+jitter
+ *     (same formula as failClaim), NOT available_at=now.
  */
 function reconcileStaleClaims({ now = Date.now() } = {}) {
   const tx = db().transaction(() => {
@@ -338,9 +381,41 @@ function reconcileStaleClaims({ now = Date.now() } = {}) {
     ).all(now);
     for (const r of rows) {
       const gen = (r.claim_generation || 0) + 1;   // fence the old session
-      db().prepare("UPDATE bridge_lipa_inbox SET status = 'retry', available_at = ?, claim_generation = ?, lease_expires_at = NULL, last_error = 'lease expired — reconciled', updated_at = ? WHERE id = ?")
-        .run(now, gen, now, r.id);
-      logAttempt({ inboxId: r.id, attemptNumber: r.attempts, event: 'fail', outcome: 'error',
+      const attempts = (r.attempts || 0) + 1;      // a lease expiry is a failed attempt
+
+      // The timed-out worker vanished mid-flight: it may have consumed provider
+      // tokens we can never observe. Record the cost as UNKNOWN (cost_unknown=1,
+      // cost_usd_lower_bound=NULL) so a timeout is never silently counted as $0 in
+      // forensics. Best-effort so a cost-INSERT error can't roll back the reconcile.
+      try {
+        lipaAccounting.recordRequestCost({ inboxId: r.id, now });
+      } catch (e) { console.error('[Lipa] reconcile cost accounting failed:', e.message); }
+
+      if (attempts >= MAX_ATTEMPTS) {
+        const errText = `lease expired — attempts exhausted (${attempts}/${MAX_ATTEMPTS})`;
+        db().prepare("UPDATE bridge_lipa_inbox SET status = 'dead', attempts = ?, claim_generation = ?, lease_expires_at = NULL, last_error = ?, updated_at = ? WHERE id = ?")
+          .run(attempts, gen, errText, now, r.id);
+        logAttempt({ inboxId: r.id, attemptNumber: attempts, event: 'timeout', outcome: 'error',
+          error: errText, claimGeneration: gen, finishedAt: now });
+        continue;
+      }
+
+      if (attempts >= 2) {
+        // Second+ timeout: an unverifiable possible side effect — never blind-retry.
+        const errText = `lease expired — uncertain side effect after ${attempts} timeouts (needs review)`;
+        db().prepare("UPDATE bridge_lipa_inbox SET status = 'needs_review', attempts = ?, claim_generation = ?, lease_expires_at = NULL, last_error = ?, updated_at = ? WHERE id = ?")
+          .run(attempts, gen, errText, now, r.id);
+        logAttempt({ inboxId: r.id, attemptNumber: attempts, event: 'needs_review', outcome: 'ignored',
+          error: errText, claimGeneration: gen, finishedAt: now });
+        continue;
+      }
+
+      // First timeout: retry with the same exponential backoff+jitter as failClaim.
+      const backoff = BACKOFF_BASE_MS * Math.pow(2, attempts - 1);
+      const availableAt = now + backoff + jitter(backoff);
+      db().prepare("UPDATE bridge_lipa_inbox SET status = 'retry', attempts = ?, available_at = ?, claim_generation = ?, lease_expires_at = NULL, last_error = 'lease expired — reconciled', updated_at = ? WHERE id = ?")
+        .run(attempts, availableAt, gen, now, r.id);
+      logAttempt({ inboxId: r.id, attemptNumber: attempts, event: 'timeout', outcome: 'error',
         error: 'lease expired — reconciled', claimGeneration: gen, finishedAt: now });
     }
     return rows.length;
@@ -366,4 +441,5 @@ module.exports = {
   enqueueGuarded, argsByteLength, saveSplitProgress,
   getDueCount, claimDue, completeClaim, failClaim, reconcileStaleClaims,
   logAttempt, getStats,
+  accounting: lipaAccounting,
 };
