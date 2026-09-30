@@ -17,10 +17,10 @@ bridge code without losing or double-sending events.
 ## 0. Preconditions
 
 - One bridge worker only (single Node process). Confirm no second `pm2` instance
-  is running: `pm2 list | grep besinsky`.
+  is running: `pm2 list | grep familybot`.
 - Have the target (old) revision SHA ready.
 - Know the DB path: `FAMILYBOT_DB_PATH` if set, else `data/family.db`
-  (symlinked to `data/besinsky.db`).
+  (symlinked to `data/familybot.db`).
 
 ---
 
@@ -41,7 +41,7 @@ or, cleaner, disable the bridge entirely and restart:
 ```bash
 # Option B: flip the on-switch off
 export INSTINCT_BRIDGE_ENABLED=0     # in the process env / .env
-pm2 restart besinsky --update-env
+pm2 restart familybot --update-env
 ```
 
 Either way, verify no further sends occur: watch the log for
@@ -113,7 +113,7 @@ Only once no `retry`/`needs_review` rows remain is the queue safe for old code.
 ```bash
 git log --oneline -n 10                 # find the pre-patch SHA
 git checkout <old-sha> -- src/bridge/    # or full revert / redeploy of old build
-pm2 restart besinsky --update-env
+pm2 restart familybot --update-env
 ```
 
 Notes on the schema after reverting:
@@ -137,7 +137,7 @@ node -e "require('./src/bridge/billingState').unpauseBilling()"
 
 # If you used Option B (on-switch): re-enable and restart
 export INSTINCT_BRIDGE_ENABLED=1
-pm2 restart besinsky --update-env
+pm2 restart familybot --update-env
 ```
 
 Watch `SELECT status, COUNT(*) FROM bridge_outbox GROUP BY status;` drain and the
