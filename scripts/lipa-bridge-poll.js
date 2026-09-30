@@ -58,6 +58,15 @@ const now = Date.now();
 //    and are fenced against their original worker's late completion.
 try { rel.reconcileStaleClaims({ now }); } catch (e) { console.error('[Lipa gate] reconcile failed:', e.message); }
 
+// 0b) Execution hold gate — if the preflight set a hold (timeout/bad exit), do
+//     not claim new work inside the agent turn either. This prevents an in-turn
+//     poll from bypassing the hold that the preflight wrapper enforces externally.
+if (rel.getExecutionHold && rel.getExecutionHold()) {
+  const h = rel.getExecutionHold();
+  console.error(`[Lipa gate] EXECUTION HOLD active (reason: ${h.reason || 'unknown'}) — not claiming work`);
+  exitQuiet(0);
+}
+
 // 1) Circuit breaker: paused lane never wakes the agent.
 if (rel.isPaused()) {
   const c = rel.getCircuit();

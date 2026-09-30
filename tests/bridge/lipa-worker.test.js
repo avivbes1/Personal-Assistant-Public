@@ -9,7 +9,7 @@
  * T1  race to claim         two workers/arrivals contend; the global lock refuses
  *                           the second, and the atomic claim hands one row to one.
  * T2  duplicate enqueue     same request_id inserts once; NULL request_id never dedups.
- * T3  lease expiry (live)   first timeout → retry w/ exponential backoff, gen bumped,
+ * T3  lease expiry (live)   ANY timeout → needs_review (never retry), gen bumped,
  *                           and an UNKNOWN cost row is recorded for the lost attempt.
  * T4  cancellation          confirmed → done + outbox; unknown → needs_review, no send.
  * T5  late side effect      the original worker's completion after reconcile is fenced
@@ -114,7 +114,9 @@ module.exports = {
         if (!a1.inserted || !a2.inserted || a1.id === a2.id) errors.push('T2: NULL request_id jobs were wrongly deduped');
       }
 
-      // ── T3: lease expiry (live worker) — backoff + UNKNOWN cost recorded ─────
+      // ── T3: lease expiry (ANY timeout) → needs_review + UNKNOWN cost ────────
+      // Changed: first timeout now goes directly to needs_review (never retry).
+      // Any timeout = uncertain = park + hold, always.
       {
         const id = enqueue('t3'); ids.push(id);
         const c = claimRow(db, id, 'wk-t3');
@@ -122,15 +124,16 @@ module.exports = {
         const now = Date.now();
         db.prepare('UPDATE bridge_lipa_inbox SET lease_expires_at = ? WHERE id = ?').run(now - 1000, id);
         rel.reconcileStaleClaims({ now });
-        const row = db.prepare('SELECT status, attempts, available_at, claim_generation FROM bridge_lipa_inbox WHERE id = ?').get(id);
-        if (row.status !== 'retry') errors.push(`T3: status ${row.status}, expected retry on first timeout`);
+        const row = db.prepare('SELECT status, attempts, claim_generation FROM bridge_lipa_inbox WHERE id = ?').get(id);
+        if (row.status !== 'needs_review') errors.push(`T3: status ${row.status}, expected needs_review on first timeout`);
         if (row.attempts !== 1) errors.push(`T3: attempts ${row.attempts}, expected 1 after reconcile increment`);
-        if (!(row.available_at >= now + rel.BACKOFF_BASE_MS)) errors.push(`T3: backoff not applied (available_at ${row.available_at} < now+base ${now + rel.BACKOFF_BASE_MS})`);
         if (!(row.claim_generation > gen0)) errors.push('T3: claim_generation was not bumped to fence the old worker');
         // The lost attempt may have consumed tokens we cannot observe → unknown cost.
         const costs = costRows(db, id);
         const unknown = costs.find(r => r.cost_unknown === 1 && r.cost_usd_lower_bound == null);
         if (!unknown) errors.push('T3: reconcile did not record an UNKNOWN cost for the timed-out attempt');
+        // Clean up the hold that reconcile now sets on every timeout
+        try { db.prepare("DELETE FROM bridge_lipa_state WHERE key='execution_hold'").run(); } catch (_) {}
       }
 
       // ── T4: cancellation — confirmed → done+send; unknown → needs_review ─────
@@ -162,7 +165,8 @@ module.exports = {
         const gen1 = c1.claim_generation;
         const now = Date.now();
         db.prepare('UPDATE bridge_lipa_inbox SET lease_expires_at = ? WHERE id = ?').run(now - 1000, id);
-        rel.reconcileStaleClaims({ now });     // bumps generation, row → retry
+        rel.reconcileStaleClaims({ now });     // bumps generation, row → needs_review
+        try { db.prepare("DELETE FROM bridge_lipa_state WHERE key='execution_hold'").run(); } catch (_) {}
         // The original worker (gen1) finally lands its completion with real tokens.
         const res = rel.completeClaim({ inboxId: id, claimGeneration: gen1, sessionId: 'wk-t5',
           response: { ok: true }, inputTokens: 1000, outputTokens: 500 });
@@ -207,6 +211,7 @@ module.exports = {
         if (!/exhaust/i.test(row.last_error || '')) errors.push('T7: dead row last_error does not explain exhaustion');
         const unknown = costRows(db, id).find(r => r.cost_unknown === 1);
         if (!unknown) errors.push('T7: dead-by-timeout did not record an unknown cost for the lost attempt');
+        try { db.prepare("DELETE FROM bridge_lipa_state WHERE key='execution_hold'").run(); } catch (_) {}
       }
 
       // ── T8: exhausted failure — failClaim at MAX → dead + cost with tokens ───

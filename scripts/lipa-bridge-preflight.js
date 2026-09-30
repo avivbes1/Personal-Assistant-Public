@@ -25,9 +25,14 @@
  * sessionId, and passes that sessionId to the CLI both as `--session-id` and via
  * OPENCLAW_SESSION_ID. Inside the turn, scripts/lipa-bridge-poll.js reads
  * OPENCLAW_SESSION_ID as its lock holder, so acquireWorkerLock() RENEWS the same
- * lock (holder match) rather than being refused, and scripts/lipa-bridge-respond.js
- * RELEASES it on clean completion. If the turn never lands, WORKER_LOCK_TTL_MS is
- * the safety net — the preflight NEVER releases the lock on a bad outcome.
+ * lock (holder match) rather than being refused.
+ *
+ * IMPORTANT: respond.js no longer releases the lock. The preflight wrapper OWNS
+ * lock release. After a clean exit (code 0) the preflight reads back DB state to
+ * verify every claimed row is in a terminal state; only then does it release the
+ * lock. On any non-terminal outcome (timeout, bad exit, spawn error, or exit 0
+ * with uncompleted rows) the preflight sets an execution hold instead and leaves
+ * the lock for TTL.
  *
  * ── The critical safety property: a CLI timeout is NOT remote death ──────────
  * Killing the local `openclaw` process after a timeout does NOT prove the remote
@@ -42,6 +47,14 @@
  * agent stopped, and lock-TTL expiry proves only that the LOCAL lock lapsed, not
  * remote termination. It can be cleared ONLY by manual intervention
  * (`--clear-hold`), after a human has verified the remote agent's state.
+ *
+ * ── Execution state tracking ─────────────────────────────────────────────────
+ * The preflight persists an execution state (bridge_lipa_state key
+ * 'execution_state') BEFORE spawn with { state:'active', session_id, started_at }.
+ * On verified clean completion the state transitions to 'terminal'. On ambiguous
+ * outcomes (timeout, bad exit, missing completions) it goes to 'unknown'. New
+ * wrapper cycles are blocked when execution_state is 'active' or 'unknown' — not
+ * just when a hold is set — so the block survives lock TTL expiry.
  *
  * ── Public API (for tests via dependency injection) ──────────────────────────
  *   runPreflight({ launcher, now, sessionId, timeoutMs, deps }) -> Promise<result>
@@ -63,6 +76,7 @@ const { ensureLipaTables } = require('../src/bridge/lipaLane');
 function intOr(v, d) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; }
 const CLI_TIMEOUT_MS = intOr(process.env.LIPA_BRIDGE_CLI_TIMEOUT_MS, 10 * 60 * 1000); // 10 min
 const HOLD_KEY = 'execution_hold';
+const EXEC_STATE_KEY = 'execution_state';
 
 // The message handed to the agent turn — same intent as the OpenClaw cron message
 // currently used: run the due-time gate, then process + respond to any claimed row.
@@ -75,8 +89,12 @@ const CRON_MESSAGE = [
 
 function truncate(s, n = 300) { s = s == null ? '' : String(s); return s.slice(0, n); }
 
-// ── execution-hold state (bridge_lipa_state key 'execution_hold') ─────────────
-// Mirrors the getState/setState shape in lipaReliability.js (JSON value column).
+// ── Re-export execution hold from lipaReliability (canonical source) ──────────
+// Execution hold management lives in lipaReliability.js so that reconcileStaleClaims
+// can set holds without a circular require. Preflight re-exports for backward compat.
+const { getExecutionHold, setExecutionHold, clearExecutionHold } = rel;
+
+// ── Execution state (active/unknown/terminal) ─────────────────────────────────
 
 function readState(key) {
   const row = getDB().prepare('SELECT value FROM bridge_lipa_state WHERE key = ?').get(key);
@@ -84,36 +102,23 @@ function readState(key) {
   try { return JSON.parse(row.value); } catch (_) { return null; }
 }
 
-/** The active execution hold, or null when none is set. */
-function getExecutionHold() {
-  const h = readState(HOLD_KEY);
-  return h && h.active ? h : null;
-}
-
-/** Raise the execution hold. Idempotent; preserves the original `since`. */
-function setExecutionHold(reason, meta = {}) {
+function writeState(key, value) {
   const now = Date.now();
-  const prev = readState(HOLD_KEY);
-  const value = {
-    active: true,
-    reason: truncate(reason),
-    session_id: meta.session_id != null ? meta.session_id : (prev && prev.session_id) || null,
-    claimed_ids: meta.claimed_ids != null ? meta.claimed_ids : (prev && prev.claimed_ids) || [],
-    since: prev && prev.active && prev.since ? prev.since : now,
-  };
   getDB().prepare(
     `INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-  ).run(HOLD_KEY, JSON.stringify(value), now);
-  console.error('[Lipa preflight] EXECUTION HOLD set:', truncate(reason, 200));
-  return value;
+  ).run(key, JSON.stringify(value), now);
 }
 
-/** Clear the execution hold. Returns the hold that was cleared (or null). */
-function clearExecutionHold() {
-  const prev = getExecutionHold();
-  getDB().prepare('DELETE FROM bridge_lipa_state WHERE key = ?').run(HOLD_KEY);
-  return prev;
+/** Current execution state: { state:'active'|'unknown'|'terminal', session_id, started_at, ... } or null */
+function getExecutionState() {
+  const s = readState(EXEC_STATE_KEY);
+  // Fail closed: corrupt JSON (readState returns null) → treat as null (not blocking on its own)
+  return s && typeof s === 'object' ? s : null;
+}
+
+function setExecutionState(obj) {
+  writeState(EXEC_STATE_KEY, obj);
 }
 
 // ── claimed-row containment on an ambiguous timeout ──────────────────────────
@@ -142,34 +147,80 @@ function quarantineClaimedRows(sessionId, reason, now) {
   return ids;
 }
 
+/**
+ * Verify that all rows claimed by this session are in a durable terminal state.
+ * A row is verified if:
+ *   - status = 'done' AND a bridge_lipa_outbox row exists for it, OR
+ *   - status = 'needs_review', OR
+ *   - status = 'dead'
+ * Returns { verified: true } or { verified: false, unverifiedIds: [...] }
+ */
+function verifyCompletions(sessionId) {
+  const db = getDB();
+  // Find all rows claimed by this session
+  const rows = db.prepare(
+    "SELECT id, status FROM bridge_lipa_inbox WHERE session_id = ?"
+  ).all(sessionId);
+
+  const unverifiedIds = [];
+  for (const row of rows) {
+    if (row.status === 'claimed') {
+      // respond.js didn't run for this row
+      unverifiedIds.push(row.id);
+      continue;
+    }
+    if (row.status === 'done') {
+      // Must have an outbox row
+      const outbox = db.prepare('SELECT id FROM bridge_lipa_outbox WHERE inbox_id = ?').get(row.id);
+      if (!outbox) {
+        unverifiedIds.push(row.id);
+      }
+    }
+    // needs_review / dead / fenced — these are acceptable terminal states
+  }
+
+  return unverifiedIds.length === 0
+    ? { verified: true }
+    : { verified: false, unverifiedIds };
+}
+
 // ── default launcher (real child_process.spawn) ──────────────────────────────
 
 /**
  * Spawn the OpenClaw agent turn with an ARGUMENT ARRAY (never shell-interpolated).
- * Resolves { code, signal, timedOut }; rejects on a spawn error. On timeout it
- * SIGTERMs the child and resolves { timedOut: true } — but killing the local CLI
+ * Resolves { code, signal, timedOut, stdout }; rejects on a spawn error. On timeout
+ * it SIGTERMs the child and resolves { timedOut: true } — but killing the local CLI
  * is NOT proof the remote agent stopped (the caller treats it as ambiguous).
+ * Captures stdout for usage extraction.
  */
 function defaultLauncher({ command, args, timeoutMs, sessionId }) {
   return new Promise((resolve, reject) => {
     let child;
+    const stdoutChunks = [];
     try {
       child = spawn(command, args, {
-        stdio: ['ignore', 'inherit', 'inherit'],
+        stdio: ['ignore', 'pipe', 'inherit'],
         env: { ...process.env, OPENCLAW_SESSION_ID: sessionId },
       });
     } catch (e) { return reject(e); }
+
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
 
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       try { child.kill('SIGTERM'); } catch (_) {}
-      resolve({ code: null, signal: 'SIGTERM', timedOut: true });
+      resolve({ code: null, signal: 'SIGTERM', timedOut: true, stdout: Buffer.concat(stdoutChunks).toString() });
     }, timeoutMs);
 
     child.on('error', (err) => { if (settled) return; settled = true; clearTimeout(timer); reject(err); });
-    child.on('exit', (code, signal) => { if (settled) return; settled = true; clearTimeout(timer); resolve({ code, signal, timedOut: false }); });
+    child.on('exit', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, signal, timedOut: false, stdout: Buffer.concat(stdoutChunks).toString() });
+    });
   });
 }
 
@@ -205,6 +256,14 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     const hold = getExecutionHold();
     if (hold) return { launched: false, reason: 'execution_hold', hold };
 
+    // (e2) Execution state — also blocks when state is 'active' or 'unknown',
+    // even after the lock TTL would have expired, so a new wrapper cycle cannot
+    // sneak in while a remote agent is still running.
+    const execState = getExecutionState();
+    if (execState && (execState.state === 'active' || execState.state === 'unknown')) {
+      return { launched: false, reason: 'execution_state_active', execState };
+    }
+
     // (a) Billing circuit breaker.
     if (isPaused()) return { launched: false, reason: 'circuit_open' };
 
@@ -223,6 +282,15 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
   // (d) Single global execution lock — LAST gate, the only pre-launch side effect.
   if (!acquireWorkerLock(sid)) return { launched: false, reason: 'lock_held' };
 
+  // ── persist execution state BEFORE spawn ─────────────────────────────────
+  const startedAt = Date.now();
+  setExecutionState({
+    state: 'active',
+    session_id: sid,
+    started_at: startedAt,
+    bootstrap_unknown: true,  // until we verify completion
+  });
+
   // ── launch ─────────────────────────────────────────────────────────────────
   const args = ['agent', '-m', CRON_MESSAGE, '--agent', 'personal', '--session-id', sid, '--json'];
   let result;
@@ -231,37 +299,76 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
   } catch (spawnErr) {
     // (5/T9) Launch failed to start: we cannot know if anything ran → hold; do NOT
     // release the lock (respond.js may or may not run; TTL is the safety net).
+    setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: Date.now(), reason: `spawn_error: ${spawnErr.message}` });
     setExecutionHold(`spawn failed: ${spawnErr.message}`, { session_id: sid });
     return { launched: true, reason: 'spawn_error', error: spawnErr.message, holdSet: true };
   }
 
   const doneAt = Date.now();
 
+  // Extract usage from stdout if available
+  let usage = null;
+  try {
+    if (result && result.stdout) {
+      const match = result.stdout.match(/\{[\s\S]*"usage"[\s\S]*\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        usage = parsed.usage || null;
+      }
+    }
+  } catch (_) {}
+
   if (result && result.timedOut) {
     // (4/T10) Ambiguous timeout: quarantine claimed rows (fenced via generation),
     // raise the hold, and DO NOT release the lock — TTL is the only safe release.
     const claimedIds = quarantineClaimedRows(sid, 'CLI timeout — remote status unknown, side effect uncertain', doneAt);
+    setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, reason: 'timeout', claimed_ids: claimedIds });
     setExecutionHold('CLI timeout — remote agent status unknown', { session_id: sid, claimed_ids: claimedIds });
     console.error(`[Lipa preflight] CLI TIMEOUT — ${claimedIds.length} claimed row(s) → needs_review; lock left to expire via TTL`);
     return { launched: true, reason: 'timeout', holdSet: true, claimedIds };
   }
 
   if (result && result.code === 0) {
-    // (5/T14) Clean exit: respond.js already completed the row AND released the
-    // lock. The preflight releases NOTHING and sets no hold.
-    console.log('[Lipa preflight] agent turn exited 0 (respond.js handled completion + lock release)');
+    // (5) Exit 0 — verify DB state before releasing the lock.
+    // For each row claimed by this session: it must be done (with outbox row),
+    // needs_review, or dead. If any row is still 'claimed', respond.js didn't run.
+    const verification = verifyCompletions(sid);
+    if (!verification.verified) {
+      const unverifiedIds = verification.unverifiedIds;
+      // Quarantine any still-claimed rows
+      quarantineClaimedRows(sid, 'exit 0 but respond.js did not complete all claimed rows', doneAt);
+      setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, reason: 'exit_0_verify_failed', unverified_ids: unverifiedIds, exit_code: 0, usage });
+      setExecutionHold('exit 0 but respond.js did not complete all claimed rows', { session_id: sid, claimed_ids: unverifiedIds });
+      console.error(`[Lipa preflight] exit 0 verification FAILED — ${unverifiedIds.length} row(s) uncompleted; hold set`);
+      return { launched: true, reason: 'clean_exit_verification_failed', exitCode: 0, holdSet: true, unverifiedIds };
+    }
+
+    // All claimed rows are verified terminal — safe to release the lock.
+    rel.releaseWorkerLock(sid);
+    setExecutionState({ state: 'terminal', session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: 0, bootstrap_unknown: false, usage });
+    console.log('[Lipa preflight] agent turn exited 0, all rows verified terminal — lock released');
     return { launched: true, reason: 'clean_exit', exitCode: 0 };
   }
 
   // (5) Non-zero / unknown exit: a failure with an ambiguous completion state. Log,
   // set a hold, and leave the lock for the TTL — respond.js may not have run.
   const code = result ? result.code : null;
+  setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, exit_code: code, reason: 'nonzero_exit', usage });
   setExecutionHold(`agent turn exited non-zero (code=${code}) — completion uncertain`, { session_id: sid });
   console.error(`[Lipa preflight] agent turn exit code=${code} — hold set, lock left to expire via TTL`);
   return { launched: true, reason: 'nonzero_exit', exitCode: code, holdSet: true };
 }
 
-module.exports = { runPreflight, setExecutionHold, clearExecutionHold, getExecutionHold };
+module.exports = {
+  runPreflight,
+  // Re-export from lipaReliability for backward compat (tests import from here)
+  setExecutionHold,
+  clearExecutionHold,
+  getExecutionHold,
+  // Also expose execution state management for tests
+  getExecutionState,
+  setExecutionState,
+};
 
 // ── CLI entrypoint ───────────────────────────────────────────────────────────
 if (require.main === module) {
@@ -270,10 +377,88 @@ if (require.main === module) {
   ensureLipaTables();
 
   if (argv.includes('--clear-hold')) {
-    const cleared = clearExecutionHold();
-    console.log(cleared
-      ? `[Lipa preflight] execution hold cleared (was: ${truncate(cleared.reason, 120)})`
-      : '[Lipa preflight] no execution hold was set');
+    // --clear-hold requires evidence: all rows for the held session must be
+    // in a terminal state (done/needs_review/dead), and no row may still be
+    // 'claimed'. Fail closed on corrupt hold JSON.
+
+    let hold;
+    try {
+      hold = getExecutionHold();
+    } catch (e) {
+      console.error('[Lipa preflight] --clear-hold: corrupt hold state (fail closed):', e.message);
+      process.exit(1);
+    }
+
+    if (!hold) {
+      console.log('[Lipa preflight] no execution hold was set');
+      process.exit(0);
+    }
+
+    // Validate hold structure
+    if (typeof hold !== 'object' || typeof hold.active === 'undefined') {
+      console.error('[Lipa preflight] --clear-hold: unrecognized or corrupt hold JSON (fail closed):', JSON.stringify(hold));
+      process.exit(1);
+    }
+
+    const sessionId = hold.session_id || null;
+
+    // Check for claimed rows for this session
+    const db = getDB();
+    let claimedRows = [];
+    let nonTerminalRows = [];
+    try {
+      if (sessionId) {
+        claimedRows = db.prepare("SELECT id, status FROM bridge_lipa_inbox WHERE session_id = ? AND status = 'claimed'").all(sessionId);
+        nonTerminalRows = db.prepare(
+          "SELECT id, status FROM bridge_lipa_inbox WHERE session_id = ? AND status NOT IN ('done','needs_review','dead')"
+        ).all(sessionId);
+      }
+    } catch (e) {
+      console.error('[Lipa preflight] --clear-hold: DB read failed (fail closed):', e.message);
+      process.exit(1);
+    }
+
+    if (claimedRows.length > 0) {
+      console.error(`[Lipa preflight] --clear-hold REFUSED: ${claimedRows.length} row(s) still in 'claimed' status for session ${sessionId}:`);
+      for (const r of claimedRows) console.error(`  - inbox_id=${r.id} status=${r.status}`);
+      console.error('Verify the remote agent is stopped and rows are resolved before clearing.');
+      process.exit(1);
+    }
+
+    if (nonTerminalRows.length > 0) {
+      console.error(`[Lipa preflight] --clear-hold REFUSED: ${nonTerminalRows.length} row(s) in non-terminal state for session ${sessionId}:`);
+      for (const r of nonTerminalRows) console.error(`  - inbox_id=${r.id} status=${r.status}`);
+      process.exit(1);
+    }
+
+    // All checks pass — write audit record and clear
+    const auditAt = Date.now();
+    const evidence = {
+      session_id: sessionId,
+      claimed_rows_checked: 0,
+      non_terminal_rows_checked: 0,
+      all_terminal: true,
+    };
+    try {
+      rel.logAttempt({
+        inboxId: null,
+        attemptNumber: 0,
+        event: 'hold_cleared',
+        outcome: 'ok',
+        error: null,
+        sessionId,
+        finishedAt: auditAt,
+      });
+    } catch (e) {
+      console.error('[Lipa preflight] --clear-hold: audit log failed (non-fatal):', e.message);
+    }
+
+    clearExecutionHold();
+    // Also clear execution state (now terminal)
+    setExecutionState({ state: 'terminal', session_id: sessionId, cleared_at: auditAt, reason: 'manual_clear_hold', evidence });
+
+    console.log(`[Lipa preflight] execution hold cleared (was: ${truncate(hold.reason, 120)})`);
+    console.log(`[Lipa preflight] audit: hold_cleared event written for session=${sessionId}`);
     process.exit(0);
   }
 

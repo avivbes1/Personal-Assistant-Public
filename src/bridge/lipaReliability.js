@@ -31,6 +31,50 @@ const lipaConfig = require('./lipaConfig');
 // also import it directly.
 const lipaAccounting = require('./lipaAccounting');
 
+// ── execution hold (bridge_lipa_state key 'execution_hold') ──────────────────
+// Centralised here so lipaReliability (reconcileStaleClaims) and the preflight
+// wrapper share the SAME hold logic without a circular require.
+const HOLD_KEY = 'execution_hold';
+function _truncateHold(s, n = 300) { s = s == null ? '' : String(s); return s.slice(0, n); }
+
+/** The active execution hold, or null when none is set. */
+function getExecutionHold() {
+  const h = getState(HOLD_KEY);
+  return h && h.active ? h : null;
+}
+
+/**
+ * Raise the execution hold. Idempotent: if one already exists the `since` field
+ * is preserved so we don't accidentally reset the clock. Merges claimed_ids.
+ */
+function setExecutionHold(reason, meta = {}) {
+  const now = Date.now();
+  const prev = getState(HOLD_KEY);
+  // Validate prev — corrupt JSON from getState returns null; safe.
+  const prevActive = prev && typeof prev === 'object' && prev.active;
+  const prevIds = prevActive && Array.isArray(prev.claimed_ids) ? prev.claimed_ids : [];
+  const newIds = meta.claimed_ids != null && Array.isArray(meta.claimed_ids) ? meta.claimed_ids : [];
+  // Merge claimed_ids (union, deduplicated)
+  const merged = Array.from(new Set([...prevIds, ...newIds]));
+  const value = {
+    active: true,
+    reason: _truncateHold(reason),
+    session_id: meta.session_id != null ? meta.session_id : (prevActive && prev.session_id) || null,
+    claimed_ids: merged,
+    since: prevActive && prev.since ? prev.since : now,
+  };
+  setState(HOLD_KEY, value);
+  console.error('[Lipa] EXECUTION HOLD set:', _truncateHold(reason, 200));
+  return value;
+}
+
+/** Clear the execution hold. Returns the hold that was cleared (or null). */
+function clearExecutionHold() {
+  const prev = getExecutionHold();
+  if (prev) db().prepare('DELETE FROM bridge_lipa_state WHERE key = ?').run(HOLD_KEY);
+  return prev || null;
+}
+
 function db() {
   return require('../db').getDB();
 }
@@ -368,11 +412,11 @@ function failClaim({ inboxId, claimGeneration, sessionId, error, isTimeout,
  * could bounce claimed→expired→retry→claimed forever, never dead-lettering).
  * After the increment, per row:
  *   - attempts >= MAX_ATTEMPTS  → dead   (exhausted; exhaustion wins over review)
- *   - attempts >= 2  (2nd+ timeout) → needs_review: we cannot verify whether the
- *     first-timed-out attempt already produced a side effect, so an uncertain
- *     write is parked for a human rather than blind-retried.
- *   - attempts == 1  (first timeout) → retry with exponential backoff+jitter
- *     (same formula as failClaim), NOT available_at=now.
+ *   - ANY timeout (1st or later) → needs_review: a lease expiry means the remote
+ *     status is UNKNOWN. We cannot verify whether any side effect already occurred,
+ *     so we NEVER blind-retry on timeout — park for human review every time.
+ *   Sets execution hold on EVERY lease expiry (first or later), because any
+ *   timeout = uncertain = park + hold, always.
  */
 function reconcileStaleClaims({ now = Date.now() } = {}) {
   const tx = db().transaction(() => {
@@ -397,26 +441,22 @@ function reconcileStaleClaims({ now = Date.now() } = {}) {
           .run(attempts, gen, errText, now, r.id);
         logAttempt({ inboxId: r.id, attemptNumber: attempts, event: 'timeout', outcome: 'error',
           error: errText, claimGeneration: gen, finishedAt: now });
+        // Even exhausted rows set a hold — we cannot verify what happened remotely.
+        setExecutionHold(`lease expired & exhausted — session ${r.session_id || 'unknown'}, row ${r.id}`,
+          { session_id: r.session_id || null, claimed_ids: [r.id] });
         continue;
       }
 
-      if (attempts >= 2) {
-        // Second+ timeout: an unverifiable possible side effect — never blind-retry.
-        const errText = `lease expired — uncertain side effect after ${attempts} timeouts (needs review)`;
-        db().prepare("UPDATE bridge_lipa_inbox SET status = 'needs_review', attempts = ?, claim_generation = ?, lease_expires_at = NULL, last_error = ?, updated_at = ? WHERE id = ?")
-          .run(attempts, gen, errText, now, r.id);
-        logAttempt({ inboxId: r.id, attemptNumber: attempts, event: 'needs_review', outcome: 'ignored',
-          error: errText, claimGeneration: gen, finishedAt: now });
-        continue;
-      }
-
-      // First timeout: retry with the same exponential backoff+jitter as failClaim.
-      const backoff = BACKOFF_BASE_MS * Math.pow(2, attempts - 1);
-      const availableAt = now + backoff + jitter(backoff);
-      db().prepare("UPDATE bridge_lipa_inbox SET status = 'retry', attempts = ?, available_at = ?, claim_generation = ?, lease_expires_at = NULL, last_error = 'lease expired — reconciled', updated_at = ? WHERE id = ?")
-        .run(attempts, availableAt, gen, now, r.id);
-      logAttempt({ inboxId: r.id, attemptNumber: attempts, event: 'timeout', outcome: 'error',
-        error: 'lease expired — reconciled', claimGeneration: gen, finishedAt: now });
+      // ANY timeout (first or later): uncertain side effect — park for human review.
+      // Do NOT retry blindly: the remote may have already taken action.
+      const errText = `lease expired — uncertain side effect after ${attempts} timeout(s) (needs review)`;
+      db().prepare("UPDATE bridge_lipa_inbox SET status = 'needs_review', attempts = ?, claim_generation = ?, lease_expires_at = NULL, last_error = ?, updated_at = ? WHERE id = ?")
+        .run(attempts, gen, errText, now, r.id);
+      logAttempt({ inboxId: r.id, attemptNumber: attempts, event: 'needs_review', outcome: 'ignored',
+        error: errText, claimGeneration: gen, finishedAt: now });
+      // Set execution hold on EVERY lease expiry — any timeout = uncertain.
+      setExecutionHold(`lease expired — session ${r.session_id || 'unknown'}, row ${r.id}, attempt ${attempts}`,
+        { session_id: r.session_id || null, claimed_ids: [r.id] });
     }
     return rows.length;
   });
@@ -441,5 +481,7 @@ module.exports = {
   enqueueGuarded, argsByteLength, saveSplitProgress,
   getDueCount, claimDue, completeClaim, failClaim, reconcileStaleClaims,
   logAttempt, getStats,
+  // Execution hold (shared with preflight wrapper)
+  getExecutionHold, setExecutionHold, clearExecutionHold,
   accounting: lipaAccounting,
 };

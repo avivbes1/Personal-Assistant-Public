@@ -89,16 +89,50 @@ function getDailySpend(dateStr, now = Date.now()) {
   return row ? row.spend : 0;
 }
 
-/** Soft daily cap. blocked = today's recorded lower-bound spend >= $20. */
+/**
+ * Soft daily cap. blocked = today's recorded lower-bound spend >= $20.
+ * Fails CLOSED on any DB read error: returns blocked:true so new launches are
+ * gated until accounting is healthy again.
+ */
 function checkDailyCap(now = Date.now()) {
-  const spend = getDailySpend(null, now);
-  return { blocked: spend >= DAILY_CAP_USD, spend, cap: DAILY_CAP_USD };
+  try {
+    const spend = getDailySpend(null, now);
+    return { blocked: spend >= DAILY_CAP_USD, spend, cap: DAILY_CAP_USD };
+  } catch (e) {
+    console.error('[Lipa accounting] checkDailyCap read error (fail closed):', e.message);
+    return { blocked: true, spend: 0, cap: DAILY_CAP_USD, error: e.message };
+  }
 }
 
-/** Per-request cap. Advisory only — flags for an alert, never blocks or retries. */
-function checkRequestCap(costEstimate) {
-  const cost = num(costEstimate) || 0;
-  return { alert: cost >= REQUEST_CAP_USD, cost, cap: REQUEST_CAP_USD };
+/**
+ * Per-request cap. Advisory only — flags for an alert, never blocks or retries.
+ * When inboxId is provided, sums cost_usd_lower_bound across ALL cost rows for
+ * that inbox_id (cumulative across retries/attempts), so a row that costs $1 on
+ * each of 3 attempts correctly triggers the $2 threshold on the 3rd attempt.
+ * Falls back to the supplied cost estimate when no inboxId or DB lookup fails.
+ *
+ * @param {{ inboxId?: number, cost?: number } | number} opts
+ *   Legacy signature (plain number) still accepted for backward compat.
+ */
+function checkRequestCap(opts) {
+  // Accept legacy plain-number signature
+  if (typeof opts === 'number' || opts == null) {
+    const cost = num(opts) || 0;
+    return { alert: cost >= REQUEST_CAP_USD, cost, cap: REQUEST_CAP_USD };
+  }
+  const { inboxId, cost: costHint } = opts;
+  let total = num(costHint) || 0;
+  if (inboxId != null) {
+    try {
+      const row = db().prepare(
+        'SELECT COALESCE(SUM(cost_usd_lower_bound), 0) AS s FROM bridge_lipa_costs WHERE inbox_id = ?'
+      ).get(inboxId);
+      total = row ? (row.s || 0) : total;
+    } catch (e) {
+      console.error('[Lipa accounting] checkRequestCap cumulative lookup failed, using estimate:', e.message);
+    }
+  }
+  return { alert: total >= REQUEST_CAP_USD, cost: total, cap: REQUEST_CAP_USD };
 }
 
 module.exports = {

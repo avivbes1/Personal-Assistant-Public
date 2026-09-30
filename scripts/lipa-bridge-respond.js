@@ -24,19 +24,19 @@
  *     "uncertain_reason":  "…"
  *   }
  *
- * On completion this script also RELEASES the global worker lock (held across the
- * agent turn by scripts/lipa-bridge-poll.js) and records an advisory lower-bound
- * cost for the request (soft daily/per-request caps — never blocks or retries).
+ * LOCK RELEASE: This script no longer releases the global worker lock. The
+ * preflight wrapper (lipa-bridge-preflight.js) owns lock release and verifies
+ * DB state on clean exit before releasing. This prevents a race where respond.js
+ * releases the lock mid-turn before the preflight can verify completion.
  *
- * When claim_generation is present the write goes through completeClaim(), which
- * FENCES stale/late completions (a completion for a row that was already retried
- * or reconciled is ignored, not applied). Without it we fall back to the legacy
- * completeInboxRow() path for backward compatibility.
+ * FENCE ENFORCEMENT: claim_generation is REQUIRED for rows that have
+ * claim_generation set in the DB. Providing no claim_generation for a fenced row
+ * exits 3 (rejected). The legacy fallback path (no claim_generation, direct
+ * completeInboxRow) has been removed — all completions must be fenced.
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
-const { initDB } = require('../src/db');
-const { completeInboxRow } = require('../src/bridge/lipaLane');
+const { initDB, getDB } = require('../src/db');
 const rel = require('../src/bridge/lipaReliability');
 const accounting = require('../src/bridge/lipaAccounting');
 
@@ -53,8 +53,31 @@ const inboxId = parseInt(inboxIdStr, 10);
 const response = JSON.parse(responseJson);
 const opts = optionsJson ? JSON.parse(optionsJson) : {};
 
+// Resolve session_id: prefer options_json field, fall back to env var.
+const sessionId = opts.session_id || process.env.OPENCLAW_SESSION_ID || null;
+
+// ── Fence enforcement ─────────────────────────────────────────────────────────
+// Look up the current row to check if it has claim_generation set in the DB.
+// If it does and no claim_generation was provided in options, reject.
+const dbRow = (() => {
+  try { return getDB().prepare('SELECT claim_generation, status FROM bridge_lipa_inbox WHERE id = ?').get(inboxId); }
+  catch (e) { return null; }
+})();
+
+if (opts.claim_generation == null) {
+  // If the row has claim_generation set, the caller MUST provide it.
+  if (dbRow && dbRow.claim_generation != null) {
+    console.error(`[Lipa Bridge] FENCE REJECT: inbox_id=${inboxId} has claim_generation=${dbRow.claim_generation} in DB but none provided in options_json. Exiting 3.`);
+    process.exit(3);
+  }
+  // Also reject if session_id is not available for any reason (belt-and-suspenders).
+  if (!sessionId) {
+    console.error(`[Lipa Bridge] FENCE REJECT: no claim_generation and no session_id (OPENCLAW_SESSION_ID unset and not in options_json). Exiting 3.`);
+    process.exit(3);
+  }
+}
+
 if (opts.claim_generation != null) {
-  const sessionId = opts.session_id || null;
   const cacheReadTokens = opts.cache_read_tokens == null ? null : opts.cache_read_tokens;
   const cacheWriteTokens = opts.cache_write_tokens == null ? null : opts.cache_write_tokens;
   const inputTokens = opts.input_tokens == null ? null : opts.input_tokens;
@@ -76,10 +99,8 @@ if (opts.claim_generation != null) {
     uncertainReason: opts.uncertain_reason || null,
   });
 
-  // The agent turn has now finished executing: release the global worker lock so
-  // the next poll cycle can proceed (the lock was deliberately held across the
-  // turn by lipa-bridge-poll.js). WORKER_LOCK_TTL_MS is the crash safety net.
-  try { rel.releaseWorkerLock(sessionId); } catch (_) {}
+  // NOTE: Worker lock is NOT released here. The preflight wrapper owns lock
+  // release and verifies DB state on clean exit before releasing.
 
   // Advisory cost accounting (never blocks/retries). Recorded on EVERY outcome —
   // a delivered response, an uncertain needs_review, OR a fenced/discarded late
@@ -92,9 +113,9 @@ if (opts.claim_generation != null) {
       model: opts.model || null,
       costUsd: opts.cost_usd == null ? null : opts.cost_usd,
     });
-    const capCheck = accounting.checkRequestCap(rec.cost);
+    const capCheck = accounting.checkRequestCap({ inboxId, cost: rec.cost });
     if (capCheck.alert) {
-      console.error(`[Lipa Bridge] ⚠️ request cost $${capCheck.cost.toFixed(2)} exceeded $${capCheck.cap} cap for inbox_id=${inboxId} (advisory — response still delivered)`);
+      console.error(`[Lipa Bridge] ⚠️ cumulative cost $${capCheck.cost.toFixed(2)} exceeded $${capCheck.cap} cap for inbox_id=${inboxId} (advisory — response still delivered)`);
     }
   } catch (e) { console.error('[Lipa Bridge] cost accounting failed:', e.message); }
 
@@ -111,6 +132,10 @@ if (opts.claim_generation != null) {
   process.exit(0);
 }
 
-// Legacy fallback (no fencing) — kept so older callers keep working.
-completeInboxRow(inboxId, requestId || null, response, originalSubject || null, inReplyTo || null);
-console.log(`[Lipa Bridge] Response queued for inbox_id=${inboxId} (legacy path)`);
+// No claim_generation provided, but the row also has no claim_generation in DB
+// (fresh row, never claimed via the reliability layer). This path handles any
+// rows that were enqueued before fencing was introduced — all such rows must not
+// have claim_generation set in the DB (enforced above). We still require a
+// session_id for minimal accountability.
+console.error(`[Lipa Bridge] FENCE REJECT: inbox_id=${inboxId} — all completions must go through fenced path. Use claim_generation from poll.js output. Exiting 3.`);
+process.exit(3);
