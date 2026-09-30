@@ -857,10 +857,11 @@ function initDB() {
         stream              TEXT NOT NULL,
         payload_json        TEXT NOT NULL,
         payload_hash        TEXT,
-        status              TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | delivered | dead
+        status              TEXT NOT NULL DEFAULT 'pending',  -- pending | retry | claimed | delivered | needs_review | dead
         attempts            INTEGER NOT NULL DEFAULT 0,
         available_at        INTEGER NOT NULL,
         claimed_at          INTEGER,
+        claim_generation    INTEGER,                          -- fencing token set on each claim (claim timestamp)
         delivered_at        INTEGER,
         provider_message_id TEXT,
         last_error          TEXT,
@@ -915,8 +916,31 @@ function initDB() {
       )
     `);
   } catch (_) {}
+  // bridge_outbox_attempts records one row per attempt lifecycle event (claim,
+  // deliver, or fail) on an outbox row, for post-hoc reliability forensics. Token
+  // fields are reserved for future provider accounting and are null for now.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_outbox_attempts (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        outbox_id           INTEGER NOT NULL,
+        attempt_number      INTEGER NOT NULL,
+        status              TEXT NOT NULL,                     -- claim | deliver | fail | needs_review
+        error               TEXT,
+        provider_message_id TEXT,
+        started_at          INTEGER,
+        finished_at         INTEGER,
+        cache_read_tokens   INTEGER,
+        cache_write_tokens  INTEGER
+      )
+    `);
+  } catch (_) {}
+  // Additive migration for DBs created before claim_generation existed (the
+  // CREATE TABLE above only fires on a fresh DB). Harmless if the column exists.
+  try { db.exec('ALTER TABLE bridge_outbox ADD COLUMN claim_generation INTEGER'); } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_inbound_uid ON bridge_inbound_log (gmail_uid)'); } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_outbox_delivery ON bridge_outbox(status, available_at, created_at)'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_bridge_outbox_attempts ON bridge_outbox_attempts(outbox_id, attempt_number)'); } catch (_) {}
   // Additive columns on notices for bridge export versioning.
   try { db.exec('ALTER TABLE notices ADD COLUMN export_version INTEGER NOT NULL DEFAULT 1'); } catch (_) {}
   try { db.exec('ALTER TABLE notices ADD COLUMN updated_at INTEGER'); } catch (_) {}

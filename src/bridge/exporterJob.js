@@ -16,11 +16,15 @@
 
 const bridgeConfig = require('./config');
 const { buildEnvelope } = require('./envelope');
-const { claimBatch, markDelivered, markFailed } = require('./outboxRepository');
-const { sendBatch } = require('./emailTransport');
+const { claimBatch, markDelivered, markFailed, markNeedsReview, releaseClaim } = require('./outboxRepository');
+const { sendBatch, isBillingError, isUncertainError } = require('./emailTransport');
+const billingState = require('./billingState');
 
 function emptyStats(extra) {
-  return Object.assign({ enqueued: 0, delivered: 0, failed: 0, deadLettered: 0 }, extra || {});
+  return Object.assign(
+    { enqueued: 0, delivered: 0, failed: 0, deadLettered: 0, needsReview: 0 },
+    extra || {}
+  );
 }
 
 /** A claimed row is valid if its payload parsed and carries a known kind. */
@@ -38,6 +42,20 @@ async function runExporterCycle() {
   if (!bridgeConfig.valid) {
     recordHeartbeat('error');
     return emptyStats({ skipped: 'invalid_config' });
+  }
+
+  // Billing circuit breaker: while tripped, claim nothing and send nothing so a
+  // paused account is never contacted and rows stay pending for after unpause.
+  // A warning is logged on every skipped cycle (P-026: this only ever trips on a
+  // real provider billing error, never on an estimate).
+  if (billingState.isBillingPaused()) {
+    const st = billingState.getBillingState();
+    console.warn(
+      `[Bridge] export cycle SKIPPED — billing paused since ${st.paused_at || 'unknown'} ` +
+      `(${st.error || 'no error recorded'}). Unpause manually after restoring credit.`
+    );
+    recordHeartbeat('empty');
+    return emptyStats({ skipped: 'billing_paused' });
   }
 
   let claimed;
@@ -62,24 +80,50 @@ async function runExporterCycle() {
   const stats = emptyStats();
 
   for (const row of bad) {
-    const r = markFailed(row.id, new Error('invalid or unparseable payload'));
-    if (r.status === 'dead') stats.deadLettered++; else stats.failed++;
+    const r = markFailed(row.id, new Error('invalid or unparseable payload'), row.claim_generation);
+    if (r.status === 'dead') stats.deadLettered++;
+    else if (r.status !== 'stale') stats.failed++;
   }
 
   if (good.length > 0) {
     const envelope = buildEnvelope(bridgeConfig.stream, good.map(r => r.payload));
     try {
       const result = await sendBatch(envelope);
-      if (!result || !result.ok) throw new Error((result && result.error) || 'transport returned not-ok');
-      for (const row of good) {
-        markDelivered(row.id, result.provider_message_id);
-        stats.delivered++;
+      if (result && result.skipped === 'billing_paused') {
+        // Transport declined because the breaker is set — release the rows back
+        // to the queue (no attempt consumed) so they go out once unpaused.
+        for (const row of good) releaseClaim(row.id, row.claim_generation);
+        stats.skipped = 'billing_paused';
+      } else if (!result || !result.ok) {
+        throw new Error((result && result.error) || 'transport returned not-ok');
+      } else {
+        for (const row of good) {
+          const r = markDelivered(row.id, result.provider_message_id, row.claim_generation);
+          if (r.status === 'delivered') stats.delivered++;
+        }
       }
     } catch (err) {
       console.error('[Bridge] sendBatch failed:', err.message);
-      for (const row of good) {
-        const r = markFailed(row.id, err);
-        if (r.status === 'dead') stats.deadLettered++; else stats.failed++;
+      if (isBillingError(err)) {
+        // Trip the breaker on a REAL provider billing failure, then release the
+        // claimed rows (no attempt consumed — the outage isn't their fault).
+        billingState.pauseBilling(err);
+        console.warn('[Bridge] billing error detected — bridge sends PAUSED:', err.message);
+        for (const row of good) releaseClaim(row.id, row.claim_generation);
+        stats.skipped = 'billing_paused';
+      } else if (isUncertainError(err)) {
+        // Delivery is ambiguous (timeout/dropped socket after possible accept) —
+        // park for review rather than risk a duplicate on blind retry.
+        for (const row of good) {
+          const r = markNeedsReview(row.id, err.message, row.claim_generation);
+          if (r.status === 'needs_review') stats.needsReview++;
+        }
+      } else {
+        for (const row of good) {
+          const r = markFailed(row.id, err, row.claim_generation);
+          if (r.status === 'dead') stats.deadLettered++;
+          else if (r.status !== 'stale') stats.failed++;
+        }
       }
     }
   }

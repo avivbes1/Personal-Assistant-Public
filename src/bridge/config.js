@@ -64,7 +64,7 @@ const config = {
 
   stream: process.env.INSTINCT_BRIDGE_STREAM || 'family-notices',
   batchSize: intOr(process.env.INSTINCT_BRIDGE_BATCH_SIZE, 50),
-  maxAttempts: intOr(process.env.INSTINCT_BRIDGE_MAX_ATTEMPTS, 8),
+  maxAttempts: intOr(process.env.INSTINCT_BRIDGE_MAX_ATTEMPTS, 3),
   backoffBaseMs: intOr(process.env.INSTINCT_BRIDGE_BACKOFF_BASE_MS, 60000),
 
   timezone: MAIN_TZ,
