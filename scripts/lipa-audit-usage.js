@@ -23,13 +23,26 @@
  *   node scripts/lipa-audit-usage.js --json --pretty  # pretty-printed JSON
  */
 
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
-const { initDB, getDB } = require('../src/db');
-const { ensureLipaTables } = require('../src/bridge/lipaLane');
+const path = require('path');
+const fs = require('fs');
+const Database = require('better-sqlite3');
 
-initDB();
-ensureLipaTables();
-const db = getDB();
+// READ-ONLY by design: the audit must never write to — or migrate — the
+// production DB. initDB() would open read-write and run CREATE/ALTER/backfill
+// statements, so we open the file directly in readonly mode instead. Honors
+// FAMILYBOT_DB_PATH (as everywhere else) but defaults to the production DB.
+const DB_PATH = process.env.FAMILYBOT_DB_PATH || path.join(__dirname, '..', 'data', 'family.db');
+if (!fs.existsSync(DB_PATH)) {
+  console.error('[lipa-audit] DB not found at ' + DB_PATH);
+  process.exit(1);
+}
+let db;
+try {
+  db = new Database(DB_PATH, { readonly: true, fileMustExist: true });
+} catch (e) {
+  console.error('[lipa-audit] cannot open DB read-only: ' + e.message);
+  process.exit(1);
+}
 
 const jsonMode = process.argv.includes('--json');
 const pretty = process.argv.includes('--pretty');
