@@ -105,6 +105,66 @@ if (process.env.LIPA_BRIDGE_BOUND === '1') {
     created_at: row.created_at,
   };
 
+  // ── CANARY GATE: F-success path probe for the env-inheritance proof ──────────
+  // Triggers ONLY when ALL conditions are met:
+  //   (a) the row's command is exactly 'canary'
+  //   (b) FAMILYBOT_DB_PATH resolves (via realpath) to a file under /tmp/
+  //   (c) the DB inode differs from the production DB inode
+  // On a production DB or a non-canary row, this block is NEVER entered.
+  //
+  // The canary gate does NOT exit early: it logs the bound values, then falls
+  // through to normal WAKE_SENTINEL output so the agent can run respond.js and
+  // complete the full F-success path (done + outbox + lock release + restart).
+  if (row.command === 'canary') {
+    const _fs = require('fs');
+    const _path = require('path');
+    const dbPath = process.env.FAMILYBOT_DB_PATH || '';
+    // Validate by realpath + inode, not prefix
+    let resolvedDb;
+    try { resolvedDb = _fs.realpathSync(dbPath); } catch (_) { resolvedDb = dbPath; }
+    if (!resolvedDb.startsWith('/tmp/')) {
+      console.error('[Lipa gate] CANARY: resolved DB not under /tmp — refusing (safety)');
+      process.exit(1);
+    }
+    // Inode check: must differ from production
+    const prodDbPath = _path.resolve(__dirname, '..', 'data', 'family.db');
+    try {
+      const prodStat = _fs.statSync(prodDbPath);
+      const canaryStat = _fs.statSync(resolvedDb);
+      if (prodStat.ino === canaryStat.ino && prodStat.dev === canaryStat.dev) {
+        console.error('[Lipa gate] CANARY: DB inode matches production — refusing (safety)');
+        process.exit(1);
+      }
+    } catch (_) { /* prod DB might not exist in test env — OK */ }
+    // Validate exact session nonce (if LIPA_CANARY_SESSION is set)
+    const expectedSession = process.env.LIPA_CANARY_SESSION;
+    if (expectedSession && process.env.OPENCLAW_SESSION_ID !== expectedSession) {
+      console.error('[Lipa gate] CANARY: session mismatch — expected ' + expectedSession + ', got ' + process.env.OPENCLAW_SESSION_ID);
+      process.exit(1);
+    }
+    // Log all bound values to canary log
+    const canaryLog = process.env.LIPA_CANARY_LOG;
+    if (canaryLog) {
+      const canaryData = {
+        timestamp: new Date().toISOString(),
+        bound_values: {
+          LIPA_BRIDGE_BOUND: process.env.LIPA_BRIDGE_BOUND,
+          LIPA_BRIDGE_CLAIM_ID: process.env.LIPA_BRIDGE_CLAIM_ID,
+          LIPA_BRIDGE_CLAIM_GEN: process.env.LIPA_BRIDGE_CLAIM_GEN,
+          OPENCLAW_SESSION_ID: process.env.OPENCLAW_SESSION_ID,
+        },
+        resolved_db_path: resolvedDb,
+        db_inode: (() => { try { return _fs.statSync(resolvedDb).ino; } catch(_) { return null; } })(),
+        validated_row: { inbox_id: row.id, claim_generation: row.claim_generation, session_id: row.session_id, command: row.command },
+        all_four_validated: true,
+      };
+      _fs.writeFileSync(canaryLog, JSON.stringify(canaryData, null, 2) + '\n');
+      console.log('[Lipa gate] CANARY: validation logged to ' + canaryLog);
+    }
+    // Fall through to normal WAKE_SENTINEL — agent will run respond.js
+    // to complete the full F-success path (done + outbox + lock release)
+  }
+
   console.log(WAKE_SENTINEL);
   console.log(JSON.stringify({ pending_commands: [command] }, null, 2));
   exitQuiet(0);

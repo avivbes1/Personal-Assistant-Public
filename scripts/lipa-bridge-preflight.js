@@ -198,6 +198,10 @@ function quarantineClaimedRows(sessionId, reason, now) {
 function verifyCompletions(sessionId, expectedClaimIds) {
   const db = getDB();
 
+  // WAL visibility: child process may have just written.
+  // Re-read by closing and recreating any implicit read snapshot.
+  try { db.pragma('wal_checkpoint(PASSIVE)'); } catch (_) {}
+
   // Fail closed: if we don't know what was expected, we can't verify
   if (!expectedClaimIds || !Array.isArray(expectedClaimIds) || expectedClaimIds.length === 0) {
     return { verified: false, reason: 'no_expected_claims', unverifiedIds: [] };

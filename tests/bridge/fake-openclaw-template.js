@@ -30,10 +30,17 @@ if (!pollOut.includes('LIPA_BRIDGE_WAKE')) {
   process.exit(0);
 }
 
-// Parse pending_commands
-const match = pollOut.match(/\{[\s\S]*"pending_commands"[\s\S]*\}/);
-if (!match) { process.exit(0); }
-const cmd = JSON.parse(match[0]).pending_commands[0];
+// Parse pending_commands — find the JSON line containing LIPA_BRIDGE_WAKE output.
+// The output may contain dotenv "tip" lines with {} on stdout, so we can't just
+// match the first {}. Instead, find the line after LIPA_BRIDGE_WAKE.
+const lines = pollOut.split('\n');
+const wakeIdx = lines.findIndex(l => l.includes('LIPA_BRIDGE_WAKE'));
+if (wakeIdx < 0) { process.exit(0); }
+// The JSON object starts on the next line
+const jsonStr = lines.slice(wakeIdx + 1).join('\n').trim();
+let parsed;
+try { parsed = JSON.parse(jsonStr); } catch (_) { process.stderr.write('[fake-openclaw] JSON parse failed: ' + jsonStr.substring(0, 100) + '\n'); process.exit(0); }
+const cmd = parsed.pending_commands && parsed.pending_commands[0];
 if (!cmd) { process.exit(0); }
 
 // Run respond.js
@@ -47,4 +54,11 @@ const respondResult = spawnSync(process.execPath, [
 if (respondResult.status !== 0) {
   process.stderr.write('[fake-openclaw] respond failed: ' + (respondResult.stderr?.toString() || '').substring(0, 200) + '\n');
 }
+// WAL checkpoint so the preflight process sees the committed writes
+try {
+  const Database = require('better-sqlite3');
+  const db = new Database(process.env.FAMILYBOT_DB_PATH);
+  db.pragma('wal_checkpoint(PASSIVE)');
+  db.close();
+} catch (_) {}
 process.exit(0);

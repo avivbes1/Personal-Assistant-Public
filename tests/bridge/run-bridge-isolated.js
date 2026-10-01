@@ -86,8 +86,25 @@ for (const file of testFiles) {
   }
 }
 
+// Check if the shim was ever invoked (item 7: fail suite if real CLI was attempted)
+const shimLog = '/tmp/openclaw-shim-blocked.log';
+let shimInvoked = false;
+try {
+  if (fs.existsSync(shimLog)) {
+    const shimContent = fs.readFileSync(shimLog, 'utf8').trim();
+    if (shimContent.length > 0) {
+      shimInvoked = true;
+      console.error('\n  ⚠️  SHIM INVOKED — tests attempted to launch the real openclaw CLI:');
+      shimContent.split('\n').slice(0, 5).forEach(l => console.error('    ' + l));
+      failed++;
+    }
+    // Clean up the shim log
+    fs.unlinkSync(shimLog);
+  }
+} catch (_) {}
+
 // Cleanup
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
 
-console.log(`\n  Bridge tests: ${passed} passed, ${failed} failed (isolated DB: ${dbPath})`);
+console.log(`\n  Bridge tests: ${passed} passed, ${failed} failed${shimInvoked ? ' (SHIM INVOKED!)' : ''} (isolated DB)`);
 process.exit(failed > 0 ? 1 : 0);

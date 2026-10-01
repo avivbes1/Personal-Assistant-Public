@@ -50,6 +50,9 @@ module.exports = {
     initDB();
     ensureLipaTables();
     const db = getDB();
+    // Use DELETE journal mode for multi-process test reliability
+    // (WAL mode causes visibility races between parent and child processes)
+    try { db.pragma('journal_mode = DELETE'); } catch (_) {}
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lipa-race-'));
     const spawnLog = path.join(tmpDir, 'spawn.log');
@@ -98,18 +101,22 @@ module.exports = {
         if (spawns1 !== 1) errors.push(`R1: expected 1 spawn, got ${spawns1}`);
 
         // Assert row is done
-        const row = db.prepare("SELECT status FROM bridge_lipa_inbox WHERE request_id='R1_FLOW'").get();
+        // Close and reopen the DB connection to guarantee we see child writes
+        // (better-sqlite3 may cache pages from before the child wrote)
+        const Database = require('better-sqlite3');
+        const freshDb = new Database(dbPath);
+        const row = freshDb.prepare("SELECT status FROM bridge_lipa_inbox WHERE request_id='R1_FLOW'").get();
         if (!row || row.status !== 'done') errors.push(`R1: row status=${row?.status}, expected done`);
 
         // Assert outbox entry exists
-        const inbox = db.prepare("SELECT id FROM bridge_lipa_inbox WHERE request_id='R1_FLOW'").get();
+        const inbox = freshDb.prepare("SELECT id FROM bridge_lipa_inbox WHERE request_id='R1_FLOW'").get();
         if (inbox) {
-          const outbox = db.prepare('SELECT id FROM bridge_lipa_outbox WHERE inbox_id=?').get(inbox.id);
+          const outbox = freshDb.prepare('SELECT id FROM bridge_lipa_outbox WHERE inbox_id=?').get(inbox.id);
           if (!outbox) errors.push('R1: no outbox entry');
         }
 
         // Assert execution state is terminal
-        const execState = db.prepare("SELECT value FROM bridge_lipa_state WHERE key='execution_state'").get();
+        const execState = freshDb.prepare("SELECT value FROM bridge_lipa_state WHERE key='execution_state'").get();
         if (execState) {
           const es = JSON.parse(execState.value);
           if (es.state !== 'terminal') errors.push(`R1: execution state=${es.state}, expected terminal`);
@@ -118,12 +125,14 @@ module.exports = {
         }
 
         // Assert lock released
-        const lock = db.prepare("SELECT value FROM bridge_lipa_state WHERE key='worker_lock'").get();
+        const lock = freshDb.prepare("SELECT value FROM bridge_lipa_state WHERE key='worker_lock'").get();
         if (lock) errors.push('R1: worker lock not released after completion');
 
         // Assert no hold
-        const hold = db.prepare("SELECT value FROM bridge_lipa_state WHERE key='execution_hold'").get();
+        const hold = freshDb.prepare("SELECT value FROM bridge_lipa_state WHERE key='execution_hold'").get();
         if (hold) errors.push('R1: hold set despite clean completion');
+
+        freshDb.close();
 
         // ── RESTART: no replay ──
         fs.writeFileSync(spawnLog, '');
@@ -167,18 +176,19 @@ module.exports = {
           VALUES ('R2_NEW', 'noop', '{}', ?, 'pending', 0, ?)`)
           .run(Date.now(), Date.now());
 
-        // Second preflight — should be blocked by execution_state (active)
+        // Second preflight — MUST be blocked by execution_state=active
         const r2 = await runChild(PREFLIGHT, baseEnv);
         await p1; // wait for first to finish
 
         const log2 = fs.existsSync(spawnLog) ? fs.readFileSync(spawnLog, 'utf8').trim() : '';
         const spawns2 = log2 ? log2.split('\n').filter(l => l).length : 0;
 
-        // Only 1 spawn (the first preflight). Second was blocked.
-        if (spawns2 > 1) errors.push(`R2: expected <=1 spawn, got ${spawns2}`);
+        // Exactly 1 spawn (the first preflight). Second MUST be blocked.
+        if (spawns2 !== 1) errors.push(`R2: expected exactly 1 spawn, got ${spawns2}`);
         const r2out = r2.stdout + r2.stderr;
-        if (!r2out.includes('execution_state_active') && !r2out.includes('execution_hold') && !r2out.includes('lock_held')) {
-          errors.push('R2: second wrapper not blocked: ' + r2out.substring(0, 200));
+        // Must specifically say execution_state_active (not hold or lock_held)
+        if (!r2out.includes('execution_state_active')) {
+          errors.push('R2: second wrapper not blocked by execution_state_active: ' + r2out.substring(0, 200));
         }
 
         db.prepare("DELETE FROM bridge_lipa_costs").run();
