@@ -64,6 +64,10 @@ function buildMessageRecord(msg, groupInfo = {}) {
     body: policy.redactSensitive(msg.body || ''),
     timestamp: ts,
     timestamp_iso: ts ? new Date(ts).toISOString() : null,
+    // RAW-ONLY media attachment path (2026-10-02): carried so the email
+    // transport can attach the original file without any model processing.
+    media_path: msg.media_path || null,
+    media_type: msg.media_type || null,
   };
 }
 

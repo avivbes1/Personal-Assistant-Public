@@ -13,8 +13,13 @@
  */
 
 const nodemailer = require('nodemailer');
+const fs = require('fs');
+const path = require('path');
 const bridgeConfig = require('./config');
 const billingState = require('./billingState');
+
+// RAW-ONLY media: max file size for email attachments (10 MB)
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 const SHADOW = process.env.INSTINCT_BRIDGE_SHADOW === '1';
 const TRANSPORT = (process.env.INSTINCT_BRIDGE_TRANSPORT || 'gmail').toLowerCase();
@@ -96,6 +101,39 @@ function getSES() {
 }
 
 /**
+ * Collect media attachments from envelope events.  Returns an array of
+ * { path, filename, contentType, tooLarge?, sizeHuman? } objects.  Files that
+ * exceed MAX_ATTACHMENT_BYTES get a marker in the text body instead of being
+ * attached.  No model call, no conversion — original binary only.
+ */
+function collectAttachments(envelope) {
+  const attachments = [];
+  for (const evt of (envelope.events || [])) {
+    if (evt.kind !== 'message' || !evt.media_path) continue;
+    const filePath = evt.media_path;
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const stat = fs.statSync(filePath);
+      const filename = path.basename(filePath);
+      if (stat.size > MAX_ATTACHMENT_BYTES) {
+        const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
+        attachments.push({ path: filePath, filename, tooLarge: true, sizeHuman: `${sizeMB} MB` });
+      } else {
+        attachments.push({
+          path: filePath,
+          filename,
+          contentType: evt.media_type || 'application/octet-stream',
+          tooLarge: false,
+        });
+      }
+    } catch (_) {
+      // File unreadable — skip silently
+    }
+  }
+  return attachments;
+}
+
+/**
  * Build a human-readable plain-text summary of the events in the envelope.
  *
  * RAW-ONLY mode (2026-10-02): no summaries, translations, classifications, or
@@ -104,8 +142,14 @@ function getSES() {
  *   <exact message body>
  *   [image attached] / [document attached] / etc. when media is present
  */
-function buildSummary(envelope) {
+function buildSummary(envelope, attachments) {
   const lines = [];
+  // Build a lookup: media_path → attachment info for too-large markers
+  const attachMap = new Map();
+  for (const a of (attachments || [])) {
+    attachMap.set(a.path, a);
+  }
+
   for (const evt of (envelope.events || [])) {
     if (evt.kind === 'message') {
       const group = evt.group?.name || 'unknown';
@@ -113,15 +157,16 @@ function buildSummary(envelope) {
       const ts = evt.timestamp_iso || (evt.timestamp ? new Date(evt.timestamp).toISOString() : 'unknown');
       const id = evt.stanza_id || evt.message_id || 'unknown';
       lines.push(`Group: ${group} | Sender: ${sender} | Time: ${ts} | ID: ${id}`);
-      const body = evt.body || '';
-      // Detect media markers left by the bot's media pipeline
-      const mediaRe = /^\[(תמונה|מסמך|הקלטה|הקלטה קולית|וידאו|מיקום|איש קשר|מדיה)/;
-      if (mediaRe.test(body.trim())) {
-        // Body IS the media marker — print it as-is
-        lines.push(body);
-      } else {
-        lines.push(body);
-        // If body contains a media marker anywhere, it's caption+media — already included
+      lines.push(evt.body || '');
+
+      // Media attachment markers
+      if (evt.media_path) {
+        const att = attachMap.get(evt.media_path);
+        if (att && att.tooLarge) {
+          lines.push(`[too large: ${att.filename}, ${att.sizeHuman}]`);
+        } else if (att && !att.tooLarge) {
+          lines.push(`[${att.filename} attached]`);
+        }
       }
       lines.push('');
     }
@@ -156,9 +201,15 @@ async function sendBatch(envelope) {
   const subject = `${bridgeConfig.subjectPrefix} ${envelope.event_count} event(s) [${envelope.stream}]`;
   // RAW-ONLY mode (2026-10-02): email body is plain raw text only, no JSON payload.
   // The JSON envelope is still used internally for dedup/outbox but not emailed.
-  const summary = buildSummary(envelope);
+  // Collect media attachments (original files, no conversion/model processing).
+  const mediaAttachments = collectAttachments(envelope);
+  const summary = buildSummary(envelope, mediaAttachments);
   const body = summary;
   const bytes = Buffer.byteLength(body, 'utf8');
+  // Build nodemailer attachment objects for files under the size cap
+  const emailAttachments = mediaAttachments
+    .filter(a => !a.tooLarge)
+    .map(a => ({ filename: a.filename, path: a.path, contentType: a.contentType }));
 
   if (SHADOW) {
     console.log(
@@ -169,6 +220,7 @@ async function sendBatch(envelope) {
       `  subject:  ${subject}\n` +
       `  events:   ${envelope.event_count}\n` +
       `  bytes:    ${bytes}\n` +
+      `  attachments: ${emailAttachments.length}\n` +
       `  delivery: ${envelope.delivery_id}`
     );
     return { ok: true, provider_message_id: `shadow-${envelope.delivery_id}`, shadow: true, bytes };
@@ -196,16 +248,21 @@ async function sendBatch(envelope) {
 
   // Default: Gmail SMTP
   const transport = getGmailTransport();
-  const info = await transport.sendMail({
+  const mailOpts = {
     from: bridgeConfig.emailFrom,
     to: bridgeConfig.emailTo,
     subject,
     text: body,
-  });
+  };
+  if (emailAttachments.length > 0) {
+    mailOpts.attachments = emailAttachments;
+  }
+  const info = await transport.sendMail(mailOpts);
   const messageId = info.messageId || null;
   console.log(
     `[Bridge][Gmail] sent: ${envelope.event_count} event(s), ` +
-    `${bytes} bytes, delivery=${envelope.delivery_id}, msg_id=${messageId}`
+    `${bytes} bytes, ${emailAttachments.length} attachment(s), ` +
+    `delivery=${envelope.delivery_id}, msg_id=${messageId}`
   );
   return { ok: true, provider_message_id: messageId, shadow: false, bytes };
 }

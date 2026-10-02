@@ -1167,7 +1167,7 @@ function _bridgeEnqueueMessageById(messageId, eventType) {
     const bridgeConfig = require('./bridge/config');
     if (!bridgeConfig.enabled || !messageId) return;
     const row = getDB().prepare(
-      'SELECT id, group_id, sender, body, timestamp, stanza_id FROM messages WHERE id = ?'
+      'SELECT id, group_id, sender, body, timestamp, stanza_id, media_path, media_type FROM messages WHERE id = ?'
     ).get(messageId);
     if (!row) return;
     const policy = require('./bridge/policy');
