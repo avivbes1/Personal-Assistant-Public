@@ -96,19 +96,39 @@ function getSES() {
 }
 
 /**
- * Build a human-readable plain-text summary of the events in the envelope,
- * placed above the canonical JSON payload so the email is inspectable without
- * parsing JSON.
+ * Build a human-readable plain-text summary of the events in the envelope.
+ *
+ * RAW-ONLY mode (2026-10-02): no summaries, translations, classifications, or
+ * commentary.  Each message is rendered as raw deterministic text:
+ *   Group: <name> | Sender: <sender> | Time: <iso> | ID: <stanza_id>
+ *   <exact message body>
+ *   [image attached] / [document attached] / etc. when media is present
  */
 function buildSummary(envelope) {
-  const lines = [`FamilyBot Bridge — ${envelope.event_count} event(s)`, ''];
+  const lines = [];
   for (const evt of (envelope.events || [])) {
-    if (evt.kind === 'notice') {
-      const date = evt.relevance_date ? ` (${evt.relevance_date})` : '';
-      lines.push(`• [notice] ${(evt.content || '').substring(0, 120)}${date}`);
-    } else if (evt.kind === 'message') {
+    if (evt.kind === 'message') {
       const group = evt.group?.name || 'unknown';
-      lines.push(`• [msg] ${group}: ${(evt.body || '').substring(0, 100)}`);
+      const sender = evt.sender || 'unknown';
+      const ts = evt.timestamp_iso || (evt.timestamp ? new Date(evt.timestamp).toISOString() : 'unknown');
+      const id = evt.stanza_id || evt.message_id || 'unknown';
+      lines.push(`Group: ${group} | Sender: ${sender} | Time: ${ts} | ID: ${id}`);
+      const body = evt.body || '';
+      // Detect media markers left by the bot's media pipeline
+      const mediaRe = /^\[(תמונה|מסמך|הקלטה|הקלטה קולית|וידאו|מיקום|איש קשר|מדיה)/;
+      if (mediaRe.test(body.trim())) {
+        // Body IS the media marker — print it as-is
+        lines.push(body);
+      } else {
+        lines.push(body);
+        // If body contains a media marker anywhere, it's caption+media — already included
+      }
+      lines.push('');
+    }
+    // notice events are no longer enqueued (RAW-ONLY mode), but handle gracefully
+    if (evt.kind === 'notice') {
+      lines.push(`[notice — skipped in RAW-ONLY mode]`);
+      lines.push('');
     }
   }
   return lines.join('\n');
@@ -134,10 +154,11 @@ async function sendBatch(envelope) {
   }
 
   const subject = `${bridgeConfig.subjectPrefix} ${envelope.event_count} event(s) [${envelope.stream}]`;
-  const jsonPayload = JSON.stringify(envelope, null, 2);
-  const bytes = Buffer.byteLength(jsonPayload, 'utf8');
+  // RAW-ONLY mode (2026-10-02): email body is plain raw text only, no JSON payload.
+  // The JSON envelope is still used internally for dedup/outbox but not emailed.
   const summary = buildSummary(envelope);
-  const body = `${summary}\n\n---\nCanonical JSON payload:\n\n${jsonPayload}`;
+  const body = summary;
+  const bytes = Buffer.byteLength(body, 'utf8');
 
   if (SHADOW) {
     console.log(

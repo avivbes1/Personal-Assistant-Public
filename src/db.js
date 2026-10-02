@@ -1189,6 +1189,10 @@ function _bridgeEnqueueMessageById(messageId, eventType) {
 
 /** Enqueue a notice.upserted event, recording its source-message linkage. */
 function _bridgeEnqueueNotice(noticeId) {
+  // RAW-ONLY mode (2026-10-02): stop enqueuing AI-processed notices into the
+  // bridge outbox. Only raw message.created events are forwarded to Instinct.
+  // The function body is preserved but short-circuited so it can be re-enabled.
+  return;
   try {
     const bridgeConfig = require('./bridge/config');
     if (!bridgeConfig.enabled || !noticeId) return;
