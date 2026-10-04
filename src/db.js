@@ -684,6 +684,7 @@ function initDB() {
   try { db.exec('ALTER TABLE messages ADD COLUMN notice_id INTEGER'); } catch (_) {}
   try { db.exec('ALTER TABLE messages ADD COLUMN retry_count INTEGER DEFAULT 0'); } catch (_) {}
   try { db.exec('ALTER TABLE messages ADD COLUMN sender_phone TEXT'); } catch (_) {}
+  try { db.exec('ALTER TABLE messages ADD COLUMN sender_lid TEXT'); } catch (_) {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_pipeline_state ON messages(pipeline_state, processing_started_at)'); } catch (_) {}
 
   // ── Q6: query_misses ──────────────────────────────────────────────────────
@@ -1168,7 +1169,7 @@ function _bridgeEnqueueMessageById(messageId, eventType) {
     const bridgeConfig = require('./bridge/config');
     if (!bridgeConfig.enabled || !messageId) return;
     const row = getDB().prepare(
-      'SELECT id, group_id, sender, body, timestamp, stanza_id, media_path, media_type, sender_phone FROM messages WHERE id = ?'
+      'SELECT id, group_id, sender, body, timestamp, stanza_id, media_path, media_type, sender_phone, sender_lid FROM messages WHERE id = ?'
     ).get(messageId);
     if (!row) return;
     const policy = require('./bridge/policy');
@@ -1246,12 +1247,12 @@ function _bridgeLinkNoticeSources(notice) {
   return ids;
 }
 
-function saveMessage({ group_id, sender, body, timestamp, stanza_id, sender_phone }) {
+function saveMessage({ group_id, sender, body, timestamp, stanza_id, sender_phone, sender_lid }) {
   const ts = timestamp || Date.now();
   const stmt = getDB().prepare(
-    'INSERT OR IGNORE INTO messages (group_id, sender, body, timestamp, processed, stanza_id, sender_phone) VALUES (?, ?, ?, ?, 0, ?, ?)'
+    'INSERT OR IGNORE INTO messages (group_id, sender, body, timestamp, processed, stanza_id, sender_phone, sender_lid) VALUES (?, ?, ?, ?, 0, ?, ?, ?)'
   );
-  const result = stmt.run(group_id, sender, body, ts, stanza_id || null, sender_phone || null);
+  const result = stmt.run(group_id, sender, body, ts, stanza_id || null, sender_phone || null, sender_lid || null);
   if (result.changes > 0) {
     const newId = result.lastInsertRowid;
     _bridgeEnqueueMessageById(newId, 'message.created');

@@ -438,7 +438,16 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
     const contact = await msg.getContact();
     const groupId = _ser(chat.id);
     const sender = contact.pushname || contact.number || msg.from;
-    const senderPhone = (contact.number || '').replace(/\D/g, '') || null;
+    // Resolve sender phone: if LID, use signal repository; otherwise strip digits
+    const senderJidRaw = msg.author || msg.from || '';
+    let senderPhone = null;
+    let senderLid = null;
+    if (senderJidRaw.includes('@lid')) {
+      senderLid = senderJidRaw.split('@')[0];
+      try { const resolved = await getPhoneByJid(senderJidRaw); if (resolved) senderPhone = resolved.replace(/\D/g, ''); } catch (_) {}
+    } else {
+      senderPhone = (contact.number || '').replace(/\D/g, '') || null;
+    }
 
     // Resolve message body — for media, try to extract content
     const groupRecord = getGroup(groupId);
@@ -532,7 +541,7 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
     // Save to DB (skip if caller already saved to avoid duplicates)
     let messageId;
     if (!alreadySaved) {
-      messageId = saveMessage({ group_id: groupId, sender, body, timestamp: msg.timestamp * 1000, stanza_id: msg.id?.id, sender_phone: senderPhone });
+      messageId = saveMessage({ group_id: groupId, sender, body, timestamp: msg.timestamp * 1000, stanza_id: msg.id?.id, sender_phone: senderPhone, sender_lid: senderLid });
       recordMessagePersisted();
     } else {
       // Update the already-saved row with the extracted body if we got real content
@@ -823,7 +832,16 @@ async function scanGroupHistory(chat, { saveDays = 7, parseDays = 1 } = {}) {
       const msgId = _ser(msg.id);
       const contact = await msg.getContact().catch(() => null);
       const sender = contact?.pushname || contact?.number || msg.author || 'unknown';
-      const bfSenderPhone = (contact?.number || '').replace(/\D/g, '') || null;
+      // Resolve phone from LID if needed
+      const bfJidRaw = msg.author || msg.from || '';
+      let bfSenderPhone = null;
+      let bfSenderLid = null;
+      if (bfJidRaw.includes('@lid')) {
+        bfSenderLid = bfJidRaw.split('@')[0];
+        try { const resolved = await getPhoneByJid(bfJidRaw); if (resolved) bfSenderPhone = resolved.replace(/\D/g, ''); } catch (_) {}
+      } else {
+        bfSenderPhone = (contact?.number || '').replace(/\D/g, '') || null;
+      }
 
       // Resolve body — use placeholder for media messages
       let body = msg.body || '';
@@ -833,7 +851,7 @@ async function scanGroupHistory(chat, { saveDays = 7, parseDays = 1 } = {}) {
       }
 
       // Always save to DB for context
-      saveMessage({ group_id: groupId, sender, body, timestamp: msgTs, stanza_id: msg.id?.id, sender_phone: bfSenderPhone });
+      saveMessage({ group_id: groupId, sender, body, timestamp: msgTs, stanza_id: msg.id?.id, sender_phone: bfSenderPhone, sender_lid: bfSenderLid });
       recordMessagePersisted();
       saved++;
 
@@ -1765,11 +1783,19 @@ function initWhatsApp() {
         try {
           const ctxContact = await msg.getContact().catch(() => null);
           const ctxSender = (ctxContact && (ctxContact.pushname || ctxContact.number)) || msg.author || 'unknown';
-          const ctxSenderPhone = (ctxContact?.number || '').replace(/\D/g, '') || null;
+          const ctxJidRaw = msg.author || msg.from || '';
+          let ctxSenderPhone = null;
+          let ctxSenderLid = null;
+          if (ctxJidRaw.includes('@lid')) {
+            ctxSenderLid = ctxJidRaw.split('@')[0];
+            try { const resolved = await getPhoneByJid(ctxJidRaw); if (resolved) ctxSenderPhone = resolved.replace(/\D/g, ''); } catch (_) {}
+          } else {
+            ctxSenderPhone = (ctxContact?.number || '').replace(/\D/g, '') || null;
+          }
           const ctxChat = await msg.getChat().catch(() => null);
           const mediaLabel = { image: '[\u05ea\u05de\u05d5\u05e0\u05d4]', video: '[\u05d5\u05d9\u05d3\u05d0\u05d5]', audio: '[\u05d4\u05e7\u05dc\u05d8\u05d4 \u05e7\u05d5\u05dc\u05d9\u05ea]', document: '[\u05de\u05e1\u05de\u05da]', sticker: '[\u05de\u05d3\u05d1\u05e7\u05d4]', location: '[\u05de\u05d9\u05e7\u05d5\u05dd]' };
           const ctxBody = msg.body && msg.body.trim() ? msg.body : (mediaLabel[msg.type] || '[\u05de\u05d3\u05d9\u05d4]');
-          saveMessage({ group_id: (ctxChat && ctxChat.id && _ser(ctxChat.id)) || msg.from, sender: ctxSender, body: ctxBody, timestamp: msg.timestamp * 1000, sender_phone: ctxSenderPhone });
+          saveMessage({ group_id: (ctxChat && ctxChat.id && _ser(ctxChat.id)) || msg.from, sender: ctxSender, body: ctxBody, timestamp: msg.timestamp * 1000, sender_phone: ctxSenderPhone, sender_lid: ctxSenderLid });
           recordMessagePersisted();
         } catch (_) {}
         // Full parse+act only for substantial text messages or images (ISSUE-021: images from

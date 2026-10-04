@@ -138,7 +138,7 @@ function collectAttachments(envelope) {
  *
  * RAW-ONLY mode (2026-10-02): no summaries, translations, classifications, or
  * commentary.  Each message is rendered as raw deterministic text:
- *   Group: <name> | Sender: <sender> | Phone: <phone> | Time: <iso> | ID: <stanza_id>
+ *   Group: <name> | Sender: <sender> | Phone: <phone> [| LID: <lid>] | Time: <iso> | ID: <stanza_id>
  *   <exact message body>
  *   [image attached] / [document attached] / etc. when media is present
  */
@@ -157,7 +157,8 @@ function buildSummary(envelope, attachments) {
       const ts = evt.timestamp_iso || (evt.timestamp ? new Date(evt.timestamp).toISOString() : 'unknown');
       const id = evt.stanza_id || evt.message_id || 'unknown';
       const phone = evt.sender_phone || 'unknown';
-      lines.push(`Group: ${group} | Sender: ${sender} | Phone: ${phone} | Time: ${ts} | ID: ${id}`);
+      const lidPart = (!evt.sender_phone && evt.sender_lid) ? ` | LID: ${evt.sender_lid}` : '';
+      lines.push(`Group: ${group} | Sender: ${sender} | Phone: ${phone}${lidPart} | Time: ${ts} | ID: ${id}`);
       lines.push(evt.body || '');
 
       // Media attachment markers
