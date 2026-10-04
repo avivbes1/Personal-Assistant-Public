@@ -61,6 +61,7 @@ function buildMessageRecord(msg, groupInfo = {}) {
       name: groupInfo.name || null,
     },
     sender: policy.redactSensitive(msg.sender || ''),
+    sender_phone: msg.sender_phone || null,
     body: policy.redactSensitive(msg.body || ''),
     timestamp: ts,
     timestamp_iso: ts ? new Date(ts).toISOString() : null,
