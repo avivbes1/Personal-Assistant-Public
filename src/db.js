@@ -1302,6 +1302,31 @@ function updateMessageMedia(id, { media_type, media_path, media_status, media_er
   getDB().prepare(
     'UPDATE messages SET media_type=?, media_path=?, media_status=?, media_error=? WHERE id=?'
   ).run(media_type || null, media_path || null, media_status || null, media_error || null, id);
+  // The initial message.created bridge event was enqueued before media was downloaded,
+  // so its snapshot has media_path=null. Fix it:
+  // 1) If the event is still pending/claimed, update its payload in place.
+  // 2) If already delivered, enqueue a message.updated event with the media.
+  if (media_path && media_status === 'processed') {
+    try {
+      const createdEventId = `message.created:${id}:v1`;
+      const { buildMessageRecord } = require('./bridge/envelope');
+      const row = getDB().prepare(
+        'SELECT id, group_id, sender, body, timestamp, stanza_id, media_path, media_type, sender_phone, sender_lid FROM messages WHERE id = ?'
+      ).get(id);
+      if (row) {
+        const grp = getDB().prepare('SELECT name FROM groups WHERE id = ?').get(row.group_id);
+        const record = buildMessageRecord(row, { jid: row.group_id, name: grp ? grp.name : null });
+        const json = JSON.stringify(record);
+        const updated = getDB().prepare(
+          "UPDATE bridge_outbox SET payload_json=?, updated_at=? WHERE event_id=? AND status IN ('pending','claimed')"
+        ).run(json, Date.now(), createdEventId);
+        if (!updated.changes) {
+          // Already delivered — send a follow-up with the attachment
+          _bridgeEnqueueMessageById(id, 'message.updated');
+        }
+      }
+    } catch (_) {}
+  }
 }
 
 /** Update only the media processing status (+ optional error) of a message. */
