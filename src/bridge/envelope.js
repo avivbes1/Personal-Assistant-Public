@@ -1,4 +1,22 @@
 'use strict';
+
+/**
+ * RAW-ONLY body sanitiser: strip AI-generated descriptions from media messages.
+ * Images processed by vision arrive with body like "[תמונה: <long AI description>]";
+ * RAW-ONLY mode should forward only the sender's caption or a bare marker.
+ */
+function _rawBody(body, mediaType) {
+  if (!body || !mediaType) return body;
+  if (mediaType === 'image' || mediaType === 'sticker') {
+    // "[תמונה: <AI desc>] (caption: <real caption>)" → keep caption only
+    const captionMatch = body.match(/\(caption:\s*(.+?)\)\s*$/);
+    if (captionMatch) return captionMatch[1].trim();
+    // "[תמונה: <AI desc>]" with no caption → bare marker
+    if (/^\[תמונה[:\s]/.test(body)) return '[תמונה]';
+  }
+  return body;
+}
+
 /**
  * bridge/envelope.js — event record + envelope construction for the Instinct
  * Bridge, plus deterministic hashing and delivery-id generation.
@@ -63,7 +81,7 @@ function buildMessageRecord(msg, groupInfo = {}) {
     sender: policy.redactSensitive(msg.sender || ''),
     sender_phone: msg.sender_phone || null,
     sender_lid: msg.sender_lid || null,
-    body: policy.redactSensitive(msg.body || ''),
+    body: _rawBody(policy.redactSensitive(msg.body || ''), msg.media_type),
     timestamp: ts,
     timestamp_iso: ts ? new Date(ts).toISOString() : null,
     // RAW-ONLY media attachment path (2026-10-02): carried so the email
