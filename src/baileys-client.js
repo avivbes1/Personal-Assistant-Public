@@ -13,6 +13,7 @@ const {
   DisconnectReason,
   downloadMediaMessage,
   getContentType,
+  normalizeMessageContent,
   jidDecode,
   Browsers,
   fetchLatestBaileysVersion,
@@ -103,7 +104,7 @@ class BaileysMessage {
     this._client = client;
     this._raw = rawMsg;
     const key = rawMsg.key;
-    const content = rawMsg.message || {};
+    const content = normalizeMessageContent(rawMsg.message) || {};
 
     // ID object compatible with whatsapp-web.js
     const serialized = `${key.fromMe ? 'true' : 'false'}_${toWWebJid(key.remoteJid)}_${key.id}${key.participant ? '_' + toWWebJid(key.participant) : ''}`;
@@ -245,8 +246,9 @@ class BaileysMessage {
       logger,
       reuploadRequest: this._client._sock.updateMediaMessage,
     });
-    const contentType = getContentType(this._raw.message);
-    const inner = this._raw.message[contentType] || {};
+    const normalized = normalizeMessageContent(this._raw.message) || {};
+    const contentType = getContentType(normalized);
+    const inner = normalized[contentType] || {};
     return {
       mimetype: inner.mimetype || 'application/octet-stream',
       data: buffer.toString('base64'),
@@ -566,6 +568,17 @@ class BaileysClient extends EventEmitter {
           Object.assign(existing, update);
         }
         appLogger.info({ component: 'Baileys', groupId: update.id, subject: update.subject || '' }, 'Group update');
+        // Sync subject changes to DB so forwarded messages use the live name
+        if (update.subject) {
+          try {
+            const db = require('./db');
+            const row = db.getGroup(update.id);
+            if (row && row.name !== update.subject) {
+              db.getDB().prepare('UPDATE groups SET name=? WHERE id=?').run(update.subject, update.id);
+              appLogger.info({ component: 'Baileys', groupId: update.id, oldName: row.name, newName: update.subject }, 'Group name synced to DB');
+            }
+          } catch (_) {}
+        }
       }
       try { require('./watchdog').onHeartbeat(); } catch (_) {}
     });

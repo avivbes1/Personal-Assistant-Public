@@ -1510,9 +1510,11 @@ function initWhatsApp() {
       if (SKIP_MSG_TYPES.has(msg.type)) return;
       const msgText = msg.body?.trim() || '';
       const isImageType = msg.type === 'image';
-      // ISSUE-021: don't drop image messages on the short-text check — they have no body
-      if (!isImageType && msgText.length < 6 && msg.from !== masterGroupId) return;
-      if (!isImageType && SKIP_REGEX.test(msgText) && msg.from !== masterGroupId) return;
+      const isDocumentType = msg.type === 'document';
+      const isMediaPassthrough = isImageType || isDocumentType;
+      // ISSUE-021: don't drop image/document messages on the short-text check — they may have no body
+      if (!isMediaPassthrough && msgText.length < 6 && msg.from !== masterGroupId) return;
+      if (!isMediaPassthrough && SKIP_REGEX.test(msgText) && msg.from !== masterGroupId) return;
 
       const msgId = _ser(msg.id);
 
@@ -1798,9 +1800,9 @@ function initWhatsApp() {
           saveMessage({ group_id: (ctxChat && ctxChat.id && _ser(ctxChat.id)) || msg.from, sender: ctxSender, body: ctxBody, timestamp: msg.timestamp * 1000, sender_phone: ctxSenderPhone, sender_lid: ctxSenderLid });
           recordMessagePersisted();
         } catch (_) {}
-        // Full parse+act only for substantial text messages or images (ISSUE-021: images from
-        // any sender in monitored groups must reach handleGroupMessage for vision OCR)
-        if ((msgText.length >= 6 && !SKIP_REGEX.test(msgText)) || isImageType) {
+        // Full parse+act only for substantial text messages, images, or documents
+        // (ISSUE-021: images; documents need media extraction for forwarding)
+        if ((msgText.length >= 6 && !SKIP_REGEX.test(msgText)) || isMediaPassthrough) {
           await handleGroupMessage(msg, { alreadySaved: true });
         }
       } else if (msg.from !== masterGroupId) {
