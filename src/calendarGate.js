@@ -394,6 +394,11 @@ function padTime(timeStr, durationMin) {
  * @returns {Promise<{action: string, gcalId?: string, event?: object, reason?: string}>}
  */
 async function processEventAction(action, { rawMessage, groupName, sendToMasterGroup, source_notice_id } = {}) {
+  // Migration gate: skip all calendar writes when Instinct handles scheduling.
+  if (process.env.DISABLE_CALENDAR_WRITE === '1') {
+    console.log('[CalendarGate] Calendar writes DISABLED (migration) — skipping');
+    return { ok: false, action: 'skipped', reason: 'calendar_write_disabled' };
+  }
   // G1 / P-015: no calendar event without a validated source. When this write is
   // grounded in a notice, every agent-proposed field (date/time/location) must
   // appear in that notice — a value the source never stated is fabricated and the

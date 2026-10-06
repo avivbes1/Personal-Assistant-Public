@@ -591,6 +591,16 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
       return;
     }
 
+    // ── Migration gate: skip ALL LLM classification when Instinct handles it ──
+    // Raw bridge forwarding (saveMessage → bridge_outbox) already happened above.
+    // Setting DISABLE_GROUP_CLASSIFY=1 skips notice extraction, classification,
+    // calendar events, side-effects — zero model calls on group messages.
+    if (config.DISABLE_GROUP_CLASSIFY === '1' || process.env.DISABLE_GROUP_CLASSIFY === '1') {
+      logger.info({ component: 'WhatsApp', group: chat.name, sender }, 'Group classify DISABLED (migration) — skipping LLM pipeline');
+      if (messageId) markMessageTerminal(messageId, 'SKIPPED', 'group_classify_disabled');
+      return;
+    }
+
     // Media extraction failed — surface a notice with what we know (caption,
     // group, sender) and leave the message flagged for retry. We NEVER ask the
     // family to open the attachment themselves; the /media/retry job will keep
