@@ -40,6 +40,10 @@ const config = {
   // Phase 5 (capability self-awareness)
   FEATURE_CAPABILITY_AWARE:     process.env.FEAT_CAPABILITY === '1',
 
+  // ── Calendar Reminders ───────────────────────────────────────────────────────
+  // Poll-based calendar reminders (every 5 min). Set CALENDAR_REMINDERS=1 to enable.
+  CALENDAR_REMINDERS_ENABLED: process.env.CALENDAR_REMINDERS === '1',
+
   // ── Hallucination Guard ──────────────────────────────────────────────────────
   // Grounds proactive outbound reminders in verifiable DB records. When enabled
   // (default), guardedSend validates every send against the DB before it goes

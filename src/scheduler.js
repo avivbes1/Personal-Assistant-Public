@@ -162,6 +162,7 @@ async function fireReminder(reminder) {
  * Deleted events won't appear in the poll → their reminders silently stop firing.
  */
 async function pollAndFireReminders() {
+  if (!config.CALENDAR_REMINDERS_ENABLED) return;
   try {
     const now = Date.now();
     const WINDOW_MS = 6 * 60 * 1000; // 6-min window (slightly more than poll interval)
