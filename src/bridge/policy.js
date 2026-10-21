@@ -41,23 +41,38 @@ function isGroupAllowed(groupJid) {
  */
 function redactSensitive(text) {
   if (typeof text !== 'string' || text.length === 0) return text ? String(text) : '';
-  let out = text;
 
-  // Labelled auth/OTP/PIN codes: "code 1234", "קוד: 5678", "OTP is 999888".
+  // (1) Extract URLs and replace with placeholders so their digit strings
+  //     (Zoom meeting IDs, passcodes, query params) are never touched by
+  //     the phone/OTP regexes.  Supports http(s) and common meeting domains.
+  const urlPlaceholders = [];
+  const URL_RE = /https?:\/\/[^\s<>"']+/gi;
+  let out = text.replace(URL_RE, (url) => {
+    const idx = urlPlaceholders.length;
+    urlPlaceholders.push(url);
+    return `__URL_PLACEHOLDER_${idx}__`;
+  });
+
+  // (2) Labelled auth/OTP/PIN codes: "code 1234", "קוד: 5678", "OTP is 999888".
   out = out.replace(
     /((?:code|otp|pin|password|קוד|סיסמ[הא])\D{0,12}?)(\d{4,8})\b/gi,
     (_m, label) => `${label}[code]`
   );
 
-  // Phone numbers: an optional +, then digits interspersed with spaces / dashes
-  // / parentheses. Only 9–15 total digits count as a phone; family numbers pass
-  // through untouched.
+  // (3) Phone numbers: an optional +, then digits interspersed with spaces /
+  //     dashes / parentheses. Only 9–15 total digits count as a phone;
+  //     family numbers pass through untouched.
   out = out.replace(/\+?\d[\d\s\-().]{7,}\d/g, (m) => {
     const digits = m.replace(/\D/g, '');
     if (digits.length < 9 || digits.length > 15) return m;
     if (isFamilyPhone(digits)) return m;
     return '[phone]';
   });
+
+  // (4) Restore URLs from placeholders.
+  for (let i = 0; i < urlPlaceholders.length; i++) {
+    out = out.replace(`__URL_PLACEHOLDER_${i}__`, urlPlaceholders[i]);
+  }
 
   return out;
 }
