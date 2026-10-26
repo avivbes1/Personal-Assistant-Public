@@ -112,7 +112,13 @@ function collectAttachments(envelope) {
     if (evt.kind !== 'message' || !evt.media_path) continue;
     const filePath = evt.media_path;
     try {
-      if (!fs.existsSync(filePath)) continue;
+      if (!fs.existsSync(filePath)) {
+        // P-031: make missing files visible instead of silently dropping
+        const filename = path.basename(filePath);
+        console.warn(`[Bridge] media file missing at send time: ${filePath} (message_id=${evt.message_id})`);
+        attachments.push({ path: filePath, filename, missing: true });
+        continue;
+      }
       const stat = fs.statSync(filePath);
       const filename = path.basename(filePath);
       if (stat.size > MAX_ATTACHMENT_BYTES) {
@@ -126,8 +132,10 @@ function collectAttachments(envelope) {
           tooLarge: false,
         });
       }
-    } catch (_) {
-      // File unreadable — skip silently
+    } catch (err) {
+      const filename = path.basename(filePath);
+      console.warn(`[Bridge] media file unreadable: ${filePath} (message_id=${evt.message_id}, error=${err.message})`);
+      attachments.push({ path: filePath, filename, missing: true, error: err.message });
     }
   }
   return attachments;
@@ -164,10 +172,14 @@ function buildSummary(envelope, attachments) {
       // Media attachment markers
       if (evt.media_path) {
         const att = attachMap.get(evt.media_path);
-        if (att && att.tooLarge) {
+        if (att && att.missing) {
+          lines.push(`[media unavailable: ${att.filename}${att.error ? ` (${att.error})` : ''}]`);
+        } else if (att && att.tooLarge) {
           lines.push(`[too large: ${att.filename}, ${att.sizeHuman}]`);
         } else if (att && !att.tooLarge) {
           lines.push(`[${att.filename} attached]`);
+        } else if (!att) {
+          lines.push(`[media expected but not collected: ${path.basename(evt.media_path)}]`);
         }
       }
       lines.push('');
@@ -208,9 +220,9 @@ async function sendBatch(envelope) {
   const summary = buildSummary(envelope, mediaAttachments);
   const body = summary;
   const bytes = Buffer.byteLength(body, 'utf8');
-  // Build nodemailer attachment objects for files under the size cap
+  // Build nodemailer attachment objects for files under the size cap and actually on disk
   const emailAttachments = mediaAttachments
-    .filter(a => !a.tooLarge)
+    .filter(a => !a.tooLarge && !a.missing)
     .map(a => ({ filename: a.filename, path: a.path, contentType: a.contentType }));
 
   if (SHADOW) {

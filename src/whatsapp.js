@@ -437,16 +437,45 @@ async function handleGroupMessage(msg, { alreadySaved = false } = {}) {
     const chat = await msg.getChat();
     const contact = await msg.getContact();
     const groupId = _ser(chat.id);
-    const sender = contact.pushname || contact.number || msg.from;
+    let sender = contact.pushname || contact.number || msg.from;
     // Resolve sender phone: if LID, use signal repository; otherwise strip digits
-    const senderJidRaw = msg.author || msg.from || '';
+    let senderJidRaw = msg.author || msg.from || '';
     let senderPhone = null;
     let senderLid = null;
+
+    // P-031: Guard against group JID as sender. When msg.author is null (system/
+    // announcement messages), senderJidRaw becomes msg.from (group JID). Resolve
+    // the real participant from msg.id.participant; fallback to unknown, never
+    // emit group-JID digits as a phone number.
+    if (senderJidRaw.includes('@g.us')) {
+      const participant = msg.id?.participant;
+      if (participant && !participant.includes('@g.us')) {
+        senderJidRaw = participant;
+        // Re-resolve contact from participant JID
+        try {
+          const pContact = await msg._client?.getContactById(participant);
+          if (pContact) {
+            sender = pContact.pushname || pContact.number || 'unknown';
+          } else {
+            sender = 'unknown';
+          }
+        } catch (_) {
+          sender = 'unknown';
+        }
+      } else {
+        // No participant available — use unknown, never group JID
+        sender = sender.includes('@g.us') ? 'unknown' : sender;
+        senderJidRaw = ''; // prevent further resolution from group JID
+      }
+    }
+
     if (senderJidRaw.includes('@lid')) {
       senderLid = senderJidRaw.split('@')[0];
       try { const resolved = await getPhoneByJid(senderJidRaw); if (resolved) senderPhone = resolved.replace(/\D/g, ''); } catch (_) {}
-    } else {
+    } else if (senderJidRaw) {
       senderPhone = (contact.number || '').replace(/\D/g, '') || null;
+      // Final guard: never emit group-JID digits as a phone number
+      if (senderPhone && senderPhone.length > 15) senderPhone = null;
     }
 
     // Resolve message body — for media, try to extract content
@@ -841,16 +870,33 @@ async function scanGroupHistory(chat, { saveDays = 7, parseDays = 1 } = {}) {
 
       const msgId = _ser(msg.id);
       const contact = await msg.getContact().catch(() => null);
-      const sender = contact?.pushname || contact?.number || msg.author || 'unknown';
+      let bfSender = contact?.pushname || contact?.number || msg.author || 'unknown';
       // Resolve phone from LID if needed
-      const bfJidRaw = msg.author || msg.from || '';
+      let bfJidRaw = msg.author || msg.from || '';
       let bfSenderPhone = null;
       let bfSenderLid = null;
+      // P-031: guard against group JID as sender (same as handleGroupMessage)
+      if (bfJidRaw.includes('@g.us')) {
+        const participant = msg.id?.participant;
+        if (participant && !participant.includes('@g.us')) {
+          bfJidRaw = participant;
+          try {
+            const pContact = await msg._client?.getContactById(participant);
+            if (pContact) bfSender = pContact.pushname || pContact.number || 'unknown';
+            else bfSender = 'unknown';
+          } catch (_) { bfSender = 'unknown'; }
+        } else {
+          bfSender = bfSender.includes('@g.us') ? 'unknown' : bfSender;
+          bfJidRaw = '';
+        }
+      }
+      const sender = bfSender;
       if (bfJidRaw.includes('@lid')) {
         bfSenderLid = bfJidRaw.split('@')[0];
         try { const resolved = await getPhoneByJid(bfJidRaw); if (resolved) bfSenderPhone = resolved.replace(/\D/g, ''); } catch (_) {}
-      } else {
+      } else if (bfJidRaw) {
         bfSenderPhone = (contact?.number || '').replace(/\D/g, '') || null;
+        if (bfSenderPhone && bfSenderPhone.length > 15) bfSenderPhone = null;
       }
 
       // Resolve body — use placeholder for media messages

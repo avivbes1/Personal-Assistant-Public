@@ -132,6 +132,19 @@ function claimBatch(limit = bridgeConfig.batchSize) {
 }
 
 /**
+ * Re-read and parse the current payload_json for a single row. claimBatch
+ * snapshots payload_json into memory at claim time, but another writer
+ * (db.updateMessageMedia) may update the same row's payload AFTER the claim —
+ * adding media_path once an attachment finishes archiving. The exporter calls
+ * this just before delivery to rebuild each envelope event from the freshest
+ * copy, closing that staleness window. Returns the parsed payload or null.
+ */
+function getPayload(id) {
+  const row = db().prepare('SELECT payload_json FROM bridge_outbox WHERE id = ?').get(id);
+  return row ? safeParse(row.payload_json) : null;
+}
+
+/**
  * True when `expectedGeneration` is provided and no longer matches the row's
  * current claim_generation — i.e. the row was re-claimed by a newer cycle and
  * this completion is stale. When expectedGeneration is null/undefined the check
@@ -266,6 +279,7 @@ function getStats() {
 module.exports = {
   enqueueEvent,
   claimBatch,
+  getPayload,
   markDelivered,
   markFailed,
   markNeedsReview,
