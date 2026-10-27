@@ -503,3 +503,18 @@ _Added: Instinct Bridge M1 (2026-09-21). Enforcement: automatic._
 grep -n "_bridgeEnqueueMessageById\|_bridgeEnqueueNotice" src/db.js
 # Expected: helper definitions + call sites in saveMessage/saveNotice/updateMessageBodyByStanza
 ```
+
+---
+
+## P-027 — Truthful Delivery Records
+_Added: 2026-10-27. Enforcement: manual + code review._
+
+**Principle:** Terminal `sent` status in `bridge_lipa_outbox` is set exclusively by the real SMTP send path (lipa-lane-tick.js `sendFn` success). Direct DB writes must never mark a row as `sent`. Out-of-band resolutions (e.g., answered in DM, handled manually) use status `resolved-external` with an `_audit_note` in `response_json` explaining what actually happened.
+
+**Rule:**
+- Only `lipa-lane-tick.js` line ~429 (after `await sendFn(row)` succeeds) may set `status = 'sent'`.
+- Manual/script interventions that resolve a pending outbox row without sending an email must use `resolved-external` (never `sent`).
+- `send_attempts` reflects actual SMTP attempts only.
+- Any future status that represents "handled but not emailed" must be distinguishable from `sent`.
+
+**Source incident:** Outbox row 157 was marked `sent` with `send_attempts=0` via a direct DB write during lipa-lane-repair, creating a false delivery record. Corrected per request `lipa-verify-ack-20261027T0728Z-v1`.

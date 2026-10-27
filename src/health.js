@@ -37,6 +37,59 @@ let _lastThroughputCheckMs = 0;
 let lastChannelReconnectMs = 0;
 const HEALTH_STATE_PATH = path.join(__dirname, '../data/health-state.json');
 
+// ── Alert dedup / TTL constants ──────────────────────────────────────────────
+// Queued alerts older than this are stale and dropped before flush.
+const ALERT_QUEUE_TTL_MS = 60 * 60 * 1000; // 1 hour
+// A sent-alert identity is remembered for this long to suppress duplicates.
+const ALERT_SENT_MEMORY_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+/**
+ * Derive a stable identity key from an alert message for dedup purposes.
+ * Strips volatile parts (timestamps, exact numbers) so semantically identical
+ * alerts (e.g. repeated billing errors) collapse to the same key.
+ */
+function alertIdentity(msg) {
+  // Normalize: lowercase, strip numbers/dates/whitespace runs
+  const norm = String(msg)
+    .replace(/\d{4}-\d{2}-\d{2}[T ]?\d{2}:\d{2}[:\d.]*/g, '<TS>')  // ISO timestamps
+    .replace(/\d{10,13}/g, '<EPOCH>')                                // epoch ms
+    .replace(/\d+\.?\d*[GMK]?B/gi, '<SIZE>')                        // sizes like 1030MB
+    .replace(/\d+/g, '<N>')                                          // remaining numbers
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Simple hash (djb2)
+  let h = 5381;
+  for (let i = 0; i < norm.length; i++) h = ((h << 5) + h + norm.charCodeAt(i)) | 0;
+  return 'alert_' + (h >>> 0).toString(36);
+}
+
+/**
+ * Check whether an alert with the given identity was already sent recently.
+ * Also garbage-collects expired entries from sentAlerts.
+ */
+function wasAlertSentRecently(identity) {
+  const state = loadHealthState();
+  if (!state.sentAlerts) return false;
+  const entry = state.sentAlerts[identity];
+  if (!entry) return false;
+  return (Date.now() - entry.sentAt) < ALERT_SENT_MEMORY_MS;
+}
+
+/**
+ * Mark an alert identity as sent (persists to health-state.json).
+ */
+function markAlertSent(identity) {
+  const state = loadHealthState();
+  state.sentAlerts = state.sentAlerts || {};
+  state.sentAlerts[identity] = { sentAt: Date.now() };
+  // GC expired entries
+  const now = Date.now();
+  for (const [k, v] of Object.entries(state.sentAlerts)) {
+    if (now - v.sentAt > ALERT_SENT_MEMORY_MS) delete state.sentAlerts[k];
+  }
+  saveHealthState(state);
+}
+
 // ── I1: Disk monitoring ──────────────────────────────────────────────────────
 // A full disk silently corrupts the Baileys session and the SQLite DB. Monitor
 // the partition the app lives on: warn at 80% used, alert at 85%, and DM Aviv
@@ -128,6 +181,10 @@ function saveHealthState(state) {
 /**
  * Inject the WhatsApp client and master group ID after they're available.
  * Also flushes any pending re-auth messages that couldn't be sent earlier.
+ *
+ * FIX (2026-10-27): Before flushing pendingAlerts, drop stale entries (>1h TTL)
+ * and skip alerts whose identity was already sent recently (dedup via sentAlerts).
+ * After sending, mark each alert identity as sent so reconnects don't re-deliver.
  */
 async function initHealth(client, masterGroupId) {
   _client = client;
@@ -135,15 +192,52 @@ async function initHealth(client, masterGroupId) {
 
   // Flush any pending health alerts queued while WhatsApp was unavailable
   const state = loadHealthState();
+  state.sentAlerts = state.sentAlerts || {};
   if (state.pendingAlerts && state.pendingAlerts.length > 0) {
-    for (const alert of state.pendingAlerts) {
+    const now = Date.now();
+    const originalCount = state.pendingAlerts.length;
+
+    // 1. Drop stale alerts (queuedAt older than TTL)
+    const fresh = state.pendingAlerts.filter(a => {
+      const age = now - (a.queuedAt || 0);
+      if (age > ALERT_QUEUE_TTL_MS) {
+        logger.info({ component: 'Health', ageMin: Math.round(age / 60000) }, 'Dropping stale queued alert: %s', (a.msg || '').substring(0, 80));
+        return false;
+      }
+      return true;
+    });
+
+    // 2. Deduplicate: skip alerts whose identity was already sent recently
+    const toSend = [];
+    for (const alert of fresh) {
+      const id = alertIdentity(alert.msg || '');
+      const existing = state.sentAlerts[id];
+      if (existing && (now - existing.sentAt) < ALERT_SENT_MEMORY_MS) {
+        logger.info({ component: 'Health', identity: id }, 'Skipping already-sent alert: %s', (alert.msg || '').substring(0, 80));
+        continue;
+      }
+      toSend.push({ alert, identity: id });
+    }
+
+    if (originalCount > toSend.length) {
+      logger.info({ component: 'Health', original: originalCount, sending: toSend.length }, 'Filtered queued alerts (stale/dedup)');
+    }
+
+    for (const { alert, identity } of toSend) {
       try {
         await _client.sendMessage(ALERT_TARGET, alert.msg);
-        logger.info({ component: 'Health' }, 'Flushed queued alert: %s', alert.msg.substring(0, 80));
+        state.sentAlerts[identity] = { sentAt: now };
+        logger.info({ component: 'Health', identity }, 'Flushed queued alert: %s', (alert.msg || '').substring(0, 80));
       } catch (e) {
         logger.error({ component: 'Health', err: e.message }, 'Failed to flush alert');
       }
     }
+
+    // GC expired sentAlerts entries
+    for (const [k, v] of Object.entries(state.sentAlerts)) {
+      if (now - v.sentAt > ALERT_SENT_MEMORY_MS) delete state.sentAlerts[k];
+    }
+
     state.pendingAlerts = [];
     saveHealthState(state);
   }
@@ -440,6 +534,9 @@ async function sendCalendarAuthRequest(key, email, nameHe, verbHe) {
 /**
  * Send a health alert to Aviv's private DM (with 24h cooldown to avoid spam).
  * If WhatsApp is unavailable, queues the alert and flushes on next initHealth() call.
+ *
+ * FIX (2026-10-27): identity-based dedup — if this alert was already sent recently,
+ * suppress both the direct send and the disk queue to prevent stale repeats.
  */
 async function sendAlert(message) {
   const now = Date.now();
@@ -447,14 +544,23 @@ async function sendAlert(message) {
     logger.warn({ component: 'Health' }, 'Alert suppressed (cooldown): %s', message);
     return;
   }
-  _lastAlertTime = now;
-  logger.error({ component: 'Health' }, 'ALERT: %s', message);
 
   const alertMsg = `🚨 *Health Alert*\n${message}`;
+  const identity = alertIdentity(alertMsg);
+
+  // Dedup: skip if this alert identity was sent recently
+  if (wasAlertSentRecently(identity)) {
+    logger.info({ component: 'Health', identity }, 'Alert suppressed (already sent recently): %s', message.substring(0, 80));
+    return;
+  }
+
+  _lastAlertTime = now;
+  logger.error({ component: 'Health' }, 'ALERT: %s', message);
 
   if (_client) {
     try {
       await _client.sendMessage(ALERT_TARGET, alertMsg);
+      markAlertSent(identity);
       return;
     } catch (e) {
       logger.error({ component: 'Health', err: e.message }, 'Failed to send alert (WhatsApp down) — queuing');
@@ -464,9 +570,9 @@ async function sendAlert(message) {
   // WhatsApp unavailable — queue the alert to disk and flush on reconnect
   const state = loadHealthState();
   state.pendingAlerts = state.pendingAlerts || [];
-  state.pendingAlerts.push({ msg: alertMsg, queuedAt: now });
+  state.pendingAlerts.push({ msg: alertMsg, queuedAt: now, identity });
   saveHealthState(state);
-  logger.warn({ component: 'Health' }, 'Alert queued to disk for later delivery');
+  logger.warn({ component: 'Health', identity }, 'Alert queued to disk for later delivery');
 }
 
 /**
@@ -504,16 +610,31 @@ function startHealthMonitor(intervalMs = 5 * 60 * 1000) {
 /**
  * Send an alert bypassing the cooldown — for critical events like disconnect.
  * Uses the same queue-to-disk fallback if client is unavailable.
+ *
+ * FIX (2026-10-27): identity-based dedup — if this alert was already sent recently,
+ * suppress to prevent stale repeats across reconnects/restarts.
  */
 async function sendAlertDirect(message) {
-  logger.error({ component: 'Health' }, 'DIRECT ALERT: %s', message);
   const alertMsg = `🚨 *Alert*\n${message}`;
+  const identity = alertIdentity(alertMsg);
+
+  // Dedup: skip if this alert identity was sent recently
+  if (wasAlertSentRecently(identity)) {
+    logger.info({ component: 'Health', identity }, 'Direct alert suppressed (already sent recently): %s', message.substring(0, 80));
+    return;
+  }
+
+  logger.error({ component: 'Health' }, 'DIRECT ALERT: %s', message);
   if (_client) {
-    try { await _client.sendMessage(ALERT_TARGET, alertMsg); return; } catch (_) {}
+    try {
+      await _client.sendMessage(ALERT_TARGET, alertMsg);
+      markAlertSent(identity);
+      return;
+    } catch (_) {}
   }
   const state = loadHealthState();
   state.pendingAlerts = state.pendingAlerts || [];
-  state.pendingAlerts.push({ msg: alertMsg, queuedAt: Date.now() });
+  state.pendingAlerts.push({ msg: alertMsg, queuedAt: Date.now(), identity });
   saveHealthState(state);
 }
 
@@ -578,4 +699,4 @@ function getLastOpenClawChannelResult() {
   return _lastChannelResult;
 }
 
-module.exports = { initHealth, runChecks, checkAndAlert, startHealthMonitor, sendAlertDirect, checkOpenClawChannel, getLastOpenClawChannelResult, getDiskStats, checkDiskSpace };
+module.exports = { initHealth, runChecks, checkAndAlert, startHealthMonitor, sendAlertDirect, checkOpenClawChannel, getLastOpenClawChannelResult, getDiskStats, checkDiskSpace, alertIdentity, wasAlertSentRecently, markAlertSent };
