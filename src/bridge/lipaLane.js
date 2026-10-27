@@ -48,6 +48,11 @@ function ensureLipaTables() {
       FOREIGN KEY (inbox_id) REFERENCES bridge_lipa_inbox(id)
     )
   `);
+  // Migration: track per-row send attempts so failed rows can be retried a
+  // bounded number of times. Additive + idempotent — ignore "duplicate column".
+  try {
+    getDB().exec(`ALTER TABLE bridge_lipa_outbox ADD COLUMN send_attempts INTEGER DEFAULT 0`);
+  } catch (_) { /* column already exists */ }
   getDB().exec(`
     CREATE INDEX IF NOT EXISTS idx_lipa_inbox_status ON bridge_lipa_inbox (status)
   `);
@@ -126,6 +131,25 @@ function markOutboxFailed(outboxId, error) {
     .run('failed:' + (error || '').substring(0, 100), outboxId);
 }
 
+/**
+ * Get recently-failed outbox rows that are still eligible for retry:
+ *   - status marked 'failed:<error>'
+ *   - created within the last 24h (don't resurrect ancient dead replies)
+ *   - fewer than 3 total send attempts (bounded retry)
+ */
+function getFailedOutboxRows(limit = 10) {
+  const { getDB } = require('../db');
+  ensureLipaTables();
+  const cutoff = Date.now() - 86400000; // 24h
+  return getDB().prepare(`
+    SELECT * FROM bridge_lipa_outbox
+    WHERE status LIKE 'failed:%'
+      AND created_at > ?
+      AND COALESCE(send_attempts, 0) < 3
+    ORDER BY created_at ASC LIMIT ?
+  `).all(cutoff, limit);
+}
+
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -193,14 +217,39 @@ async function sendLipaReply(outboxRow) {
  * Called by the inbound poller on each cycle.
  */
 async function drainLipaOutbox() {
+  const { getDB } = require('../db');
   ensureLipaTables();
+
+  // Count each send as an attempt so bounded retry (3 total) is enforced via
+  // the send_attempts column regardless of which path drove the send.
+  const bumpAttempt = (id) =>
+    getDB().prepare('UPDATE bridge_lipa_outbox SET send_attempts = COALESCE(send_attempts, 0) + 1 WHERE id = ?').run(id);
+
+  // 1) Fresh pending rows (first delivery attempt).
   const pending = getPendingOutbox(10);
   for (const row of pending) {
+    bumpAttempt(row.id);
     try {
       await sendLipaReply(row);
       markOutboxSent(row.id);
     } catch (err) {
       console.error(`[Bridge][Lipa] reply send failed for outbox id=${row.id}:`, err.message);
+      markOutboxFailed(row.id, err.message);
+    }
+  }
+
+  // 2) Recently-failed rows still within the retry budget. Reset to pending +
+  //    bump the attempt counter before re-sending; on another failure re-mark
+  //    failed so the next drain can pick it up until the 3-attempt cap is hit.
+  const failed = getFailedOutboxRows(10);
+  for (const row of failed) {
+    getDB().prepare("UPDATE bridge_lipa_outbox SET status = 'pending' WHERE id = ?").run(row.id);
+    bumpAttempt(row.id);
+    try {
+      await sendLipaReply(row);
+      markOutboxSent(row.id);
+    } catch (err) {
+      console.error(`[Bridge][Lipa] reply retry failed for outbox id=${row.id}:`, err.message);
       markOutboxFailed(row.id, err.message);
     }
   }
@@ -214,7 +263,9 @@ module.exports = {
   getPendingOutbox,
   markOutboxSent,
   markOutboxFailed,
+  getFailedOutboxRows,
   validateLipaAuth,
   drainLipaOutbox,
   sendLipaReply,
+  getSmtpTransport,
 };

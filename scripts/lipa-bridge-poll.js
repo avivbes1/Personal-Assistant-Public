@@ -15,6 +15,7 @@
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+const fs = require('fs');
 const { initDB, getDB } = require('../src/db');
 const rel = require('../src/bridge/lipaReliability');
 const accounting = require('../src/bridge/lipaAccounting');
@@ -37,17 +38,38 @@ const db = getDB();
 // LIPA_BRIDGE_BOUND=1 is set by the preflight. In this mode we NEVER fall back
 // to legacy claiming — if the required env vars are missing or the preclaim
 // doesn't match, we refuse immediately.
+//
+// ENV VAR INHERITANCE FALLBACK (Option B safety net):
+// The preflight spawns `openclaw agent` with LIPA_BRIDGE_BOUND/CLAIM_ID/CLAIM_GEN
+// as env vars, but the OpenClaw exec tool does NOT propagate those env vars to
+// grandchild processes. If the agent calls poll.js directly despite the DIRECT
+// EXECUTE message, LIPA_BRIDGE_CLAIM_ID and LIPA_BRIDGE_CLAIM_GEN will be missing.
+// In that case, poll.js reads the manifest file written by the preflight at
+// /tmp/lipa-bridge-claim-<session_id>.json, using OPENCLAW_SESSION_ID which
+// propagates through the OpenClaw CLI's own environment handling.
 if (process.env.LIPA_BRIDGE_BOUND === '1') {
-  // Require all bound-mode env vars
+  // Require OPENCLAW_SESSION_ID (the one env var that propagates reliably)
   if (!sessionId) {
     console.error('[Lipa gate] BOUND: OPENCLAW_SESSION_ID is required in bound mode — exit 1');
     process.exit(1);
   }
-  const claimIdStr = process.env.LIPA_BRIDGE_CLAIM_ID;
-  const claimGenStr = process.env.LIPA_BRIDGE_CLAIM_GEN;
+  let claimIdStr = process.env.LIPA_BRIDGE_CLAIM_ID;
+  let claimGenStr = process.env.LIPA_BRIDGE_CLAIM_GEN;
   if (!claimIdStr || !claimGenStr) {
-    console.error('[Lipa gate] BOUND: LIPA_BRIDGE_CLAIM_ID and LIPA_BRIDGE_CLAIM_GEN are required — exit 1');
-    process.exit(1);
+    // Env vars not inherited (known exec tool limitation). Try manifest file fallback.
+    const manifestPath = `/tmp/lipa-bridge-claim-${sessionId}.json`;
+    let manifest = null;
+    try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (_) {}
+    if (manifest && manifest.claim_details && manifest.claim_details.length > 0 &&
+        manifest.session_id === sessionId) {
+      const first = manifest.claim_details[0];
+      claimIdStr = String(first.inbox_id);
+      claimGenStr = String(first.claim_generation);
+      console.error(`[Lipa gate] BOUND: env vars not inherited — loaded claim from manifest ${manifestPath} (inbox_id=${claimIdStr}, gen=${claimGenStr})`);
+    } else {
+      console.error(`[Lipa gate] BOUND: LIPA_BRIDGE_CLAIM_ID and LIPA_BRIDGE_CLAIM_GEN missing, and manifest ${manifestPath} not found/invalid — exit 1`);
+      process.exit(1);
+    }
   }
   const expectedId = parseInt(claimIdStr, 10);
   const expectedGen = parseInt(claimGenStr, 10);

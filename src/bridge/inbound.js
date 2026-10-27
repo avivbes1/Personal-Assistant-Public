@@ -559,7 +559,7 @@ async function processMessage(msg, uid) {
     }
 
     // Queue for OpenClaw processing
-    lipaLane.enqueueForLipa({
+    const enqueueResult = lipaLane.enqueueForLipa({
       requestId,
       command: cmd,
       args,
@@ -569,6 +569,39 @@ async function processMessage(msg, uid) {
     });
     console.log(`[Bridge][Lipa] queued command "${cmd}" request_id=${requestId || 'none'}`);
     logProcessed({ uid, messageId, from: fromAddr, subject, status: 'lipa_queued', command: cmd, requestId, response: 'queued for OpenClaw' });
+
+    // Immediately acknowledge an accepted (newly inserted) request with an email
+    // reply. Best-effort: never block or fail the enqueue on an ack send error —
+    // the request is already durably queued. Mirrors the ping-reply send pattern.
+    if (enqueueResult && enqueueResult.inserted === true) {
+      try {
+        const ackObj = {
+          ok: true,
+          acknowledged: true,
+          request_id: requestId || 'unknown',
+          inbox_id: enqueueResult.id,
+          status: 'queued',
+          message: 'Request accepted and queued for processing',
+        };
+        const ackSubject = `${lipaConfig.replySubjectPrefix} ACK: ${requestId || 'unknown'}`;
+        const ackBody = [
+          `AUTH:${lipaConfig.token}`,
+          '',
+          JSON.stringify(ackObj, null, 2),
+        ].join('\n');
+        const transport = getSmtpTransport();
+        await transport.sendMail({
+          from: lipaConfig.account,
+          to: lipaConfig.replyTo,
+          subject: ackSubject,
+          text: ackBody,
+          ...(messageId ? { inReplyTo: messageId } : {}),
+        });
+        console.log(`[Bridge][Lipa] ack reply sent for request_id=${requestId || 'unknown'} inbox_id=${enqueueResult.id}`);
+      } catch (ackErr) {
+        console.error(`[Bridge][Lipa] ack reply failed (non-fatal):`, ackErr.message);
+      }
+    }
     return;
   }
 

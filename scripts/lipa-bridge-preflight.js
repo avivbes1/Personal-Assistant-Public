@@ -67,10 +67,12 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const { spawn } = require('child_process');
+const fs = require('fs');
 const { initDB, getDB } = require('../src/db');
 const rel = require('../src/bridge/lipaReliability');
 const accounting = require('../src/bridge/lipaAccounting');
-const { ensureLipaTables } = require('../src/bridge/lipaLane');
+const { ensureLipaTables, getSmtpTransport } = require('../src/bridge/lipaLane');
+const lipaConfig = require('../src/bridge/lipaConfig');
 
 // ── tunables ─────────────────────────────────────────────────────────────────
 function intOr(v, d) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; }
@@ -86,6 +88,67 @@ const CRON_MESSAGE = [
   "`node scripts/lipa-bridge-respond.js <inbox_id> <request_id> '<response_json>' <subject> <in_reply_to> '<options_json>'`,",
   'echoing claim_generation + session_id back in options_json (fencing). If nothing is due, stop.',
 ].join(' ');
+
+/**
+ * Build a DIRECT EXECUTE message for bound-mode launches.
+ *
+ * ROOT CAUSE FIX (rows 915/917/918/921): the preflight sets LIPA_BRIDGE_BOUND,
+ * LIPA_BRIDGE_CLAIM_ID, and LIPA_BRIDGE_CLAIM_GEN as env vars on the spawned
+ * `openclaw agent` process, but the OpenClaw exec tool does NOT propagate those
+ * env vars to grandchild processes. poll.js therefore sees no LIPA_BRIDGE_BOUND
+ * and falls back to LEGACY mode, finds the row already `claimed`, exits silently,
+ * and the preflight sets an execution hold (verified failure path).
+ *
+ * Fix (Option D + Option B hybrid):
+ * - Option D: skip poll.js entirely — embed the full pre-claimed command data
+ *   directly in the agent message so the agent can run respond.js without calling
+ *   poll.js at all.
+ * - Option B (safety net): write a manifest file at a deterministic path before
+ *   spawn. If poll.js IS called (e.g. agent ignores instructions), it can read
+ *   the manifest via OPENCLAW_SESSION_ID (which may still propagate via the
+ *   OpenClaw CLI's own env handling) instead of relying on the three volatile
+ *   env vars.
+ *
+ * Key requirement: if a row is claimed for a session, that session MUST process
+ * it OR visibly fail. Silent exits that leave rows stuck are no longer acceptable.
+ */
+function buildBoundDirectMessage(claimedRows, sid) {
+  const lines = [
+    'LIPA_BRIDGE DIRECT EXECUTE: Requests have been pre-claimed for this session.',
+    'DO NOT run poll.js — the claim data is provided below. Run respond.js directly for each request.',
+    '',
+    `Session ID: ${sid}`,
+    '',
+  ];
+
+  for (const r of claimedRows) {
+    const argsStr = JSON.stringify(r.args || {});
+    const subjectEsc = (r.subject || '').replace(/'/g, "'\''");
+    const optionsJson = JSON.stringify({
+      claim_generation: r.claim_generation,
+      session_id: sid,
+    });
+    lines.push(`--- Request ${r.id} ---`);
+    lines.push(`  inbox_id:         ${r.id}`);
+    lines.push(`  request_id:       ${r.request_id}`);
+    lines.push(`  command:          ${r.command}`);
+    lines.push(`  args:             ${argsStr}`);
+    lines.push(`  from:             ${r.from_addr || ''}`);
+    lines.push(`  subject:          ${r.subject || ''}`);
+    lines.push(`  gmail_message_id: ${r.gmail_message_id || ''}`);
+    lines.push(`  claim_generation: ${r.claim_generation}`);
+    lines.push(`  created_at:       ${r.created_at}`);
+    lines.push('');
+    lines.push('  After executing, run exactly:');
+    lines.push(`  node scripts/lipa-bridge-respond.js ${r.id} '${r.request_id}' '<response_json>' '${subjectEsc}' '' '${optionsJson}'`);
+    lines.push('');
+  }
+
+  lines.push('IMPORTANT: respond.js options_json MUST include claim_generation and session_id as shown above.');
+  lines.push('If respond.js exits non-zero, do not retry — report the error.');
+
+  return lines.join('\n');
+}
 
 function truncate(s, n = 300) { s = s == null ? '' : String(s); return s.slice(0, n); }
 
@@ -157,6 +220,84 @@ function getExecutionState() {
 
 function setExecutionState(obj) {
   writeState(EXEC_STATE_KEY, obj);
+}
+
+// ── monitoring / alerting (non-fatal, best-effort) ───────────────────────────
+
+const HOLD_ALERT_THRESHOLD_MS = 30 * 60 * 1000;    // alert after hold active >30m
+const HOLD_ALERT_KEY = 'hold_alert_last_sent';
+const AVIV_WHATSAPP_JID = '972504606660@c.us';
+const ALERT_EMAIL = 'avivbesinsky@mail.instinct.com';
+
+/**
+ * Alert that an execution hold has been active for a long time. Sends a WhatsApp
+ * DM to Aviv and an email. Best-effort: each channel is independently wrapped so
+ * one failing does not block the other, and neither failing blocks the preflight.
+ */
+async function sendHoldAlert(hold, now) {
+  const sinceStr = hold.since ? new Date(hold.since).toISOString() : 'unknown';
+  const reason = hold.reason || 'unknown';
+
+  // WhatsApp DM via the local bridge HTTP endpoint (arg array, no shell interp).
+  try {
+    const payload = JSON.stringify({
+      jid: AVIV_WHATSAPP_JID,
+      message: `⚠️ Lipa Bridge execution hold has been active for >30 minutes since ${sinceStr}. Reason: ${reason}. Manual intervention required: node scripts/lipa-bridge-preflight.js --clear-hold ...`,
+    });
+    require('child_process').execFileSync('curl', [
+      '-sf', '-X', 'POST', 'http://localhost:3001/send-message',
+      '-H', 'Content-Type: application/json',
+      '-d', payload,
+    ], { timeout: 10000, stdio: 'ignore' });
+  } catch (e) {
+    console.error('[Lipa preflight] hold WhatsApp alert failed (non-fatal):', e.message);
+  }
+
+  // Email alert.
+  try {
+    const transport = getSmtpTransport();
+    await transport.sendMail({
+      from: lipaConfig.account,
+      to: ALERT_EMAIL,
+      subject: '[Lipa Bridge] Execution hold alert',
+      text: [
+        'Lipa Bridge execution hold has been active for more than 30 minutes.',
+        '',
+        `since:       ${sinceStr}`,
+        `reason:      ${reason}`,
+        `session_id:  ${hold.session_id != null ? hold.session_id : 'null'}`,
+        `claimed_ids: ${JSON.stringify(hold.claimed_ids || [])}`,
+        '',
+        'Manual intervention required. Verify the remote agent state, then clear via:',
+        '  node scripts/lipa-bridge-preflight.js --clear-hold ...',
+      ].join('\n'),
+    });
+  } catch (e) {
+    console.error('[Lipa preflight] hold email alert failed (non-fatal):', e.message);
+  }
+}
+
+/**
+ * Notify that an execution hold was just SET due to an error (timeout / bad exit).
+ * Best-effort email; never throws into the caller.
+ */
+async function sendErrorAlert({ sessionId, claimedIds, reason, now }) {
+  try {
+    const transport = getSmtpTransport();
+    await transport.sendMail({
+      from: lipaConfig.account,
+      to: ALERT_EMAIL,
+      subject: `[Lipa Bridge] Execution error - ${reason}`,
+      text: JSON.stringify({
+        session_id: sessionId != null ? sessionId : null,
+        claimed_ids: claimedIds || [],
+        reason: reason || 'unknown',
+        timestamp: new Date(now).toISOString(),
+      }, null, 2),
+    });
+  } catch (e) {
+    console.error('[Lipa preflight] error alert email failed (non-fatal):', e.message);
+  }
 }
 
 // ── claimed-row containment on an ambiguous timeout ──────────────────────────
@@ -312,7 +453,25 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     // new launch until a human verifies remote state and clears it via
     // `--clear-hold`.
     const hold = getExecutionHold();
-    if (hold) return { launched: false, reason: 'execution_hold', hold };
+    if (hold) {
+      // Hold-duration alerting: if the hold has been active for >30 minutes and we
+      // haven't alerted within the last 30 minutes, notify Aviv (WhatsApp + email)
+      // and record the alert time. Fully best-effort — never blocks the hold return.
+      try {
+        if (hold.since && (now - hold.since) > HOLD_ALERT_THRESHOLD_MS) {
+          const lastSent = readStateEx(HOLD_ALERT_KEY);
+          const lastSentAt = (lastSent.exists && !lastSent.corrupt && typeof lastSent.value === 'number')
+            ? lastSent.value : 0;
+          if ((now - lastSentAt) > HOLD_ALERT_THRESHOLD_MS) {
+            await sendHoldAlert(hold, now);
+            writeState(HOLD_ALERT_KEY, now);
+          }
+        }
+      } catch (alertErr) {
+        console.error('[Lipa preflight] hold alert check failed (non-fatal):', alertErr.message);
+      }
+      return { launched: false, reason: 'execution_hold', hold };
+    }
 
     // (e2) Execution state — also blocks when state is 'active' or 'unknown',
     // even after the lock TTL would have expired, so a new wrapper cycle cannot
@@ -418,14 +577,29 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     }
   }
 
-  // ── build the agent message with bound claim details ──────────────────
+  // ── write claim manifest file BEFORE spawn (Option B safety net) ─────────
+  // If the agent ignores instructions and calls poll.js anyway, poll.js can read
+  // this file via OPENCLAW_SESSION_ID (which propagates through the OpenClaw CLI)
+  // instead of relying on the three volatile env vars that don't propagate.
+  const manifestPath = `/tmp/lipa-bridge-claim-${sid}.json`;
+  try {
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      session_id: sid,
+      written_at: Date.now(),
+      claim_details: claimDetails,
+    }, null, 2));
+  } catch (manifestErr) {
+    // Non-fatal: manifest file is a safety net, not the primary path
+    console.error(`[Lipa preflight] manifest write failed (non-fatal): ${manifestErr.message}`);
+  }
+
+  // ── build the agent message — Option D: direct execute, no poll.js ─────────
+  // ROOT CAUSE FIX: env vars (LIPA_BRIDGE_BOUND/CLAIM_ID/CLAIM_GEN) are not
+  // inherited by grandchild processes of the OpenClaw agent exec tool. The fix:
+  // embed all pre-claimed command data directly in the agent message so the agent
+  // can run respond.js without needing to call poll.js at all.
   const claimJson = JSON.stringify(claimDetails);
-  const boundMessage = [
-    CRON_MESSAGE,
-    `\nBound claims: ${claimJson}`,
-    `Session: ${sid}`,
-    'poll.js and respond.js MUST verify this session_id and claim_generation match.',
-  ].join('\n');
+  const boundMessage = buildBoundDirectMessage(claimedRows, sid);
 
   // ── launch ─────────────────────────────────────────────────────────────────
   const args = ['agent', '-m', boundMessage, '--agent', 'personal', '--session-id', sid, '--json'];
@@ -463,6 +637,7 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     setExecutionState({ state: 'unknown', session_id: sid, started_at: startedAt, finished_at: doneAt, reason: 'timeout', claimed_ids: claimedIds });
     setExecutionHold('CLI timeout — remote agent status unknown', { session_id: sid, claimed_ids: claimedIds });
     persistOutcome('timeout', doneAt, { usage: usage || null, usage_unknown: !usage });
+    await sendErrorAlert({ sessionId: sid, claimedIds, reason: 'CLI timeout — remote agent status unknown', now: doneAt });
     console.error(`[Lipa preflight] CLI TIMEOUT — ${claimedIds.length} claimed row(s) → needs_review; lock left to expire via TTL`);
     return { launched: true, reason: 'timeout', holdSet: true, claimedIds };
   }
@@ -503,11 +678,13 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
   setExecutionHold(`agent turn exited non-zero (code=${code}) — completion uncertain`, { session_id: sid, claimed_ids: exitClaimedIds });
   console.error(`[Lipa preflight] agent turn exit code=${code} — hold set, lock left to expire via TTL`);
   persistOutcome('nonzero_exit', doneAt, { exit_code: code, usage: usage || null, usage_unknown: !usage });
+  await sendErrorAlert({ sessionId: sid, claimedIds: exitClaimedIds, reason: `agent turn exited non-zero (code=${code})`, now: doneAt });
   return { launched: true, reason: 'nonzero_exit', exitCode: code, holdSet: true };
 }
 
 module.exports = {
   runPreflight,
+  buildBoundDirectMessage,
   // Re-export from lipaReliability for backward compat (tests import from here)
   setExecutionHold,
   clearExecutionHold,
