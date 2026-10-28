@@ -60,6 +60,8 @@ for (const file of testFiles) {
     env: {
       ...process.env,
       FAMILYBOT_DB_PATH: dbPath,
+      // Mark as a test run so outbound guards (SMTP/HTTP/calendar) fail closed.
+      FAMILYBOT_TEST: '1',
       // Deny-by-default: shim-bin/openclaw blocks accidental paid launches
       PATH: path.join(__dirname, 'shim-bin') + ':' + (process.env.PATH || ''),
     },

@@ -10,6 +10,19 @@
  * test from accidentally touching the production DB via a shared module cache.
  */
 
+// ── Test isolation: outbound guards + DB isolation ──
+// Must run before any test file (or src module) is required, so that the
+// guards patch nodemailer/http/googleapis before those modules are captured.
+process.env.FAMILYBOT_TEST = '1';
+if (!process.env.FAMILYBOT_DB_PATH) {
+  const os = require('os');
+  const fsBoot = require('fs');
+  const pathBoot = require('path');
+  const tmpDir = fsBoot.mkdtempSync(pathBoot.join(os.tmpdir(), 'besinsky-test-'));
+  process.env.FAMILYBOT_DB_PATH = pathBoot.join(tmpDir, 'test.db');
+}
+require('./lib/outbound-guard');
+
 const path = require('path');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
