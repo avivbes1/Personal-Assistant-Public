@@ -91,4 +91,53 @@ try {
   };
 } catch (_) { /* googleapis not installed */ }
 
+// 4. SES guard — stub @aws-sdk/client-ses so SESClient.prototype.send records
+//    the attempt and throws instead of dispatching an email via Amazon SES.
+try {
+  const ses = require('@aws-sdk/client-ses');
+  if (ses && ses.SESClient && ses.SESClient.prototype) {
+    ses.SESClient.prototype.send = async function () {
+      const entry = { type: 'ses', ts: Date.now() };
+      blocked.push(entry);
+      throw new Error('[TEST GUARD] SES send blocked during test execution');
+    };
+  }
+} catch (_) { /* @aws-sdk/client-ses not installed */ }
+
+// 5. Subprocess guard — patch child_process spawning functions so a test can
+//    never shell out to a dangerous target (curl to the local voice-client /
+//    blocked paths, or the openclaw CLI). Legitimate node subprocess spawning
+//    passes straight through to the original function.
+const child_process = require('child_process');
+const basename = (c) => String(c || '').split(/[\\/]/).pop();
+// shellForm=true means `command` is a whole shell string (exec); the first token
+// is the program and the rest are inline args.
+const isDangerous = (command, args, shellForm) => {
+  const cmd = String(command || '');
+  const prog = shellForm ? basename((cmd.trim().split(/\s+/)[0]) || '') : basename(cmd);
+  const argv = Array.isArray(args) ? args.map(String) : [];
+  const joined = shellForm ? cmd : (cmd + ' ' + argv.join(' '));
+  if (prog === 'curl') {
+    if (joined.includes('localhost:3001')) return true;
+    if (BLOCKED_PATHS.some(p => joined.includes(p))) return true;
+  }
+  if (prog === 'openclaw') return true;
+  return false;
+};
+for (const fn of ['execFileSync', 'execFile', 'spawn', 'spawnSync', 'exec']) {
+  const orig = child_process[fn];
+  if (typeof orig !== 'function') continue;
+  const origBound = orig.bind(child_process);
+  const shellForm = (fn === 'exec');
+  child_process[fn] = function (command, args) {
+    // exec takes a single shell command string; execFile*/spawn* take (command, args).
+    if (isDangerous(command, args, shellForm)) {
+      const entry = { type: 'subprocess', command: String(command), ts: Date.now() };
+      blocked.push(entry);
+      throw new Error('[TEST GUARD] dangerous subprocess blocked during test execution');
+    }
+    return origBound.apply(child_process, arguments);
+  };
+}
+
 module.exports = { blocked, active: true };

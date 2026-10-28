@@ -44,10 +44,16 @@ const testFiles = fs.readdirSync(BRIDGE_DIR)
 
 let passed = 0, failed = 0;
 
+// Resolved path to the outbound guard so the child preloads it before any app module.
+const GUARD_PATH = path.resolve(__dirname, '../lib/outbound-guard.js');
+
 for (const file of testFiles) {
   const name = path.basename(file);
   const result = spawnSync(process.execPath, ['-e', `
+    process.env.FAMILYBOT_TEST = '1';
     process.env.FAMILYBOT_DB_PATH = ${JSON.stringify(dbPath)};
+    const guard = require(${JSON.stringify(GUARD_PATH)});
+    if (!guard.active) { console.error('FATAL: outbound guard not active in bridge child'); process.exit(1); }
     const t = require(${JSON.stringify(file)});
     t.run().then(r => {
       console.log(r.pass ? 'PASS' : 'FAIL', r.message);
