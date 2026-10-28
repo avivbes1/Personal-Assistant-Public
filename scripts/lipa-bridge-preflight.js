@@ -232,16 +232,38 @@ function checkSessionTerminated(sessionId) {
 async function autoReconcileHold(hold, now, { checkTerminated } = {}) {
   if (!hold) return false;
 
-  // ── Fetch row states for all claimed IDs ──
+  // ── Fetch row states for all claimed IDs (expanded: session_id + claim_generation) ──
   const claimedIds = hold.claimed_ids || [];
   const db = getDB();
   const rows = [];
   for (const id of claimedIds) {
-    const row = db.prepare('SELECT id, status FROM bridge_lipa_inbox WHERE id = ?').get(id);
+    const row = db.prepare('SELECT id, status, session_id, claim_generation FROM bridge_lipa_inbox WHERE id = ?').get(id);
     if (row) rows.push(row);
   }
 
-  // ── Fetch session record (informational — not used for decision) ──
+  // ── Fetch claim_details from execution_state (original issued generations) ──
+  let claimDetails = [];
+  try {
+    const execState = getExecutionState();
+    if (execState && Array.isArray(execState.claim_details)) {
+      claimDetails = execState.claim_details;
+    }
+  } catch (_) { /* fail closed: empty claimDetails → decideRelease will hold */ }
+
+  // ── Fetch completion events from attempts log for these rows ──
+  const completionEvents = [];
+  if (hold.session_id && claimedIds.length > 0) {
+    try {
+      for (const id of claimedIds) {
+        const evts = db.prepare(
+          "SELECT inbox_id, session_id, claim_generation, event, outcome FROM bridge_lipa_attempts WHERE inbox_id = ? AND session_id = ? AND event = 'deliver' AND outcome = 'ok'"
+        ).all(id, hold.session_id);
+        for (const e of evts) completionEvents.push(e);
+      }
+    } catch (_) { /* fail closed: empty completionEvents → decideRelease will hold */ }
+  }
+
+  // ── Fetch session record ──
   let sessionLookupFailed = false;
   let session = null;
   if (hold.session_id) {
@@ -267,11 +289,15 @@ async function autoReconcileHold(hold, now, { checkTerminated } = {}) {
   }
 
   // ── Delegate to pure policy function ──
+  const quietThresholdMs = CLI_TIMEOUT_MS + AUTO_RECONCILE_GRACE_MS;
   const decision = decideRelease({
     hold,
     session,
     rows,
     sessionLookupFailed,
+    claimDetails,
+    completionEvents,
+    quietThresholdMs,
   });
 
   if (!decision.release) {
