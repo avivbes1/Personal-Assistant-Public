@@ -73,6 +73,7 @@ const rel = require('../src/bridge/lipaReliability');
 const accounting = require('../src/bridge/lipaAccounting');
 const { ensureLipaTables, getSmtpTransport } = require('../src/bridge/lipaLane');
 const lipaConfig = require('../src/bridge/lipaConfig');
+const { decideRelease } = require('../src/bridge/holdReleasePolicy');
 
 // ── tunables ─────────────────────────────────────────────────────────────────
 function intOr(v, d) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; }
@@ -164,18 +165,17 @@ function truncate(s, n = 300) { s = s == null ? '' : String(s); return s.slice(0
 // ── auto-reconciliation: clear holds when session verifiably terminated ───────
 
 /**
- * Check if a remote OpenClaw session has verifiably terminated.
- * Uses the `openclaw sessions` CLI to inspect session state.
+ * Fetch session record from `openclaw sessions --json` for inspection.
+ * Returns { session: object|null, lookupFailed: boolean }.
  *
- * A session is considered terminated if:
- *   - It does not appear in the session list at all (cleaned up), OR
- *   - Its `abortedLastRun` flag is true (explicitly killed), OR
- *   - Its `ageMs` exceeds CLI_TIMEOUT_MS + AUTO_RECONCILE_GRACE_MS (stale)
- *
- * Returns { terminated: boolean, evidence: string }.
- * Fails CLOSED: if the CLI call fails, returns { terminated: false }.
+ * NOTE: Session JSON (as of 2026-10-28) has NO explicit terminal status or
+ * endedAt field. Available fields: sessionId, key, updatedAt, ageMs,
+ * abortedLastRun, totalTokens, totalTokensFresh, model, modelProvider,
+ * contextTokens, agentId, agentRuntime, kind.
+ * Therefore session state alone CANNOT serve as positive terminal evidence.
+ * Release decisions are delegated to holdReleasePolicy.decideRelease().
  */
-function checkSessionTerminated(sessionId) {
+function fetchSessionRecord(sessionId) {
   try {
     const result = require('child_process').execFileSync(
       'openclaw', ['sessions', '--json', '--agent', 'personal'],
@@ -183,24 +183,36 @@ function checkSessionTerminated(sessionId) {
     );
     const data = JSON.parse(result);
     const sessions = data.sessions || [];
-    const session = sessions.find(s => s.sessionId === sessionId);
-
-    if (!session) {
-      return { terminated: true, evidence: 'session_not_found_in_openclaw' };
-    }
-    if (session.abortedLastRun === true) {
-      return { terminated: true, evidence: `abortedLastRun=true, ageMs=${session.ageMs}` };
-    }
-    // Session exists but hasn't been updated in a long time — it's done
-    const staleThreshold = CLI_TIMEOUT_MS + AUTO_RECONCILE_GRACE_MS;
-    if (typeof session.ageMs === 'number' && session.ageMs > staleThreshold) {
-      return { terminated: true, evidence: `stale: ageMs=${session.ageMs} > threshold=${staleThreshold}` };
-    }
-    return { terminated: false, evidence: `session active: ageMs=${session.ageMs}, aborted=${session.abortedLastRun}` };
+    const session = sessions.find(s => s.sessionId === sessionId) || null;
+    return { session, lookupFailed: false };
   } catch (e) {
-    console.error('[Lipa preflight] session termination check failed (fail closed):', e.message);
-    return { terminated: false, evidence: `check_failed: ${e.message}` };
+    console.error('[Lipa preflight] session lookup failed (fail closed):', e.message);
+    return { session: null, lookupFailed: true };
   }
+}
+
+/**
+ * Legacy adapter: wraps fetchSessionRecord into the old { terminated, evidence }
+ * shape so that any external callers or tests using checkSessionTerminated still
+ * compile. However, the decision logic now lives in holdReleasePolicy.decideRelease.
+ *
+ * IMPORTANT: This function now NEVER returns terminated:true on its own.
+ * It always returns terminated:false — the actual release decision is made by
+ * decideRelease() inside autoReconcileHold based on row completion evidence.
+ */
+function checkSessionTerminated(sessionId) {
+  const { session, lookupFailed } = fetchSessionRecord(sessionId);
+  if (lookupFailed) {
+    return { terminated: false, evidence: 'session lookup failed — fail closed' };
+  }
+  // Informational only — session state cannot prove termination
+  if (!session) {
+    return { terminated: false, evidence: 'session_not_found (not sufficient for release)' };
+  }
+  return {
+    terminated: false,
+    evidence: `session exists: ageMs=${session.ageMs}, aborted=${session.abortedLastRun}, tokensFresh=${session.totalTokensFresh}`
+  };
 }
 
 /**
@@ -219,41 +231,55 @@ function checkSessionTerminated(sessionId) {
  */
 async function autoReconcileHold(hold, now, { checkTerminated } = {}) {
   if (!hold) return false;
-  // Corrupt holds require manual repair — never auto-clear
-  if (hold.corrupt) {
-    console.error('[Lipa preflight] auto-reconcile: corrupt hold — skipping');
-    return false;
-  }
-  if (!hold.session_id) {
-    console.error('[Lipa preflight] auto-reconcile: hold has no session_id — skipping');
-    return false;
-  }
 
-  // Step 1: verify the remote session has terminated
-  const checker = checkTerminated || checkSessionTerminated;
-  const termResult = checker(hold.session_id);
-  // Support both sync and async checkers
-  const { terminated, evidence } = (termResult && typeof termResult.then === 'function')
-    ? await termResult : termResult;
-
-  if (!terminated) {
-    console.log(`[Lipa preflight] auto-reconcile: session ${hold.session_id} still active (${evidence}) — hold preserved`);
-    return false;
-  }
-
-  // Step 2: verify all claimed rows are in terminal states
+  // ── Fetch row states for all claimed IDs ──
   const claimedIds = hold.claimed_ids || [];
   const db = getDB();
+  const rows = [];
   for (const id of claimedIds) {
     const row = db.prepare('SELECT id, status FROM bridge_lipa_inbox WHERE id = ?').get(id);
-    if (!row) continue; // row gone / cleaned up — acceptable
-    if (!['done', 'needs_review', 'dead'].includes(row.status)) {
-      console.error(`[Lipa preflight] auto-reconcile: row ${id} in non-terminal status '${row.status}' — hold preserved`);
-      return false;
+    if (row) rows.push(row);
+  }
+
+  // ── Fetch session record (informational — not used for decision) ──
+  let sessionLookupFailed = false;
+  let session = null;
+  if (hold.session_id) {
+    // Support injected checker for tests (legacy interface)
+    if (checkTerminated) {
+      // Legacy path: test injects a checker. We call it but ignore its
+      // terminated verdict — decideRelease makes the call.
+      const checker = checkTerminated;
+      const termResult = checker(hold.session_id);
+      const resolved = (termResult && typeof termResult.then === 'function')
+        ? await termResult : termResult;
+      // Treat legacy checker failure as lookup failure
+      if (resolved.evidence && resolved.evidence.includes('check_failed')) {
+        sessionLookupFailed = true;
+      }
+      // Build a minimal session-like object from legacy response for logging
+      session = resolved.terminated === undefined ? null : { _legacy: true, evidence: resolved.evidence };
+    } else {
+      const result = fetchSessionRecord(hold.session_id);
+      session = result.session;
+      sessionLookupFailed = result.lookupFailed;
     }
   }
 
-  // Step 3: all checks pass — clear hold atomically
+  // ── Delegate to pure policy function ──
+  const decision = decideRelease({
+    hold,
+    session,
+    rows,
+    sessionLookupFailed,
+  });
+
+  if (!decision.release) {
+    console.log(`[Lipa preflight] auto-reconcile: hold preserved — ${decision.reason}`);
+    return false;
+  }
+
+  // ── All checks pass — clear hold atomically ──
   const cleared = clearExecutionHold();
   if (cleared) {
     rel.logAttempt({
@@ -262,13 +288,13 @@ async function autoReconcileHold(hold, now, { checkTerminated } = {}) {
       error: JSON.stringify({
         session_id: hold.session_id,
         claimed_ids: claimedIds,
-        evidence,
+        policy_reason: decision.reason,
         reconciled_at: now,
       }),
       sessionId: hold.session_id,
       finishedAt: now,
     });
-    console.log(`[Lipa preflight] AUTO-RECONCILED hold for session ${hold.session_id}: ${evidence}`);
+    console.log(`[Lipa preflight] AUTO-RECONCILED hold for session ${hold.session_id}: ${decision.reason}`);
   }
   return !!cleared;
 }
