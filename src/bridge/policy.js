@@ -35,16 +35,17 @@ function isGroupAllowed(groupJid) {
 }
 
 /**
- * Redact sensitive tokens from free text. Phone numbers become [phone]
- * (unless they belong to a known family member), and labelled auth/OTP/PIN
- * codes become [code]. Non-string input is returned as an empty string.
+ * Redact sensitive tokens from free text.  Labelled auth/OTP/PIN codes
+ * become [code].  Phone numbers are **passed through** (Aviv 2026-10-21:
+ * contact numbers in school notices are actionable).  URLs are protected
+ * from false-positive code matches.  Non-string input → empty string.
  */
 function redactSensitive(text) {
   if (typeof text !== 'string' || text.length === 0) return text ? String(text) : '';
 
   // (1) Extract URLs and replace with placeholders so their digit strings
   //     (Zoom meeting IDs, passcodes, query params) are never touched by
-  //     the phone/OTP regexes.  Supports http(s) and common meeting domains.
+  //     the OTP regex.  Supports http(s) and common meeting domains.
   const urlPlaceholders = [];
   const URL_RE = /https?:\/\/[^\s<>"']+/gi;
   let out = text.replace(URL_RE, (url) => {
@@ -59,15 +60,9 @@ function redactSensitive(text) {
     (_m, label) => `${label}[code]`
   );
 
-  // (3) Phone numbers: an optional +, then digits interspersed with spaces /
-  //     dashes / parentheses. Only 9–15 total digits count as a phone;
-  //     family numbers pass through untouched.
-  out = out.replace(/\+?\d[\d\s\-().]{7,}\d/g, (m) => {
-    const digits = m.replace(/\D/g, '');
-    if (digits.length < 9 || digits.length > 15) return m;
-    if (isFamilyPhone(digits)) return m;
-    return '[phone]';
-  });
+  // (3) Phone numbers are NO LONGER redacted.  School/community notices
+  //     contain teacher and coordinator contact numbers that are actionable.
+  //     OTP/verification-code redaction (step 2) still protects secrets.
 
   // (4) Restore URLs from placeholders.
   for (let i = 0; i < urlPlaceholders.length; i++) {

@@ -51,9 +51,14 @@ module.exports = {
       const keptFam = policy.redactSensitive(`אפשר להתקשר ל${fam} בבוקר`);
       if (!keptFam.includes(fam)) errors.push('UC-2: family phone was redacted (should be kept)');
 
+      // Phone numbers are no longer redacted (Aviv 2026-10-21: contact numbers
+      // in school notices are actionable).
       const foreign = policy.redactSensitive('call the office at 0521234567 today');
-      if (foreign.includes('0521234567')) errors.push('UC-2: foreign phone not redacted');
-      if (!foreign.includes('[phone]')) errors.push('UC-2: [phone] marker missing');
+      if (!foreign.includes('0521234567')) errors.push('UC-2: foreign phone should be kept (no longer redacted)');
+
+      // Teacher-phone notice — phone number must pass through intact.
+      const teacherNotice = policy.redactSensitive('המורה רונית: לתיאום 052-987-6543 עד יום חמישי');
+      if (!teacherNotice.includes('052-987-6543')) errors.push('UC-2: teacher phone number was redacted (should be kept)');
 
       const code = policy.redactSensitive('your verification code is 483920');
       if (code.includes('483920')) errors.push('UC-2: auth code not redacted');
