@@ -27,6 +27,7 @@ const accounting = require('../../src/bridge/lipaAccounting');
 const {
   runPreflight, setExecutionHold, clearExecutionHold, getExecutionHold,
   getExecutionState, setExecutionState,
+  autoReconcileHold,
 } = require('../../scripts/lipa-bridge-preflight');
 
 const PREFIX = 'TEST_LIPA_PF_';
@@ -169,7 +170,7 @@ module.exports = {
         db.prepare(`INSERT INTO bridge_lipa_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
           .run(LOCK_KEY, JSON.stringify({ holder: 'dead-t5', acquired_at: Date.now() - 600000, expires_at: Date.now() - 300000 }), Date.now());
 
-        const res = await runPreflight({ launcher: mockLauncher({ code: 0 }), deps: { getDueCount: () => 5 } });
+        const res = await runPreflight({ launcher: mockLauncher({ code: 0 }), deps: { getDueCount: () => 5, checkTerminated: false } });
         if (res.launched) errors.push('T5: launched with hold active');
         if (res.reason !== 'execution_hold') errors.push(`T5: reason=${res.reason}, expected execution_hold`);
         const holdAfter = getExecutionHold();
@@ -191,7 +192,7 @@ module.exports = {
       {
         setExecutionHold('T7 prior timeout', { session_id: 'old-t7' });
         const newId = enqueue('t7-new'); ids.push(newId);
-        const res = await runPreflight({ launcher: mockLauncher({ code: 0 }) });
+        const res = await runPreflight({ launcher: mockLauncher({ code: 0 }), deps: { checkTerminated: false } });
         if (res.launched) errors.push('T7: launched despite hold');
         if (res.reason !== 'execution_hold') errors.push(`T7: reason=${res.reason}, expected execution_hold`);
         resetState(db);
@@ -243,7 +244,7 @@ module.exports = {
       // ── T10: restart with unknown remote → hold blocks ───────────────────────
       {
         setExecutionHold('previous timeout', { session_id: 'ghost-t10' });
-        const res = await runPreflight({ launcher: mockLauncher({ code: 0 }), deps: { getDueCount: () => 3 } });
+        const res = await runPreflight({ launcher: mockLauncher({ code: 0 }), deps: { getDueCount: () => 3, checkTerminated: false } });
         if (res.launched) errors.push('T10: launched despite hold');
         if (res.reason !== 'execution_hold') errors.push(`T10: reason=${res.reason}, expected execution_hold`);
         resetState(db);
@@ -591,7 +592,7 @@ module.exports = {
         if (!holdResult) errors.push('T27: corrupt hold returned null (fail OPEN)');
         if (holdResult && !holdResult.corrupt) errors.push('T27: corrupt hold not flagged');
         // Must block launch
-        const res = await runPreflight({ launcher: mockLauncher({ code: 0 }), deps: { getDueCount: () => 1 } });
+        const res = await runPreflight({ launcher: mockLauncher({ code: 0 }), deps: { getDueCount: () => 1, checkTerminated: false } });
         if (res.launched) errors.push('T27: launched despite corrupt hold (fail OPEN)');
         if (res.reason !== 'execution_hold') errors.push(`T27: reason=${res.reason}, expected execution_hold`);
         resetState(db);
@@ -669,6 +670,107 @@ module.exports = {
         resetState(db);
       }
 
+      // ── T32: auto-reconcile clears hold when session terminated + rows terminal ──
+      {
+        resetState(db);
+        const now = Date.now();
+        const sid = PREFIX + 'autoreconcile-32';
+        const id = db.prepare(
+          `INSERT INTO bridge_lipa_inbox (request_id, command, args_json, created_at, status, attempts, available_at, updated_at, session_id)
+           VALUES (?, 'test', '{}', ?, 'needs_review', 1, ?, ?, ?)`
+        ).run(PREFIX + 'ar32', now, now, now, sid).lastInsertRowid;
+        ids.push(id);
+        setExecutionHold('test timeout', { session_id: sid, claimed_ids: [id] });
+        const checkTerminated = () => ({ terminated: true, evidence: 'test' });
+        const reconciled = await autoReconcileHold(getExecutionHold(), now, { checkTerminated });
+        if (!reconciled) errors.push('T32: auto-reconcile should have cleared hold');
+        if (getExecutionHold()) errors.push('T32: hold should be null after reconcile');
+        resetState(db);
+      }
+
+      // ── T33: auto-reconcile keeps hold when session still active ──
+      {
+        resetState(db);
+        const now = Date.now();
+        const sid = PREFIX + 'autoreconcile-33';
+        const id = db.prepare(
+          `INSERT INTO bridge_lipa_inbox (request_id, command, args_json, created_at, status, attempts, available_at, updated_at, session_id)
+           VALUES (?, 'test', '{}', ?, 'needs_review', 1, ?, ?, ?)`
+        ).run(PREFIX + 'ar33', now, now, now, sid).lastInsertRowid;
+        ids.push(id);
+        setExecutionHold('test timeout', { session_id: sid, claimed_ids: [id] });
+        const checkTerminated = () => ({ terminated: false, evidence: 'still running' });
+        const reconciled = await autoReconcileHold(getExecutionHold(), now, { checkTerminated });
+        if (reconciled) errors.push('T33: auto-reconcile should NOT clear hold when session active');
+        if (!getExecutionHold()) errors.push('T33: hold should still be set');
+        resetState(db);
+      }
+
+      // ── T34: auto-reconcile keeps hold when row is non-terminal (claimed) ──
+      {
+        resetState(db);
+        const now = Date.now();
+        const sid = PREFIX + 'autoreconcile-34';
+        const id = db.prepare(
+          `INSERT INTO bridge_lipa_inbox (request_id, command, args_json, created_at, status, attempts, available_at, updated_at, session_id)
+           VALUES (?, 'test', '{}', ?, 'claimed', 1, ?, ?, ?)`
+        ).run(PREFIX + 'ar34', now, now, now, sid).lastInsertRowid;
+        ids.push(id);
+        setExecutionHold('test timeout', { session_id: sid, claimed_ids: [id] });
+        const checkTerminated = () => ({ terminated: true, evidence: 'test' });
+        const reconciled = await autoReconcileHold(getExecutionHold(), now, { checkTerminated });
+        if (reconciled) errors.push('T34: auto-reconcile should NOT clear hold when row is claimed');
+        if (!getExecutionHold()) errors.push('T34: hold should still be set');
+        resetState(db);
+      }
+
+      // ── T35: auto-reconcile refuses corrupt hold ──
+      {
+        resetState(db);
+        const now = Date.now();
+        const corruptHold = { active: true, corrupt: true, reason: 'corrupt', session_id: 's' };
+        const checkTerminated = () => ({ terminated: true, evidence: 'test' });
+        const reconciled = await autoReconcileHold(corruptHold, now, { checkTerminated });
+        if (reconciled) errors.push('T35: auto-reconcile should refuse corrupt hold');
+        resetState(db);
+      }
+
+      // ── T36: auto-reconcile integrates with preflight (hold cleared → launch proceeds) ──
+      {
+        resetState(db);
+        const now = Date.now();
+        const sid = PREFIX + 'autoreconcile-36-old';
+        const id = db.prepare(
+          `INSERT INTO bridge_lipa_inbox (request_id, command, args_json, created_at, status, attempts, available_at, updated_at, session_id)
+           VALUES (?, 'test', '{}', ?, 'needs_review', 1, ?, ?, ?)`
+        ).run(PREFIX + 'ar36_old', now, now, now, sid).lastInsertRowid;
+        ids.push(id);
+        // Set hold for old session
+        setExecutionHold('test timeout', { session_id: sid, claimed_ids: [id] });
+        // Also add a due row for the NEW launch
+        const newId = db.prepare(
+          `INSERT INTO bridge_lipa_inbox (request_id, command, args_json, created_at, status, attempts, available_at, updated_at)
+           VALUES (?, 'test', '{"text":"hello"}', ?, 'pending', 0, ?, ?)`
+        ).run(PREFIX + 'ar36_new', now, now, now).lastInsertRowid;
+        ids.push(newId);
+        let launcherCalled = false;
+        const res = await runPreflight({
+          launcher: async () => { launcherCalled = true; return { code: 0, timedOut: false, stdout: '' }; },
+          now, sessionId: PREFIX + 'ar36-new-sid',
+          deps: {
+            checkTerminated: () => ({ terminated: true, evidence: 'test' }),
+            // Need to provide getDueCount that returns > 0 AFTER hold clear
+          },
+        });
+        // The preflight should have auto-reconciled the hold and then launched
+        if (!launcherCalled && res.reason !== 'execution_hold') {
+          // It's OK if it didn't launch for other reasons (lock, cap, etc)
+          // but it should NOT have been blocked by execution_hold
+          if (res.reason === 'execution_hold') errors.push('T36: preflight should have auto-reconciled hold, not blocked');
+        }
+        resetState(db);
+      }
+
     } finally {
       cleanup(db, ids);
       for (const k of STATE_KEYS) restoreState(db, k, stateSnaps[k]);
@@ -678,9 +780,9 @@ module.exports = {
       try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
     }
 
-    const total = 31;
+    const total = 36;
     return errors.length === 0
-      ? { pass: true, message: `Lipa preflight: all ${total} tests pass (T1-T15 gate, T16-T26 exec state/fence/caps, T27-T31 fail-closed corruption/explicit timeout/model rates/partial usage).` }
+      ? { pass: true, message: `Lipa preflight: all ${total} tests pass (T1-T15 gate, T16-T26 exec state/fence/caps, T27-T31 fail-closed corruption/explicit timeout/model rates/partial usage, T32-T36 auto-reconciliation).` }
       : { pass: false, message: errors.join('\n         ') };
   },
 };

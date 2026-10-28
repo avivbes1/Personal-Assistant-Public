@@ -76,9 +76,14 @@ const lipaConfig = require('../src/bridge/lipaConfig');
 
 // ── tunables ─────────────────────────────────────────────────────────────────
 function intOr(v, d) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; }
-const CLI_TIMEOUT_MS = intOr(process.env.LIPA_BRIDGE_CLI_TIMEOUT_MS, 10 * 60 * 1000); // 10 min
+const CLI_TIMEOUT_MS = intOr(process.env.LIPA_BRIDGE_CLI_TIMEOUT_MS, 15 * 60 * 1000); // 15 min (raised from 10 to accommodate coding tasks)
 const HOLD_KEY = 'execution_hold';
 const EXEC_STATE_KEY = 'execution_state';
+
+// Grace period: a session must have been idle this long past CLI_TIMEOUT_MS
+// before auto-reconciliation considers it terminated. Prevents clearing a hold
+// on a session that is still actively running but just slow.
+const AUTO_RECONCILE_GRACE_MS = intOr(process.env.LIPA_BRIDGE_RECONCILE_GRACE_MS, 2 * 60 * 1000); // 2 min
 
 // The message handed to the agent turn — same intent as the OpenClaw cron message
 // currently used: run the due-time gate, then process + respond to any claimed row.
@@ -146,11 +151,127 @@ function buildBoundDirectMessage(claimedRows, sid) {
 
   lines.push('IMPORTANT: respond.js options_json MUST include claim_generation and session_id as shown above.');
   lines.push('If respond.js exits non-zero, do not retry — report the error.');
+  lines.push('');
+  lines.push(`TIME BUDGET: You have ${Math.floor(CLI_TIMEOUT_MS / 1000)}s before the wrapper kills this session.`);
+  lines.push('For large coding tasks: delegate to claude -p (which runs independently) so the work survives a wrapper timeout.');
+  lines.push('If you need >80% of the budget, checkpoint progress via saveSplitProgress before the critical section.');
 
   return lines.join('\n');
 }
 
 function truncate(s, n = 300) { s = s == null ? '' : String(s); return s.slice(0, n); }
+
+// ── auto-reconciliation: clear holds when session verifiably terminated ───────
+
+/**
+ * Check if a remote OpenClaw session has verifiably terminated.
+ * Uses the `openclaw sessions` CLI to inspect session state.
+ *
+ * A session is considered terminated if:
+ *   - It does not appear in the session list at all (cleaned up), OR
+ *   - Its `abortedLastRun` flag is true (explicitly killed), OR
+ *   - Its `ageMs` exceeds CLI_TIMEOUT_MS + AUTO_RECONCILE_GRACE_MS (stale)
+ *
+ * Returns { terminated: boolean, evidence: string }.
+ * Fails CLOSED: if the CLI call fails, returns { terminated: false }.
+ */
+function checkSessionTerminated(sessionId) {
+  try {
+    const result = require('child_process').execFileSync(
+      'openclaw', ['sessions', '--json', '--agent', 'personal'],
+      { timeout: 15000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    const data = JSON.parse(result);
+    const sessions = data.sessions || [];
+    const session = sessions.find(s => s.sessionId === sessionId);
+
+    if (!session) {
+      return { terminated: true, evidence: 'session_not_found_in_openclaw' };
+    }
+    if (session.abortedLastRun === true) {
+      return { terminated: true, evidence: `abortedLastRun=true, ageMs=${session.ageMs}` };
+    }
+    // Session exists but hasn't been updated in a long time — it's done
+    const staleThreshold = CLI_TIMEOUT_MS + AUTO_RECONCILE_GRACE_MS;
+    if (typeof session.ageMs === 'number' && session.ageMs > staleThreshold) {
+      return { terminated: true, evidence: `stale: ageMs=${session.ageMs} > threshold=${staleThreshold}` };
+    }
+    return { terminated: false, evidence: `session active: ageMs=${session.ageMs}, aborted=${session.abortedLastRun}` };
+  } catch (e) {
+    console.error('[Lipa preflight] session termination check failed (fail closed):', e.message);
+    return { terminated: false, evidence: `check_failed: ${e.message}` };
+  }
+}
+
+/**
+ * Auto-reconcile an execution hold by verifying the hold's session has
+ * terminated AND all claimed rows are in terminal DB states. Returns true if
+ * the hold was cleared.
+ *
+ * SAFETY:
+ *   - Fails closed: any check failure keeps the hold.
+ *   - Corrupt holds are NEVER auto-cleared (require manual intervention).
+ *   - A session that is still running keeps the hold.
+ *   - Non-terminal rows (pending, retry, claimed) keep the hold.
+ *
+ * If `checkTerminated` is supplied (dependency injection for tests), it is
+ * called instead of the real `checkSessionTerminated`.
+ */
+async function autoReconcileHold(hold, now, { checkTerminated } = {}) {
+  if (!hold) return false;
+  // Corrupt holds require manual repair — never auto-clear
+  if (hold.corrupt) {
+    console.error('[Lipa preflight] auto-reconcile: corrupt hold — skipping');
+    return false;
+  }
+  if (!hold.session_id) {
+    console.error('[Lipa preflight] auto-reconcile: hold has no session_id — skipping');
+    return false;
+  }
+
+  // Step 1: verify the remote session has terminated
+  const checker = checkTerminated || checkSessionTerminated;
+  const termResult = checker(hold.session_id);
+  // Support both sync and async checkers
+  const { terminated, evidence } = (termResult && typeof termResult.then === 'function')
+    ? await termResult : termResult;
+
+  if (!terminated) {
+    console.log(`[Lipa preflight] auto-reconcile: session ${hold.session_id} still active (${evidence}) — hold preserved`);
+    return false;
+  }
+
+  // Step 2: verify all claimed rows are in terminal states
+  const claimedIds = hold.claimed_ids || [];
+  const db = getDB();
+  for (const id of claimedIds) {
+    const row = db.prepare('SELECT id, status FROM bridge_lipa_inbox WHERE id = ?').get(id);
+    if (!row) continue; // row gone / cleaned up — acceptable
+    if (!['done', 'needs_review', 'dead'].includes(row.status)) {
+      console.error(`[Lipa preflight] auto-reconcile: row ${id} in non-terminal status '${row.status}' — hold preserved`);
+      return false;
+    }
+  }
+
+  // Step 3: all checks pass — clear hold atomically
+  const cleared = clearExecutionHold();
+  if (cleared) {
+    rel.logAttempt({
+      inboxId: 0, attemptNumber: 0,
+      event: 'hold_auto_reconciled', outcome: 'ok',
+      error: JSON.stringify({
+        session_id: hold.session_id,
+        claimed_ids: claimedIds,
+        evidence,
+        reconciled_at: now,
+      }),
+      sessionId: hold.session_id,
+      finishedAt: now,
+    });
+    console.log(`[Lipa preflight] AUTO-RECONCILED hold for session ${hold.session_id}: ${evidence}`);
+  }
+  return !!cleared;
+}
 
 // ── Re-export execution hold from lipaReliability (canonical source) ──────────
 // Execution hold management lives in lipaReliability.js so that reconcileStaleClaims
@@ -454,23 +575,39 @@ async function runPreflight({ launcher = defaultLauncher, now = Date.now(), sess
     // `--clear-hold`.
     const hold = getExecutionHold();
     if (hold) {
-      // Hold-duration alerting: if the hold has been active for >30 minutes and we
-      // haven't alerted within the last 30 minutes, notify Aviv (WhatsApp + email)
-      // and record the alert time. Fully best-effort — never blocks the hold return.
+      // AUTO-RECONCILIATION: before blocking, check if the hold's session has
+      // verifiably terminated and all claimed rows are terminal. If so, clear
+      // the hold automatically and continue to launch.
+      // When deps.checkTerminated is explicitly `false`, skip auto-reconciliation
+      // entirely (used by tests that expect holds to block unconditionally).
+      const skipReconcile = deps.checkTerminated === false;
       try {
-        if (hold.since && (now - hold.since) > HOLD_ALERT_THRESHOLD_MS) {
-          const lastSent = readStateEx(HOLD_ALERT_KEY);
-          const lastSentAt = (lastSent.exists && !lastSent.corrupt && typeof lastSent.value === 'number')
-            ? lastSent.value : 0;
-          if ((now - lastSentAt) > HOLD_ALERT_THRESHOLD_MS) {
-            await sendHoldAlert(hold, now);
-            writeState(HOLD_ALERT_KEY, now);
+        const reconciled = !skipReconcile && await autoReconcileHold(hold, now, { checkTerminated: deps.checkTerminated });
+        if (reconciled) {
+          // Hold cleared — fall through to normal launch checks below
+          console.log('[Lipa preflight] hold auto-reconciled, continuing to launch checks');
+        } else {
+          // Hold still active — alert if stale, then block
+          try {
+            if (hold.since && (now - hold.since) > HOLD_ALERT_THRESHOLD_MS) {
+              const lastSent = readStateEx(HOLD_ALERT_KEY);
+              const lastSentAt = (lastSent.exists && !lastSent.corrupt && typeof lastSent.value === 'number')
+                ? lastSent.value : 0;
+              if ((now - lastSentAt) > HOLD_ALERT_THRESHOLD_MS) {
+                await sendHoldAlert(hold, now);
+                writeState(HOLD_ALERT_KEY, now);
+              }
+            }
+          } catch (alertErr) {
+            console.error('[Lipa preflight] hold alert check failed (non-fatal):', alertErr.message);
           }
+          return { launched: false, reason: 'execution_hold', hold };
         }
-      } catch (alertErr) {
-        console.error('[Lipa preflight] hold alert check failed (non-fatal):', alertErr.message);
+      } catch (reconcileErr) {
+        // Reconciliation failed — fail closed, keep hold
+        console.error('[Lipa preflight] auto-reconcile error (keeping hold):', reconcileErr.message);
+        return { launched: false, reason: 'execution_hold', hold };
       }
-      return { launched: false, reason: 'execution_hold', hold };
     }
 
     // (e2) Execution state — also blocks when state is 'active' or 'unknown',
@@ -692,6 +829,10 @@ module.exports = {
   // Also expose execution state management for tests
   getExecutionState,
   setExecutionState,
+  // Auto-reconciliation (exported for tests)
+  autoReconcileHold,
+  checkSessionTerminated,
+  CLI_TIMEOUT_MS,
 };
 
 // ── CLI entrypoint ───────────────────────────────────────────────────────────
