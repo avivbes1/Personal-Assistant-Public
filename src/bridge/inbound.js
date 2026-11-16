@@ -16,6 +16,7 @@ const inboundConfig = require('./inboundConfig');
 const bridgeConfig = require('./config');
 const lipaConfig = require('./lipaConfig');
 const lipaLane = require('./lipaLane');
+const signatureAuth = require('./signatureAuth');
 
 // ── IMAP client ──────────────────────────────────────────────────────────────
 
@@ -47,6 +48,16 @@ function getSmtpTransport() {
     });
   }
   return smtpTransport;
+}
+
+// ── Active reply transport (WS1) ─────────────────────────────────────────────
+// Default: Gmail SMTP (nodemailer). When BRIDGE_EMAIL_TRANSPORT=gmail_api, use
+// the Gmail API transport instead. Both expose a nodemailer-style sendMail().
+function getActiveTransport() {
+  if ((process.env.BRIDGE_EMAIL_TRANSPORT || 'smtp').toLowerCase() === 'gmail_api') {
+    return require('./gmailApiTransport');
+  }
+  return getSmtpTransport();
 }
 
 // ── DB: processed-email tracking ─────────────────────────────────────────────
@@ -135,16 +146,40 @@ function logProcessed(entry) {
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Validate an inbound command body. During the WS2 transition we accept EITHER
+ * a valid Ed25519 SIG: line (verified against Instinct's public key) OR the
+ * legacy AUTH:<token> line. SIG is preferred; if a SIG line is present but
+ * fails to verify, we still fall back to AUTH so a misconfigured peer isn't
+ * locked out mid-cutover.
+ *
+ * @returns {{valid:boolean, command:string|null, authMethod?:'sig'|'auth'}}
+ */
 function extractAndValidateToken(body) {
-  if (!body || !inboundConfig.token) return { valid: false, command: null };
+  if (!body) return { valid: false, command: null };
   const lines = body.split('\n').map(l => l.trim());
+  const hasSig = lines.some(l => l.startsWith('SIG:'));
   const authLine = lines.find(l => l.startsWith('AUTH:'));
-  if (!authLine) return { valid: false, command: null };
-  const providedToken = authLine.replace(/^AUTH:\s*/, '').trim();
-  if (providedToken !== inboundConfig.token) return { valid: false, command: null };
-  // Command is everything except the auth line, trimmed
-  const command = lines.filter(l => !l.startsWith('AUTH:')).join('\n').trim();
-  return { valid: true, command };
+  // Command is everything except the auth/sig header lines, trimmed.
+  const command = lines
+    .filter(l => !l.startsWith('AUTH:') && !l.startsWith('SIG:'))
+    .join('\n')
+    .trim();
+
+  // Preferred: Ed25519 signature from Instinct.
+  if (hasSig) {
+    const res = signatureAuth.verifyInbound(body, signatureAuth.getInstinctPublicKey());
+    if (res.valid) return { valid: true, command, authMethod: 'sig' };
+    console.warn(`[Bridge][Inbound] SIG present but invalid (${res.reason}) — falling back to AUTH`);
+  }
+
+  // Legacy: shared AUTH token.
+  if (authLine && inboundConfig.token) {
+    const providedToken = authLine.replace(/^AUTH:\s*/, '').trim();
+    if (providedToken === inboundConfig.token) return { valid: true, command, authMethod: 'auth' };
+  }
+
+  return { valid: false, command: null };
 }
 
 // ── Command handlers ─────────────────────────────────────────────────────────
@@ -363,10 +398,15 @@ function getBridgeStats(days) {
 
 async function sendReply(originalSubject, responseObj, inReplyTo) {
   const subject = `${inboundConfig.replySubjectPrefix} re: ${originalSubject}`;
+  const payload = JSON.stringify(responseObj, null, 2);
+  // WS2 transition: include BOTH the legacy AUTH line and the new Ed25519 SIG
+  // line. request_id for the signature is the one embedded in the response.
+  const sigLine = signatureAuth.signOutbound(responseObj && responseObj.request_id, payload);
   const body = [
     `AUTH:${inboundConfig.token}`,
+    ...(sigLine ? [sigLine] : []),
     '',
-    JSON.stringify(responseObj, null, 2),
+    payload,
   ].join('\n');
 
   const mailOptions = {
@@ -377,7 +417,7 @@ async function sendReply(originalSubject, responseObj, inReplyTo) {
   };
   if (inReplyTo) mailOptions.inReplyTo = inReplyTo;
 
-  const transport = getSmtpTransport();
+  const transport = getActiveTransport();
   const info = await transport.sendMail(mailOptions);
   console.log(`[Bridge][Inbound] reply sent: ${info.messageId} -> ${inboundConfig.replyTo}`);
   return info;
@@ -395,6 +435,11 @@ async function pollCycle() {
     } catch (err) {
       console.error('[Bridge][Lipa] outbox drain failed:', err.message);
     }
+  }
+
+  // WS1: optional Gmail REST API read path (opt-in). Default stays on IMAP.
+  if ((process.env.BRIDGE_EMAIL_TRANSPORT || 'smtp').toLowerCase() === 'gmail_api') {
+    return pollCycleGmailApi();
   }
 
   const client = createImapClient();
@@ -490,6 +535,68 @@ async function pollCycle() {
   }
 }
 
+/**
+ * WS1: Gmail REST API equivalent of pollCycle's IMAP scan. Fetches messages for
+ * each lane via gmailApiTransport.readInbox and runs them through the identical
+ * processMessage pipeline. Same dedup/skip rules as the IMAP path. Opt-in only
+ * (BRIDGE_EMAIL_TRANSPORT=gmail_api); never reached by default.
+ */
+async function pollCycleGmailApi() {
+  const gmailApi = require('./gmailApiTransport');
+
+  // ── Tudat lane (FamilyBot Bridge label) ──────────────────────────────────
+  const MAILBOX = process.env.INSTINCT_BRIDGE_INBOUND_MAILBOX || 'FamilyBot Bridge';
+  try {
+    const messages = await gmailApi.readInbox({
+      label: MAILBOX,
+      subjectPrefix: inboundConfig.inboundSubjectPrefix,
+    });
+    for (const msg of messages) {
+      const uid = String(msg.uid);
+      const envelope = msg.envelope || {};
+      const msgId = envelope.messageId || null;
+      const subject = envelope.subject || '';
+      if (subject.startsWith(inboundConfig.replySubjectPrefix)) continue;
+      if (wasProcessed(uid, msgId)) continue;
+      try {
+        await processMessage(msg, uid);
+      } catch (err) {
+        console.error(`[Bridge][Inbound][GmailAPI] failed to process uid=${uid}:`, err.message);
+        logProcessed({ uid, status: 'error', command: null, response: err.message });
+      }
+    }
+  } catch (err) {
+    console.error('[Bridge][Inbound][GmailAPI] poll cycle failed:', err.message);
+  }
+
+  // ── Lipa lane (Lipa Bridge label) ────────────────────────────────────────
+  if (lipaConfig.enabled && lipaConfig.valid) {
+    const LIPA_MAILBOX = process.env.LIPA_BRIDGE_MAILBOX || 'Lipa Bridge';
+    try {
+      const lipaMessages = await gmailApi.readInbox({
+        label: LIPA_MAILBOX,
+        subjectPrefix: lipaConfig.inboundSubjectPrefix,
+      });
+      for (const msg of lipaMessages) {
+        const uid = String(msg.uid);
+        const envelope = msg.envelope || {};
+        const msgId = envelope.messageId || null;
+        const subject = envelope.subject || '';
+        if (subject.startsWith(lipaConfig.replySubjectPrefix)) continue;
+        if (wasProcessed(uid, msgId)) continue;
+        try {
+          await processMessage(msg, uid);
+        } catch (err) {
+          console.error(`[Bridge][Lipa][GmailAPI] failed to process uid=${uid}:`, err.message);
+          logProcessed({ uid, status: 'lipa_error', command: null, response: err.message });
+        }
+      }
+    } catch (err) {
+      console.error('[Bridge][Lipa][GmailAPI] poll cycle failed:', err.message);
+    }
+  }
+}
+
 async function processMessage(msg, uid) {
   const envelope = msg.envelope || {};
   const subject = envelope.subject || '';
@@ -508,12 +615,13 @@ async function processMessage(msg, uid) {
   // If subject starts with [Instinct->Lipa], route to the Lipa lane instead
   // of the Tudat handler. Separate auth token, separate queue.
   if (subject.startsWith(lipaConfig.inboundSubjectPrefix) && lipaConfig.enabled) {
-    const { valid, command } = lipaLane.validateLipaAuth(body);
+    const { valid, command, authMethod } = lipaLane.validateLipaAuth(body);
     if (!valid) {
       console.warn(`[Bridge][Lipa] auth failed for uid=${uid} from=${fromAddr}`);
       logProcessed({ uid, messageId, from: fromAddr, subject, status: 'lipa_auth_failed', command: null, response: 'Invalid Lipa auth token' });
       return;
     }
+    console.log(`[Bridge][Lipa] auth ok via ${authMethod} for uid=${uid} from=${fromAddr}`);
     if (!command) {
       logProcessed({ uid, messageId, from: fromAddr, subject, status: 'lipa_empty', command: '', response: 'Empty command' });
       return;
@@ -536,12 +644,15 @@ async function processMessage(msg, uid) {
       try {
         // Reply directly for ping — don't queue
         const replySubject = `${lipaConfig.replySubjectPrefix} re: ${subject}`;
+        const pingPayload = JSON.stringify(responseObj, null, 2);
+        const pingSig = signatureAuth.signOutbound(responseObj && responseObj.request_id, pingPayload);
         const replyBody = [
           `AUTH:${lipaConfig.token}`,
+          ...(pingSig ? [pingSig] : []),
           '',
-          JSON.stringify(responseObj, null, 2),
+          pingPayload,
         ].join('\n');
-        const transport = getSmtpTransport();
+        const transport = getActiveTransport();
         await transport.sendMail({
           from: lipaConfig.account,
           to: lipaConfig.replyTo,
@@ -584,12 +695,15 @@ async function processMessage(msg, uid) {
           message: 'Request accepted and queued for processing',
         };
         const ackSubject = `${lipaConfig.replySubjectPrefix} ACK: ${requestId || 'unknown'}`;
+        const ackPayload = JSON.stringify(ackObj, null, 2);
+        const ackSig = signatureAuth.signOutbound(ackObj.request_id, ackPayload);
         const ackBody = [
           `AUTH:${lipaConfig.token}`,
+          ...(ackSig ? [ackSig] : []),
           '',
-          JSON.stringify(ackObj, null, 2),
+          ackPayload,
         ].join('\n');
-        const transport = getSmtpTransport();
+        const transport = getActiveTransport();
         await transport.sendMail({
           from: lipaConfig.account,
           to: lipaConfig.replyTo,
@@ -607,12 +721,13 @@ async function processMessage(msg, uid) {
 
   // ── Tudat lane (existing behavior) ─────────────────────────────────────
   // Validate auth token
-  const { valid, command } = extractAndValidateToken(body);
+  const { valid, command, authMethod } = extractAndValidateToken(body);
   if (!valid) {
     console.warn(`[Bridge][Inbound] auth failed for uid=${uid} from=${fromAddr}`);
     logProcessed({ uid, messageId, from: fromAddr, subject, status: 'auth_failed', command: null, response: 'Invalid or missing auth token' });
     return; // silently reject — don't reply to unauthenticated emails
   }
+  console.log(`[Bridge][Inbound] auth ok via ${authMethod} for uid=${uid} from=${fromAddr}`);
 
   if (!command) {
     logProcessed({ uid, messageId, from: fromAddr, subject, status: 'empty', command: '', response: 'Empty command' });

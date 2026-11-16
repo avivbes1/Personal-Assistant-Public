@@ -15,6 +15,7 @@
  */
 
 const lipaConfig = require('./lipaConfig');
+const signatureAuth = require('./signatureAuth');
 
 // ── DB tables ────────────────────────────────────────────────────────────────
 
@@ -153,18 +154,35 @@ function getFailedOutboxRows(limit = 10) {
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 /**
- * Validate the Lipa-lane auth token from an email body.
- * Same AUTH: line format as Tudat lane, different token.
+ * Validate the Lipa-lane auth from an email body. WS2 transition: accept EITHER
+ * a valid Ed25519 SIG: line (verified against Instinct's public key) OR the
+ * legacy AUTH:<token> line (separate token from the Tudat lane). SIG preferred;
+ * a present-but-invalid SIG falls back to AUTH so nobody is locked out mid-cutover.
+ *
+ * @returns {{valid:boolean, command:string|null, authMethod?:'sig'|'auth'}}
  */
 function validateLipaAuth(body) {
-  if (!body || !lipaConfig.token) return { valid: false, command: null };
+  if (!body) return { valid: false, command: null };
   const lines = body.split('\n').map(l => l.trim());
+  const hasSig = lines.some(l => l.startsWith('SIG:'));
   const authLine = lines.find(l => l.startsWith('AUTH:'));
-  if (!authLine) return { valid: false, command: null };
-  const providedToken = authLine.replace(/^AUTH:\s*/, '').trim();
-  if (providedToken !== lipaConfig.token) return { valid: false, command: null };
-  const command = lines.filter(l => !l.startsWith('AUTH:')).join('\n').trim();
-  return { valid: true, command };
+  const command = lines
+    .filter(l => !l.startsWith('AUTH:') && !l.startsWith('SIG:'))
+    .join('\n')
+    .trim();
+
+  if (hasSig) {
+    const res = signatureAuth.verifyInbound(body, signatureAuth.getInstinctPublicKey());
+    if (res.valid) return { valid: true, command, authMethod: 'sig' };
+    console.warn(`[Bridge][Lipa] SIG present but invalid (${res.reason}) — falling back to AUTH`);
+  }
+
+  if (authLine && lipaConfig.token) {
+    const providedToken = authLine.replace(/^AUTH:\s*/, '').trim();
+    if (providedToken === lipaConfig.token) return { valid: true, command, authMethod: 'auth' };
+  }
+
+  return { valid: false, command: null };
 }
 
 // ── Reply sender (used by the poller to drain the outbox) ────────────────────
@@ -186,16 +204,31 @@ function getSmtpTransport() {
   return _smtpTransport;
 }
 
+// ── Active reply transport (WS1) ─────────────────────────────────────────────
+// Default: Gmail SMTP (nodemailer). When BRIDGE_EMAIL_TRANSPORT=gmail_api, use
+// the Gmail API transport instead. Both expose a nodemailer-style sendMail().
+function getActiveTransport() {
+  if ((process.env.BRIDGE_EMAIL_TRANSPORT || 'smtp').toLowerCase() === 'gmail_api') {
+    return require('./gmailApiTransport');
+  }
+  return getSmtpTransport();
+}
+
 /**
  * Send a reply email for a Lipa outbox row.
  */
 async function sendLipaReply(outboxRow) {
   const responseObj = JSON.parse(outboxRow.response_json);
   const subject = `${lipaConfig.replySubjectPrefix} re: ${outboxRow.original_subject || '[Instinct->Lipa]'}`;
+  const payload = JSON.stringify(responseObj, null, 2);
+  // WS2 transition: include BOTH legacy AUTH and the new Ed25519 SIG. The
+  // signature's request_id is the one embedded in the response payload.
+  const sigLine = signatureAuth.signOutbound(responseObj && responseObj.request_id, payload);
   const body = [
     `AUTH:${lipaConfig.token}`,
+    ...(sigLine ? [sigLine] : []),
     '',
-    JSON.stringify(responseObj, null, 2),
+    payload,
   ].join('\n');
 
   const mailOptions = {
@@ -206,7 +239,7 @@ async function sendLipaReply(outboxRow) {
   };
   if (outboxRow.in_reply_to) mailOptions.inReplyTo = outboxRow.in_reply_to;
 
-  const transport = getSmtpTransport();
+  const transport = getActiveTransport();
   const info = await transport.sendMail(mailOptions);
   console.log(`[Bridge][Lipa] reply sent: ${info.messageId} -> ${lipaConfig.replyTo}`);
   return info;

@@ -23,6 +23,13 @@ const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 const SHADOW = process.env.INSTINCT_BRIDGE_SHADOW === '1';
 const TRANSPORT = (process.env.INSTINCT_BRIDGE_TRANSPORT || 'gmail').toLowerCase();
+// WS1: optional Gmail REST API transport. Default 'smtp' keeps the existing
+// Gmail-SMTP / SES behavior untouched; 'gmail_api' routes sends through the
+// Gmail API (see gmailApiTransport.js). Read per-call so it can be flipped
+// without reloading the module.
+function emailTransportMode() {
+  return (process.env.BRIDGE_EMAIL_TRANSPORT || 'smtp').toLowerCase();
+}
 
 // SMTP reply codes that specifically indicate a billing/quota/credit problem
 // (as opposed to a generic transient failure). 4xx = temporary, 5xx = permanent;
@@ -238,6 +245,27 @@ async function sendBatch(envelope) {
       `  delivery: ${envelope.delivery_id}`
     );
     return { ok: true, provider_message_id: `shadow-${envelope.delivery_id}`, shadow: true, bytes };
+  }
+
+  // WS1: Gmail REST API path (opt-in via BRIDGE_EMAIL_TRANSPORT=gmail_api).
+  // Takes precedence over the INSTINCT_BRIDGE_TRANSPORT (gmail-smtp/ses) choice.
+  if (emailTransportMode() === 'gmail_api') {
+    const gmailApi = require('./gmailApiTransport');
+    const mailOpts = {
+      from: bridgeConfig.emailFrom,
+      to: bridgeConfig.emailTo,
+      subject,
+      text: body,
+    };
+    if (emailAttachments.length > 0) mailOpts.attachments = emailAttachments;
+    const info = await gmailApi.sendMail(mailOpts);
+    const messageId = info.messageId || null;
+    console.log(
+      `[Bridge][GmailAPI] sent: ${envelope.event_count} event(s), ` +
+      `${bytes} bytes, ${emailAttachments.length} attachment(s), ` +
+      `delivery=${envelope.delivery_id}, msg_id=${messageId}`
+    );
+    return { ok: true, provider_message_id: messageId, shadow: false, bytes };
   }
 
   if (TRANSPORT === 'ses') {
