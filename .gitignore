@@ -37,3 +37,4 @@ query_tmp.js
 .DS_Store
 .baileys_auth/
 .baileys_auth.broken/
+.keys/
