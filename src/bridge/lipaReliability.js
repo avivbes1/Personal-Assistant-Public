@@ -305,7 +305,7 @@ function argsByteLength(args) {
  * (Splitting large jobs is supported via the split_progress column + saveSplitProgress;
  *  callers that can chunk should do so and enqueue each chunk under the limit.)
  */
-function enqueueGuarded({ requestId, command, args, fromAddr, subject, messageId }) {
+function enqueueGuarded({ requestId, command, args, fromAddr, subject, messageId, authMethod }) {
   const now = Date.now();
   const argsJson = JSON.stringify(args || {});
   const bytes = Buffer.byteLength(argsJson, 'utf8');
@@ -314,10 +314,10 @@ function enqueueGuarded({ requestId, command, args, fromAddr, subject, messageId
     return { inserted: false, rejected: true, bytes, reason: `args ${bytes}B exceeds ${MAX_ARGS_BYTES}B limit` };
   }
   const cols = `(request_id, command, args_json, from_addr, subject, gmail_message_id,
-        created_at, status, attempts, available_at, args_bytes, updated_at)`;
-  const vals = `VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`;
+        created_at, status, attempts, available_at, args_bytes, updated_at, auth_method)`;
+  const vals = `VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)`;
   const params = [requestId || null, command || '', argsJson, fromAddr || null, subject || null,
-        messageId || null, now, now, bytes, now];
+        messageId || null, now, now, bytes, now, authMethod || null];
   if (requestId) {
     // Dedup non-null request_id against the partial unique index. The WHERE
     // clause in the conflict target must match the partial index exactly.
@@ -426,11 +426,13 @@ function completeClaim({ inboxId, claimGeneration, sessionId, response, original
     db().prepare("UPDATE bridge_lipa_inbox SET status = 'done', processed_at = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
       .run(now, now, inboxId);
     if (!existing) {
+      // Carry the inbound auth method onto the reply so sendLipaReply() can
+      // suppress the legacy AUTH token for SIG-authenticated requests.
       db().prepare(
-        `INSERT INTO bridge_lipa_outbox (inbox_id, request_id, response_json, original_subject, in_reply_to, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO bridge_lipa_outbox (inbox_id, request_id, response_json, original_subject, in_reply_to, created_at, auth_method)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       ).run(inboxId, row.request_id || null, JSON.stringify(response == null ? {} : response),
-            originalSubject || row.subject || null, inReplyTo || null, now);
+            originalSubject || row.subject || null, inReplyTo || null, now, row.auth_method || null);
     }
     logAttempt({ inboxId, attemptNumber: row.attempts, event: 'deliver', outcome: 'ok',
       providerMessageId, sessionId, claimGeneration, cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens, finishedAt: now });

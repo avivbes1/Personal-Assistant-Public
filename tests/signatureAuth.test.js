@@ -162,6 +162,38 @@ check('loadKeys + signOutbound round-trip via temp keys dir', () => {
   }
 });
 
+// ── WS2 token-leak guard: reply body must drop AUTH for SIG-authed requests ───
+// Mirrors the body-builder used by sendReply()/sendLipaReply()/ping/ACK in
+// inbound.js + lipaLane.js: AUTH is emitted only when authMethod !== 'sig'
+// (so NULL/undefined legacy rows still get AUTH); SIG is always included when
+// signOutbound() produces a line. Kept in lockstep with those call sites.
+function buildReplyBody(authMethod, token, sigLine) {
+  const authLines = [];
+  if (authMethod !== 'sig') authLines.push(`AUTH:${token}`);
+  if (sigLine) authLines.push(sigLine);
+  return [...authLines, '', '{"ok":true}'].join('\n');
+}
+
+check("reply for authMethod='sig' omits AUTH line", () => {
+  const body = buildReplyBody('sig', 'secret-token', 'SIG: v1 abc');
+  assert(!body.includes('AUTH:'), 'SIG-authed reply must not leak AUTH token');
+  assert(!body.includes('secret-token'), 'SIG-authed reply must not contain the token');
+  assert(body.includes('SIG: v1 abc'), 'SIG line should still be present');
+});
+
+check("reply for authMethod='auth' includes AUTH line", () => {
+  const body = buildReplyBody('auth', 'secret-token', 'SIG: v1 abc');
+  assert(body.includes('AUTH:secret-token'), 'AUTH-authed reply must carry the AUTH token');
+  assert(body.includes('SIG: v1 abc'), 'SIG line should also be present');
+});
+
+check('reply for legacy authMethod=null/undefined includes AUTH line', () => {
+  const nullBody = buildReplyBody(null, 'secret-token', 'SIG: v1 abc');
+  assert(nullBody.includes('AUTH:secret-token'), 'null authMethod must keep AUTH (back-compat)');
+  const undefBody = buildReplyBody(undefined, 'secret-token', null);
+  assert(undefBody.includes('AUTH:secret-token'), 'undefined authMethod must keep AUTH (back-compat)');
+});
+
 function run() {
   let passed = 0;
   const failures = [];

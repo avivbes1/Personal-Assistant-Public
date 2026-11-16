@@ -148,7 +148,7 @@ async function scanLipaMailbox() {
         const fromAddr = (envelope.from && envelope.from[0]) ? (envelope.from[0].address || '') : '';
 
         // Validate auth
-        const { valid, command } = lipaLane.validateLipaAuth(body);
+        const { valid, command, authMethod } = lipaLane.validateLipaAuth(body);
         if (!valid) {
           log(`auth failed uid=${uid} from=${fromAddr}`);
           logInbound({ uid, messageId: msgId, from: fromAddr, subject, status: 'lipa_auth_failed' });
@@ -189,6 +189,7 @@ async function scanLipaMailbox() {
           fromAddr,
           subject,
           messageId: msgId,
+          authMethod,
         });
         enqueued++;
         log(`enqueued request_id=${parsed.request_id} cmd=${parsed.command}`);

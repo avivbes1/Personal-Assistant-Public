@@ -972,6 +972,10 @@ function initDB() {
   try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN split_progress TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN last_error TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN updated_at INTEGER"); } catch (_) {}
+  // WS2: remember how each inbound request authenticated ('sig' | 'auth' | NULL).
+  // A reply to a SIG-authenticated request must NOT echo the legacy AUTH token;
+  // NULL (legacy rows) keeps the AUTH line for backward compatibility.
+  try { db.exec("ALTER TABLE bridge_lipa_inbox ADD COLUMN auth_method TEXT"); } catch (_) {}
   // Backfill available_at for rows created before the column existed so the
   // due-time gate treats them as immediately due (never silently stuck).
   try { db.exec("UPDATE bridge_lipa_inbox SET available_at = created_at WHERE available_at IS NULL"); } catch (_) {}

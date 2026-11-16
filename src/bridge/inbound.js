@@ -396,18 +396,18 @@ function getBridgeStats(days) {
 
 // ── Reply sender ─────────────────────────────────────────────────────────────
 
-async function sendReply(originalSubject, responseObj, inReplyTo) {
+async function sendReply(originalSubject, responseObj, inReplyTo, authMethod) {
   const subject = `${inboundConfig.replySubjectPrefix} re: ${originalSubject}`;
   const payload = JSON.stringify(responseObj, null, 2);
-  // WS2 transition: include BOTH the legacy AUTH line and the new Ed25519 SIG
-  // line. request_id for the signature is the one embedded in the response.
+  // WS2: never echo the legacy AUTH token on a reply to a SIG-authenticated
+  // request — that would leak the shared secret to a peer that only proved
+  // identity via signature. SIG is always safe (it's our signature, not a
+  // secret). authMethod undefined/null (legacy callers) keeps AUTH for back-compat.
+  const authLines = [];
+  if (authMethod !== 'sig') authLines.push(`AUTH:${inboundConfig.token}`);
   const sigLine = signatureAuth.signOutbound(responseObj && responseObj.request_id, payload);
-  const body = [
-    `AUTH:${inboundConfig.token}`,
-    ...(sigLine ? [sigLine] : []),
-    '',
-    payload,
-  ].join('\n');
+  if (sigLine) authLines.push(sigLine);
+  const body = [...authLines, '', payload].join('\n');
 
   const mailOptions = {
     from: inboundConfig.account,
@@ -646,12 +646,11 @@ async function processMessage(msg, uid) {
         const replySubject = `${lipaConfig.replySubjectPrefix} re: ${subject}`;
         const pingPayload = JSON.stringify(responseObj, null, 2);
         const pingSig = signatureAuth.signOutbound(responseObj && responseObj.request_id, pingPayload);
-        const replyBody = [
-          `AUTH:${lipaConfig.token}`,
-          ...(pingSig ? [pingSig] : []),
-          '',
-          pingPayload,
-        ].join('\n');
+        // WS2: don't echo the legacy AUTH token to a SIG-authenticated caller.
+        const pingAuthLines = [];
+        if (authMethod !== 'sig') pingAuthLines.push(`AUTH:${lipaConfig.token}`);
+        if (pingSig) pingAuthLines.push(pingSig);
+        const replyBody = [...pingAuthLines, '', pingPayload].join('\n');
         const transport = getActiveTransport();
         await transport.sendMail({
           from: lipaConfig.account,
@@ -677,6 +676,7 @@ async function processMessage(msg, uid) {
       fromAddr,
       subject,
       messageId,
+      authMethod,
     });
     console.log(`[Bridge][Lipa] queued command "${cmd}" request_id=${requestId || 'none'}`);
     logProcessed({ uid, messageId, from: fromAddr, subject, status: 'lipa_queued', command: cmd, requestId, response: 'queued for OpenClaw' });
@@ -697,12 +697,11 @@ async function processMessage(msg, uid) {
         const ackSubject = `${lipaConfig.replySubjectPrefix} ACK: ${requestId || 'unknown'}`;
         const ackPayload = JSON.stringify(ackObj, null, 2);
         const ackSig = signatureAuth.signOutbound(ackObj.request_id, ackPayload);
-        const ackBody = [
-          `AUTH:${lipaConfig.token}`,
-          ...(ackSig ? [ackSig] : []),
-          '',
-          ackPayload,
-        ].join('\n');
+        // WS2: don't echo the legacy AUTH token to a SIG-authenticated caller.
+        const ackAuthLines = [];
+        if (authMethod !== 'sig') ackAuthLines.push(`AUTH:${lipaConfig.token}`);
+        if (ackSig) ackAuthLines.push(ackSig);
+        const ackBody = [...ackAuthLines, '', ackPayload].join('\n');
         const transport = getActiveTransport();
         await transport.sendMail({
           from: lipaConfig.account,
@@ -740,7 +739,7 @@ async function processMessage(msg, uid) {
 
   // Send reply
   try {
-    await sendReply(subject, responseObj, messageId);
+    await sendReply(subject, responseObj, messageId, authMethod);
     logProcessed({ uid, messageId, from: fromAddr, subject, status: 'ok', command, requestId, response: responseStr });
   } catch (err) {
     console.error(`[Bridge][Inbound] reply send failed for uid=${uid}:`, err.message);

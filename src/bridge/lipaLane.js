@@ -54,6 +54,16 @@ function ensureLipaTables() {
   try {
     getDB().exec(`ALTER TABLE bridge_lipa_outbox ADD COLUMN send_attempts INTEGER DEFAULT 0`);
   } catch (_) { /* column already exists */ }
+  // WS2: carry the inbound auth method onto each queued reply so sendLipaReply()
+  // can suppress the legacy AUTH token on SIG-authenticated requests. NULL on
+  // old rows → AUTH kept (backward compatible). Mirrored on the inbox so the
+  // value survives the inbox→outbox copy in completeClaim().
+  try {
+    getDB().exec(`ALTER TABLE bridge_lipa_inbox ADD COLUMN auth_method TEXT`);
+  } catch (_) { /* column already exists */ }
+  try {
+    getDB().exec(`ALTER TABLE bridge_lipa_outbox ADD COLUMN auth_method TEXT`);
+  } catch (_) { /* column already exists */ }
   getDB().exec(`
     CREATE INDEX IF NOT EXISTS idx_lipa_inbox_status ON bridge_lipa_inbox (status)
   `);
@@ -68,12 +78,14 @@ function ensureLipaTables() {
  * Queue an inbound command for Lipa processing.
  * Called by the inbound poller when it sees [Instinct->Lipa].
  */
-function enqueueForLipa({ requestId, command, args, fromAddr, subject, messageId }) {
+function enqueueForLipa({ requestId, command, args, fromAddr, subject, messageId, authMethod }) {
   ensureLipaTables();
   // Delegate to the reliability layer so oversized jobs are rejected (not
   // silently truncated) and the due-time columns (available_at, args_bytes,
   // attempts) are populated for the worker/gate. Returns {inserted, id, rejected?}.
-  return require('./lipaReliability').enqueueGuarded({ requestId, command, args, fromAddr, subject, messageId });
+  // authMethod is persisted so the eventual reply can suppress the legacy AUTH
+  // token when the request was SIG-authenticated.
+  return require('./lipaReliability').enqueueGuarded({ requestId, command, args, fromAddr, subject, messageId, authMethod });
 }
 
 // ── Outbound: OpenClaw writes here, poller reads ─────────────────────────────
@@ -221,15 +233,15 @@ async function sendLipaReply(outboxRow) {
   const responseObj = JSON.parse(outboxRow.response_json);
   const subject = `${lipaConfig.replySubjectPrefix} re: ${outboxRow.original_subject || '[Instinct->Lipa]'}`;
   const payload = JSON.stringify(responseObj, null, 2);
-  // WS2 transition: include BOTH legacy AUTH and the new Ed25519 SIG. The
-  // signature's request_id is the one embedded in the response payload.
+  // WS2: never echo the legacy AUTH token on a reply to a SIG-authenticated
+  // request — that would leak the shared secret to anyone who only proved
+  // identity via signature. SIG is always safe to send (it's our signature,
+  // not a secret). auth_method NULL (old queued rows) keeps AUTH for back-compat.
+  const authLines = [];
+  if (outboxRow.auth_method !== 'sig') authLines.push(`AUTH:${lipaConfig.token}`);
   const sigLine = signatureAuth.signOutbound(responseObj && responseObj.request_id, payload);
-  const body = [
-    `AUTH:${lipaConfig.token}`,
-    ...(sigLine ? [sigLine] : []),
-    '',
-    payload,
-  ].join('\n');
+  if (sigLine) authLines.push(sigLine);
+  const body = [...authLines, '', payload].join('\n');
 
   const mailOptions = {
     from: lipaConfig.account,
